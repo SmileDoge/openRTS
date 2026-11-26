@@ -22,6 +22,8 @@ struct AirCar {
     bool braking = false;     // an application is in progress (quick service done)
     bool emergency = false;   // the accelerator fired
     float reference{};        // 483: control chamber РК; 292: the ЗР when the application began
+    float zk{};               // 483: the spool chamber's pressure, atm
+    float kdr{};              // 483: the extra chamber's pressure, atm
     float last_pipe{};        // pipe at the last sub-step (rate detection)
     float wave = -1.0f;       // s until the emergency front reaches this car (< 0: not coming)
     // s its emergency accelerator still vents the pipe: it opens when the
@@ -32,7 +34,10 @@ struct AirCar {
     float ep_chamber{};
     bool ep_side = false;
     float pipe_low{}; // 483: the pipe's lowest while braking
-    float channel{};  // its ТЦ channel (DistributorState::channel)
+    // The 418's channels: an application's one additional discharge, and the
+    // ТЦ channel that keeps its target with the cylinder let off outside.
+    bool discharge = false;
+    float channel{};
     // ORTSBrakeDistributor: the car's own distributor in Luau (null: the
     // built-in one; also after a script error, reported once).
     std::shared_ptr<ScriptDistributor> script;

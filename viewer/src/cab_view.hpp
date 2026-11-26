@@ -181,10 +181,21 @@ public:
         const auto& clock = state_->blink_clock;
         for (std::size_t i = 0; i < off.size() && i < clock.size(); ++i)
             off[i] = cab_.displays[i].blink > 0.0f && clock[i] > cab_.displays[i].blink;
+        if (!planes) planes = &screen_planes_;
         screens_->build(state, elapsed, out, &off, planes);
+        // The wheel's pick_screen reads these: a caller's list is kept here too.
+        if (planes != &screen_planes_) screen_planes_ = *planes;
     }
     // The SCREEN labels the last screens() call laid out (CabScreens::labels_seen); null: no screens.
     [[nodiscard]] const CabScreens* screen_layout() const noexcept { return screens_.get(); }
+    // A screen under the ray `eye` along `along` (cab shape coordinates), no
+    // further than `max_distance` m: its plane (the wheel takes the eye up
+    // close, cab_screen_focus).
+    struct PickedScreen {
+        ScreenPlane plane;
+        float distance = 0.0f;
+    };
+    [[nodiscard]] std::optional<PickedScreen> pick_screen(const glm::vec3& eye, const glm::vec3& along, float max_distance) const;
     [[nodiscard]] std::size_t switches_bound() const noexcept { return switch_nodes_; }
     // The frames of switch `index`'s node a position takes, as RTS counts
     // them for dragging (0x51C1C8): the node has the shape's frame rate x
@@ -379,6 +390,7 @@ private:
     };
     std::vector<FreeAnim> free_anims_;
     mutable std::vector<std::uint8_t> free_anim_running_; // as the DLL left them (adjustments)
+    mutable std::vector<ScreenPlane> screen_planes_;     // the last screens(), for pick_screen
 };
 
 } // namespace openrts::viewer

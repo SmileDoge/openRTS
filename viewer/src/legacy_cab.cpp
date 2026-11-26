@@ -4,6 +4,17 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <fstream>
+
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#include <windows.h>
+#endif
 
 #ifdef OPENRTS_HAS_GLFW
 #include <GLFW/glfw3.h>
@@ -87,6 +98,24 @@ CabKey parse_cab_key(std::string_view text) {
     return out;
 }
 
+namespace {
+
+// The DLL side's log beside the settings (dllhost.log): what the cab's
+// consist did, for a GUI program whose stderr goes nowhere.
+void cab_log(const std::string& text) {
+    wchar_t local[MAX_PATH * 2]{};
+    const DWORD length = GetEnvironmentVariableW(L"LOCALAPPDATA", local, static_cast<DWORD>(sizeof(local) / sizeof(local[0])));
+    std::filesystem::path directory =
+        length > 0 && length < sizeof(local) / sizeof(local[0]) ? std::filesystem::path(local) : std::filesystem::temp_directory_path();
+    directory /= L"openRTS";
+    std::error_code ec;
+    std::filesystem::create_directories(directory, ec);
+    std::ofstream out(directory / L"dllhost.log", std::ios::app);
+    if (out) out << text << '\n';
+}
+
+} // namespace
+
 std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::vector<LegacyCarRef>& cars,
                                              simulation::Train& train, std::string& status, const int start_state,
                                              const core::VirtualPath* route, const bool fresh) {
@@ -109,6 +138,7 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
                                                       rts_program_folder(vfs, cars), &error, {}, route);
     if (!consist) {
         status = error;
+        cab_log("attach: consist failed: " + error);
         return nullptr;
     }
     std::unique_ptr<LegacyCab> cab(new LegacyCab());
@@ -123,11 +153,14 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
                                : consist->enter(player, train, true, start_state);
     if (!entered) {
         status = "enter: " + consist->error() + "\n" + consist->take_messages();
+        cab_log("attach: enter failed: " + status);
         return nullptr;
     }
     for (const auto& m : consist->modules()) {
         if (m.status < 0) status += "refused: " + trainplugin::utf16_to_utf8(m.path) + "\n";
     }
+    cab_log("attach: " + std::to_string(cars.size()) + " cars, player " + std::to_string(player) + ", modules " +
+            std::to_string(consist->modules().size()) + (status.empty() ? ", ok" : ", " + status));
     cab->consist_ = std::move(consist);
     cab->bind_keys(player);
     cab->log(cab->consist_->take_messages());
@@ -299,6 +332,22 @@ void LegacyCab::step(const simulation::Train& train, std::vector<std::vector<std
             constexpr std::uint16_t gm_sms_post = 5;
             if (m.action == gm_sms_post && m.id != 0)
                 for (auto& each : triggers) each.push_back(m.id);
+        }
+    }
+    // The DLL's side of the story while a locomotive does not pull: its
+    // traction controller's answers, twice a second (testers, 2026-11-26).
+    {
+        static std::uint64_t steps = 0;
+        if (++steps % 40 == 1) {
+            if (const auto* first = consist_->output(0)) {
+                char text[256];
+                std::snprintf(text, sizeof text,
+                              "step: throttle %u, reverse %d, force %.0f N, panto %u, main switch %u, diesel %u, speed %.2f m/s",
+                              first->engine.throttle, first->engine.reverse, static_cast<double>(first->engine.force),
+                              static_cast<unsigned>(first->engine.panto), static_cast<unsigned>(first->engine.main_switch),
+                              static_cast<unsigned>(first->engine.diesel_on), static_cast<double>(train.speed()));
+                cab_log(text);
+            }
         }
     }
     log(consist_->take_messages());

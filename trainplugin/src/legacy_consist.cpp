@@ -318,7 +318,7 @@ public:
         const auto& out = outputs->cars[car_];
         apply_engine_output(out.engine, demands);
         const auto mode = air_mode();
-        if (mode == DllAir::rts || !inputs.realistic_air) {
+        if (mode == DllAir::rts) {
             valve_started_ = false;
             brakes_started_ = false;
             dll_ur_known_ = false;
@@ -494,7 +494,6 @@ public:
         }
     }
     [[nodiscard]] std::string_view name() const override { return "dll"; }
-    [[nodiscard]] bool rts_brakes() const override { return air_mode() == DllAir::rts; }
     // The air this car's brakes run on: RTS's where its Brakes.dll has a
     // device openRTS does not know: that device stays Brakes.dll's and works
     // RTS's air only. On the realistic air Brakes.dll's 334 let the ЭР9П's
@@ -575,7 +574,7 @@ private:
             .cylinder = inputs.cylinder,
             .independent = inputs.independent,
             .valve_feed = inputs.valve_feed,
-            .distributor_known = inputs.realistic_air,
+            .distributor_known = true,
             .sensor418_fitted = inputs.definition && simulation::sensor418_fitted(*inputs.definition),
             .distributor_channel = inputs.distributor_channel,
             .distributor_discharge = inputs.distributor_discharge,

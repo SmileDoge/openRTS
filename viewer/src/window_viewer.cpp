@@ -3,6 +3,7 @@
 
 #include <glm/gtc/matrix_transform.hpp>
 
+#include <openrts/core/installation.hpp>
 #include <openrts/core/profile.hpp>
 
 #ifdef OPENRTS_HAS_WGPU
@@ -738,7 +739,10 @@ struct PanelState {
     std::optional<std::filesystem::path> load_request;
     std::string game_status;                  // the last save's or load's outcome
     double game_status_until = 0.0;
-    bool quick_save_key_down = false;         // F2
+    // The field of view's plate at the top while Num+ / Num- change it: the
+    // last value shown and the seconds of the plate's fade left.
+    float fov_shown = -1.0f;
+    float fov_banner = 0.0f;    bool quick_save_key_down = false;         // F2
     // The panel's tab (testers, 2026-11-14: the sections one under another
     // lost what one looked for): general, graphics, train, world,
     // performance, the keys.
@@ -757,7 +761,7 @@ struct PanelState {
     // The window (window_mode.hpp): the mode wanted, which the main loop
     // applies; the full screen kind Alt+Enter goes to; fixed: always a
     // window (a capture, the start menu).
-    WindowMode window_mode = WindowMode::windowed;
+    WindowMode window_mode = WindowMode::fullscreen;
     WindowMode full_mode = WindowMode::fullscreen;
     bool window_mode_fixed = false;
     bool menu = false; // the scene draws the whole interface
@@ -1027,6 +1031,36 @@ public:
             const ImVec2 at{(display.x - size.x) * 0.5f, display.y * 0.12f};
             list->AddRectFilled({at.x - 10.0f, at.y - 6.0f}, {at.x + size.x + 10.0f, at.y + size.y + 6.0f}, 0xb0000000u, 4.0f);
             list->AddText(at, 0xff40e0ffu, text);
+        }
+        // The field of view: while Num+ / Num- (or the reset) move it, a plate
+        // at the top names it, in the menus' style, and fades a moment later.
+        {
+            const float now_fov = panel.fov;
+            if (panel.fov_shown < 0.0f) panel.fov_shown = now_fov;
+            if (std::abs(now_fov - panel.fov_shown) > 0.03f) {
+                panel.fov_shown = now_fov;
+                panel.fov_banner = 1.0f;
+            } else {
+                panel.fov_banner = (std::max)(0.0f, panel.fov_banner - static_cast<float>(ImGui::GetIO().DeltaTime) / 0.9f);
+            }
+            if (panel.fov_banner > 0.0f) {
+                char text[48];
+                std::snprintf(text, sizeof text, "FOV: %.0f\u00b0", static_cast<double>(now_fov));
+                ImFont* font = ui::heading_font() ? ui::heading_font() : title_font();
+                if (!font) font = ImGui::GetFont();
+                const float left = (std::min)(1.0f, panel.fov_banner / 0.35f);
+                const float alpha = left * left * (3.0f - 2.0f * left);
+                const ImVec2 size = font->CalcTextSizeA(font->FontSize, FLT_MAX, 0.0f, text);
+                const ImVec2 display = ImGui::GetIO().DisplaySize;
+                const ImVec2 at{(display.x - size.x) * 0.5f, 14.0f};
+                const float pad_x = 20.0f, pad_y = 8.0f;
+                auto* list = ImGui::GetForegroundDrawList();
+                const ImVec2 tl{at.x - pad_x, at.y - pad_y};
+                const ImVec2 br{at.x + size.x + pad_x, at.y + size.y + pad_y};
+                list->AddRectFilled(tl, br, IM_COL32(22, 24, 28, static_cast<int>(alpha * 235.0f)), 8.0f);
+                list->AddRect(tl, br, IM_COL32(255, 255, 255, static_cast<int>(alpha * 30.0f)), 8.0f);
+                list->AddText(font, font->FontSize, at, IM_COL32(235, 238, 242, static_cast<int>(alpha * 255.0f)), text);
+            }
         }
         draw_lock_dot(panel);
         draw_lock_note(panel);
@@ -2095,7 +2129,25 @@ private:
         }
     }
 
-    static void load_font() { ui::load_fonts(); }
+    static void load_font() {
+        // The menu's Montserrat and Onest faces: beside the viewer (the
+        // game's folder) or in a sibling game folder of a build tree.
+        std::error_code error;
+        const auto exe = core::program_directory();
+        const std::filesystem::path candidates[] = {
+            exe / "menu",
+            exe.parent_path() / "game" / "menu",
+            exe / "assets" / "menu",
+            exe.parent_path().parent_path() / "game" / "assets" / "menu",
+        };
+        for (const auto& folder : candidates) {
+            if (std::filesystem::is_regular_file(folder / "Montserrat-SemiBold.ttf", error)) {
+                ui::set_font_folder(folder);
+                break;
+            }
+        }
+        ui::load_fonts();
+    }
 
     std::string layout_file_; // ImGui keeps the pointer until the context goes
     bool initialized_ = false;
@@ -2378,8 +2430,18 @@ void install_input_callbacks(GLFWwindow* window, CameraInput& input) {
 struct FovKeys {
     int key = 0;        // 1 narrower, -1 wider, 0 none
     double held = 0.0;  // s since the press
-    double next = 0.0;  // s at the next repeat
     bool changed = false;
+};
+
+// Num*: the field of view easing back to its start, smoothstep, not a jump
+// (our tester's request): the view slides to where it began.
+struct FovReturn {
+    static constexpr float seconds = 0.35f;
+    bool active = false;
+    float t = 0.0f;
+    float from = 0.0f;
+    float to = 0.0f;
+    float zoom_from = 1.0f;
 };
 
 // True when the key that changed the field of view was let go (remember it).
@@ -2393,19 +2455,21 @@ struct FovKeys {
         state = {};
         return let_go;
     }
-    int steps = 0;
     if (key != state.key) {
         state.key = key;
         state.held = 0.0;
-        state.next = 0.5;
-        steps = 1;
-    } else {
-        state.held += seconds;
-        for (; state.held >= state.next && steps < 64; state.next += 1.0 / 30.0) ++steps;
     }
-    for (int k = 0; k < steps; ++k) {
-        if (key > 0 && fov > 15.0f) fov -= 0.5f;
-        if (key < 0 && fov < 90.0f) fov += 0.5f;
+    state.held += seconds;
+    // Smooth, frame by frame: 9 degrees a second at first, up to 28 as the key
+    // is kept down (it was 0.5 degree jumps every repeat, which read as steps).
+    const float speed = 9.0f + 19.0f * (std::min)(1.0f, static_cast<float>(state.held));
+    const float step = speed * seconds;
+    if (key > 0 && fov > 15.0f) {
+        fov = (std::max)(15.0f, fov - step);
+        state.changed = true;
+    }
+    if (key < 0 && fov < 90.0f) {
+        fov = (std::min)(90.0f, fov + step);
         state.changed = true;
     }
     return false;
@@ -2582,8 +2646,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .car_info_shift = shift,
             .limits_panel = f5 && ctrl,
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+            .drive_panel = f4 && !ctrl,
             .profile_strip = f4 && ctrl,
-            .drive_card = f4 && !ctrl,
             .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -2625,8 +2689,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .car_info_shift = shift,
         .limits_panel = f5 && ctrl,
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
+        .drive_panel = f4 && !ctrl,
         .profile_strip = f4 && ctrl,
-        .drive_card = f4 && !ctrl,
         .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
@@ -3393,7 +3457,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     WindowModeKeeper window_mode;
     panel.window_mode_fixed = capture || options.menu;
     if (!panel.window_mode_fixed) {
-        panel.window_mode = options.window_mode.value_or(WindowMode::windowed);
+        panel.window_mode = options.window_mode.value_or(WindowMode::fullscreen);
         if (panel.window_mode != WindowMode::windowed) panel.full_mode = panel.window_mode;
     }
     panel.hdr = renderer::scene_hdr();
@@ -3522,6 +3586,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         *frame_log << ",gpu_ms,lights,lamp_shadows,instances\n";
     }
     FovKeys fov_keys;
+    FovReturn fov_return;
     double last_time = glfwGetTime();
     // Every 10 s the frame's breakdown goes to the console (openrts.log when
     // the menu runs the game): what a frame waits on, without the panel.
@@ -3617,12 +3682,27 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                && (held(GLFW_KEY_KP_MULTIPLY)
                                    || ((held(GLFW_KEY_LEFT_CONTROL) || held(GLFW_KEY_RIGHT_CONTROL)) && held(GLFW_KEY_0)));
             if (reset && !fov_reset_down) {
-                panel.fov = base_fov;
-                camera.zoom_target = 1.0f;
-                camera.hold_zoom.reset();
-                remember("fov", std::to_string(panel.fov));
+                fov_return.active = true;
+                fov_return.t = 0.0f;
+                fov_return.from = panel.fov;
+                fov_return.to = base_fov;
+                fov_return.zoom_from = camera.view_zoom;
+                scene.restore_screen_focus();
             }
             fov_reset_down = reset;
+            // The wheel (or Num+ / Num-) meanwhile: the view is taken by hand,
+            // the ease lets go.
+            if (fov_keys.changed) fov_return.active = false;
+            if (fov_return.active) {
+                fov_return.t = (std::min)(1.0f, fov_return.t + elapsed / FovReturn::seconds);
+                const float t = fov_return.t * fov_return.t * (3.0f - 2.0f * fov_return.t);
+                panel.fov = fov_return.from + (fov_return.to - fov_return.from) * t;
+                camera.set_zoom(fov_return.zoom_from + (1.0f - fov_return.zoom_from) * t);
+                if (fov_return.t >= 1.0f) {
+                    fov_return.active = false;
+                    remember("fov", std::to_string(panel.fov));
+                }
+            }
         }
         last_time = now;
 
@@ -3961,6 +4041,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         pass_timer.begin_frame();
         const auto window_view = wgpuTextureCreateView(frame_texture, nullptr);
         const int window_width = width, window_height = height;
+        // What the frame is drawn with, for the wheel on a cab's screen: the
+        // eye fits the screen into the frame with it (cab_screen_focus).
+        const auto aspect = static_cast<float>(window_width) / static_cast<float>(window_height);
+        camera.aspect = aspect;
+        camera.frame_fov = camera.vertical_fov(glm::radians(panel.fov));
         seated_cab_near = panel.cab_near_plane > 0.0f && scene.seated_in_cab() ? panel.cab_near_plane : 0.0f;
         // VR (docs/vr.md): the frame once per eye into the headset, the
         // window then shows the left eye and the panels.

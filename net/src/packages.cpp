@@ -1,4 +1,4 @@
-#include <openrts/net/packages.hpp>
+﻿#include <openrts/net/packages.hpp>
 
 namespace openrts::net {
 
@@ -24,7 +24,6 @@ constexpr Named names[] = {
     {0x4704, "not_a_login"},
     {0x4705, "bad_version"},
     {0x4706, "flooding"},
-    {0x4707, "wrong_password"},
     {0x47FD, "drop_receive"},
     {0x47FE, "drop_short"},
     {0x47FF, "drop_bad"},
@@ -93,6 +92,7 @@ constexpr Named names[] = {
     {0x45F5, "helper"},
     {0x45F6, "helper_cab"},
     {0x45F7, "helper_input"},
+    {0x45F8, "openrts_weather"},
     {0x4620, "train_stream"},
     {0x4621, "car_stream"},
     {0x4628, "engine_stream"},

@@ -176,26 +176,14 @@ server adds a byte to its answer to `openrts_hello` (docs/net.md): 1 when
 the game is a thunderstorm. An openRTS player then plays it (with the rain
 it was given). Older players read only the features.
 
-**The server's weather while it runs** (2026-11-21, the organiser): the
-server sets the game's weather at any time (its window's top bar, the
-`weather` command) and sends it to its openRTS players and consoles with
-`0x45FA` `openrts_weather` (`net::OpenrtsWeather`): one that stands
-(clear, snow, rain, a thunderstorm), or the dynamic weather below, the same
-for everyone by the server's seed, its settings and its clock (the game
-seconds the cycle has run, kept by the server, stopped while paused, sent
-again every 30 s; a player's cycle takes it and runs on). The start form's
-"Динамическая (openRTS)" starts the game with it. RTS's players keep their
-login's weather; the hello's thunderstorm counts only from a server that
-sends no weather.
-
 ## Dynamic weather (openRTS's own, 2026-11-18)
 
 Testers' proposal: a weather that changes by itself, by the season, and
 can be changed in the game. RTS keeps one weather for the whole game.
 `viewer/src/weather_cycle.hpp`; the panel's «Динамическая погода» under
 «Погода» (off by default: as RTS), remembered (`weather_dynamic` and the
-settings below). In a network game the server's: its own dynamic weather
-or one that stands (Network, above).
+settings below). Single player: in a network game the server's weather
+stands.
 
 **What a weather is** (`WeatherMix`): the clouds' cover (0..1), the
 precipitation (0..1, rain, or snow in winter) and a thunderstorm's

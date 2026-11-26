@@ -42,8 +42,9 @@ struct DistributorModes {
 // The load mode a car's 483 is on: `load`, or by `mass` (kg; over 60 t
 // loaded, over 35 t medium, else empty).
 [[nodiscard]] DistributorLoad effective_load(DistributorLoad load, float mass) noexcept;
-// ТЦ of a full application: a 483 by its load mode (1.5 / 3.0 / 3.8 atm),
-// 3.8 for the others.
+// ТЦ of a full application: a 483 by its load mode (1.9 / 3.0 / 4.1 atm:
+// its two load springs, the empty and the loaded ends of the research
+// table), 3.8 for the others.
 [[nodiscard]] float distributor_full_cylinder(DistributorKind kind, DistributorLoad load) noexcept;
 // The distributor a car gets: the one its file (or a mod's companion, the
 // car menu's choice) names in ORTSBrakeDistributor, else EP-equipped cars
@@ -55,10 +56,8 @@ struct DistributorModes {
 // The one the car has with no companion naming one: its file's, else the
 // stock rules', else inferred (formats::BrakeEquipment::default_distributor).
 [[nodiscard]] DistributorKind default_distributor_kind(const formats::WagonDefinition& definition) noexcept;
-// Whether the car has the 418 (the pipe's break sensor, cab_brakes.hpp):
-// a locomotive with the ВР 483 (a freight one; testers 2026-11-20: a 292's
-// locomotive, the ЭП1's, has none), unless ORTSBrakeSensor418 ( 0 ) (the car
-// menu's choice) takes it off.
+// Whether the car has the 418 (the pipe's break sensor, cab_brakes.hpp): a
+// locomotive with the ВР 483, unless ORTSBrakeSensor418 (0) takes it off.
 [[nodiscard]] bool sensor418_fitted(const formats::WagonDefinition& definition) noexcept;
 
 // The cylinder pressure (atm) at which the realistic air gives a car its
@@ -75,6 +74,14 @@ struct DistributorModes {
 // other distributors keep BrakeCylinderPressureForMaxBrakeBrakeForce.
 [[nodiscard]] float brake_force_pressure(const formats::WagonDefinition& definition) noexcept;
 
+// The share of a car's full brake force that a cylinder pressure gives under
+// the realistic air: the rigging takes up its slack and the piston its stroke
+// before the shoes reach the wheels, so under the touch pressure nothing
+// presses and the force then rises with the pressure (K = Kmax (p - p_end) /
+// (p_max - p_end)). RTS's own model has no take-up and keeps p / p_max.
+inline constexpr float brake_touch_pressure = 0.3f; // atm
+[[nodiscard]] float brake_rigging_share(float cylinder, float reference) noexcept;
+
 // The distributor's air and its state at one car, atm.
 struct DistributorState {
     float pipe{};       // ТМ at the car: a distributor takes air from it (charging, quick service)
@@ -83,19 +90,25 @@ struct DistributorState {
     float reference{};  // the level remembered: 483 its РК, 292 the ЗР when the application began
     bool braking = false;   // an application is on
     bool emergency = false; // the emergency front has reached the car
+    // The 483's chambers between the piston and the brake cylinder, atm: the
+    // spool chamber (ЗК) takes the pipe's air through the open piston and
+    // feeds the extra chamber (КДР), which fills the cylinder - so the fill
+    // has its two stages, fast up to about 0.6 of the full pressure and slow
+    // to the end. Unused by the other distributors.
+    float zk{};
+    float kdr{};
     // ЭВР 305: its РК (1.5 l), which its relay keeps the ТЦ at, and whether
     // the switching valve has the ТЦ on the 305's side (else the 292's).
     float ep_chamber{};
     bool ep_side = false;
     // 483: the lowest the pipe stood while braking (its flat release).
     float pipe_low{};
-    // Its ТЦ channel: the pressure it fills its cylinder to, as it works it
-    // (not what the 254's release or a leak takes from the cylinder): the
-    // 418's ДТЦ reads it (Афонин §4.7, Асадченко §4.3.5).
-    float channel{};
-    // An application began in this sub-step with its additional discharge
-    // (the 483's quick service, the 292's КДР, an emergency): the 418's ДДР.
+    // The 418's channels (cab_brakes.hpp): an application begins with one
+    // additional discharge, and the channel keeps the ТЦ's target even when
+    // the cylinder is let off outside the distributor (an engine's own
+    // release, the 254).
     bool discharge = false;
+    float channel{};
 };
 
 // What the car gives its distributor.

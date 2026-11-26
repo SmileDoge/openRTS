@@ -19,12 +19,15 @@ add_library(openrts_viewer_core STATIC
     src/pantograph_arcs.cpp
     src/speed_post_view.cpp
     src/signal_view.cpp
+    src/cargo_system.cpp
     src/track_control.cpp
     src/inspector.cpp
     src/inspector_lamps.cpp
     src/mod_files.cpp
     src/tape_view.cpp
     src/profile_strip.cpp
+    src/drive_panel.cpp
+    src/hud_style.cpp
     src/key_repeat.cpp
     src/file_dialog.cpp
     src/viewer_state.cpp
@@ -95,6 +98,7 @@ endfunction()
 add_executable(openrts_viewer src/main.cpp src/crash_report.cpp)
 openrts_configure_target(openrts_viewer)
 openrts_add_icon(openrts_viewer)
+openrts_embed_dllhost(openrts_viewer)
 target_link_libraries(openrts_viewer PRIVATE openrts_viewer_core)
 if(WIN32)
     # dbghelp: the crash report; shell32: the command line as UTF-16.

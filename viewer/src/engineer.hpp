@@ -167,6 +167,14 @@ public:
     // 0) along `along` (cab space, where the cursor points) or back, at most
     // 0.6 m from where it is, smoothly.
     void lean(const glm::vec3& along, float notches);
+    // The wheel on a screen of the cab (TME's InsideThreeDimCamera): the eye
+    // goes to `eye` looking along `forward` (cab shape coordinates) over a
+    // second, smoothly, and the screen holds it — the mouse does not turn the
+    // head and the controls wait until release_focus() takes it back the same
+    // way, to where he sits now (the train may have moved on).
+    void focus_screen(const glm::vec3& eye, const glm::vec3& forward);
+    void release_focus();
+    [[nodiscard]] bool focused() const noexcept { return focus_active_; }
     // Into the cab, seated in chair `chair` (0: the driver).
     void sit(std::size_t chair);
     // On foot outside at `feet` (scene coordinates), as RTS starts an
@@ -236,6 +244,9 @@ private:
     void move_outside(const EngineerControls& controls, const Outdoors& outdoors, float elapsed, const ViewerCamera& camera);
     void get_on(CabView& cab, std::size_t door);
     [[nodiscard]] glm::vec3 local_eye(const CabView& cab) const;
+    // The screen's dolly: the eye and the head's angles from the focus's
+    // start to its end, smoothstepped, written to the camera.
+    void step_screen_focus(const CabView& cab, const glm::mat4& car, float base, float elapsed, ViewerCamera& camera);
 
     Mode mode_ = Mode::off;
     std::size_t chair_ = 0;
@@ -272,6 +283,18 @@ private:
     float fall_ = 0.0f;                     // m/s down (RTS flt_61D418)
     float fall_target_ = 0.0f;              // on the car: the height he falls to
     std::optional<float> box_top_;          // on the ground: the box's top he stands on
+    // A screen of the cab holding the eye (focus_screen): the dolly's ends in
+    // cab shape coordinates, the head's angles at them (yaw relative to the
+    // car's heading), t 0..1 through it, and the pose applied last frame (a
+    // release starts from it).
+    static constexpr float screen_focus_seconds = 1.0f; // TME: about a second
+    bool focus_active_ = false;
+    bool focus_back_ = false;       // the dolly back to where he sits
+    float focus_t_ = 0.0f;
+    glm::vec3 focus_from_eye_{}, focus_to_eye_{}, focus_now_eye_{};
+    glm::vec3 focus_to_forward_{}; // the screen's direction, the cab's axes
+    float focus_from_yaw_{}, focus_to_yaw_{}, focus_now_yaw_{};
+    float focus_from_pitch_{}, focus_to_pitch_{}, focus_now_pitch_{};
     Event event_;
 };
 

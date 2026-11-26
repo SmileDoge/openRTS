@@ -73,4 +73,12 @@ struct ValveOutput {
 // the ЭПТ as the ЭР9Т's (docs/train.md, the table of positions).
 ValveOutput step_valve_395(ValveState& state, ValvePosition position, const ValveInputs& in, float dt);
 
+// The driver's valve: 395 (the 29/394+395 rig of the VL10k DLL) or the КРМ-130
+// of the later stock. The 130 is the same handle with its own manner: I puts a
+// pulse of overcharge (0.45 atm) into the УР, II keeps the pipe on it while the
+// stabiliser takes it out (0.45 atm in about 110 s), the rest as the 395's.
+enum class ValveKind : std::uint8_t { valve_395, krm130 };
+
+ValveOutput step_valve(ValveKind kind, ValveState& state, ValvePosition position, const ValveInputs& in, float dt);
+
 } // namespace openrts::simulation

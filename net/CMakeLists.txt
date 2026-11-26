@@ -1,4 +1,4 @@
-# openrts_net: the RTS network protocol (docs/net.md): the framing, the
+﻿# openrts_net: the RTS network protocol (docs/net.md): the framing, the
 # package names, the startup snapshot, the packages of a game in play, and a
 # TCP connection to an RTS server as a player.
 add_library(openrts_net STATIC

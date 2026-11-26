@@ -16,6 +16,7 @@
 
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/core/vfs.hpp>
+#include "brake_settings_ui.hpp"
 #include <openrts/formats/activity.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/net/connection.hpp>
@@ -89,6 +90,8 @@ struct WorldLabel {
     // Who the label is, for the late occlusion answer; 0: its text and place
     // (a label riding a moving train needs a key of its own).
     std::size_t key{};
+    // A hint near the engineer (a cab control, a door): the F4-style plate.
+    bool hint = false;
 };
 
 // A line between two points of the scene, `thickness` pixels wide, e.g. a
@@ -145,8 +148,8 @@ struct SceneInput {
     bool car_info_shift = false;  // Shift held with F5: the train as a whole
     bool limits_panel = false;    // Ctrl+F5: speed limits and the kilometre
     bool stations_panel = false;  // F6: the stations ahead
+    bool drive_panel = false;     // F4: the driver's summary: moving or standing, speed and limit, pressures, the next signal and platform, the time
     bool profile_strip = false;   // Ctrl+F4: the track's profile at the top (openRTS)
-    bool drive_card = false;      // F4: a small card: time, speed, limits, the signal ahead (openRTS)
     bool car_view = false;        // F3: orbit the train's first car, then its last, then back
     bool signal_names = false;    // Ctrl+F7: signal names near the camera
     bool activity_journal = false; // F11 (RTS): the scenario's messages
@@ -276,15 +279,11 @@ public:
     // The scene takes the keyboard (a cab's own keys): the camera and the
     // default driving keys stay off.
     [[nodiscard]] virtual bool keyboard_captured() const { return false; }
-    // A cab control in hand (dragged): in the mouse lock the mouse moves it
-    // rather than the view.
-    [[nodiscard]] virtual bool control_in_hand() const { return false; }
+    // Shows the route's map (Track control): the shell's Esc menu asks for it.
+    virtual void open_track_map() {}
     // The engineer on his feet (standing in a cab, outside, on a car), not
     // in a chair: W A S D walk him (key_layout.hpp, wasd_walking).
     [[nodiscard]] virtual bool engineer_on_foot() const { return false; }
-    // On foot with something for Enter where he stands (key_layout.hpp,
-    // offers_enter): E does it, else E opens the car menu.
-    [[nodiscard]] virtual bool engineer_action_at_hand() const { return false; }
     // The scene is done: its window closes (the start menu, updated, starts again).
     [[nodiscard]] virtual bool wants_close() const { return false; }
     // The program's exit code when the scene closed it (exit_codes.hpp).
@@ -294,6 +293,9 @@ public:
     [[nodiscard]] virtual bool escape_taken() const { return false; }
     // The mouse wheel works the scene (the 3-D cab) instead of zooming.
     [[nodiscard]] virtual bool takes_scroll() const { return false; }
+    // The eye back from a screen of the cab the wheel took it to, smoothly
+    // (the * key: TME's CameraReset does the same).
+    virtual void restore_screen_focus() {}
     // Switch `id` of the driven train's cab to `state` (--capture-switch).
     virtual void set_cab_switch(std::uint32_t, std::uint32_t) {}
     // Where it is now: State and SetState (the capture's report).
@@ -330,6 +332,9 @@ public:
     [[nodiscard]] virtual std::optional<SavedClock> take_saved_clock() { return std::nullopt; }
     // The game is paused from outside (a network server): no time passes.
     [[nodiscard]] virtual bool paused() const { return false; }
+    // The shell's pause menu asks the window to lift its own Pause/F1 pause
+    // as well, so resuming never leaves the world frozen by panel.paused.
+    virtual bool take_resume_request() { return false; }
     // The start's loading, as the last update left it.
     [[nodiscard]] virtual SceneLoading loading() const { return {}; }
     // For the Discord profile, asked about once a second; none: nothing shown.
@@ -338,6 +343,12 @@ public:
     // games joined so (DiscordStatus hands it the secret).
     [[nodiscard]] virtual bool wants_discord_joins() const { return false; }
     virtual void discord_join(const std::string& secret) { (void)secret; }
+    // A cab control in hand (dragged): in the mouse lock the mouse moves it
+    // rather than the view.
+    [[nodiscard]] virtual bool control_in_hand() const { return false; }
+    // On foot with something for Enter where he stands (key_layout.hpp,
+    // offers_enter): E does it, else E opens the car menu.
+    [[nodiscard]] virtual bool engineer_action_at_hand() const { return false; }
     // Car `car` of the driven train, shape space to world (--capture-camera).
     [[nodiscard]] virtual std::optional<glm::mat4> train_car_transform(std::size_t) const { return std::nullopt; }
     // The engineer into the driven train's cab (--capture-cab).
@@ -420,6 +431,9 @@ struct SceneContent {
     // Route scenes: every train on the openRTS realistic air (--realistic-air,
     // the Train window's "Realistic air (openRTS)" from the start).
     bool realistic_air = false;
+    // Route scenes: the start menu's brakes' preset (brake_settings_ui.hpp),
+    // applied before the first train is made.
+    BrakeSettings brakes;
     // Route scenes: save the situation under this name once the train
     // stands on the track (--save-situation).
     std::string save_situation;
@@ -432,7 +446,6 @@ struct SceneContent {
     // the scene watches its game (NetSession). `early`: packages that came
     // after the snapshot's end.
     std::shared_ptr<net::RtsConnection> connection;
-    std::string server_address; // as --mp-connect gave it
     std::vector<net::ReceivedPackage> early;
     // Route scenes: logged in to an openRTS server as the dispatcher's
     // console (--mp-console): Track control and the console's window.

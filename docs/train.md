@@ -263,7 +263,8 @@ RTS's menu at a coupling or a bogie (`docs/reverse/car-menu.md`), in
   freed, and "Couple" with a train standing within the couplers' r0 —
   `simulation::end_contact`, then `Train::couple` and `merge_units` as a
   meeting does.
-- **Bogie:** brake shoe (`CarState::chocks`, 10 kN each), handbrake,
+- **Bogie:** brake shoe (`CarState::chocks`; the force `F = f q0`, 0.17 of
+  the average load on the car's axle), handbrake,
   release valve, emergency valve (`CarState::valves`).
   - The release valve bleeds the cylinder at 0.5 atm/s; the emergency
     valve vents the pipe at 18 atm/s. Both act in both brake models. Under

@@ -147,10 +147,10 @@ void report_status(const std::string_view what) { std::cout << "status: " << wha
 // names the route, its season and weather. Nothing on failure, said on the
 // console and in a status line.
 std::optional<openrts::net::LoginReply> login_server(openrts::net::RtsConnection& connection, const std::string& address,
-                                                     const std::string& nick, const bool console, const std::string& password) {
+                                                     const std::string& nick, const bool console) {
     namespace net = openrts::net;
     report_status("connecting " + address);
-    const auto login = connection.connect(address, net::from_utf8(nick), 10000, console, net::from_utf8(password));
+    const auto login = connection.connect(address, net::from_utf8(nick), 10000, console);
     if (!login.ok()) {
         std::cerr << "Server " << address << ": " << login.error;
         std::string why = "unreachable";
@@ -158,11 +158,9 @@ std::optional<openrts::net::LoginReply> login_server(openrts::net::RtsConnection
         case 0: break;
         case 0x4701: std::cerr << " (the nickname is in use)"; why = "refused nick"; break;
         case 0x4702:
-            std::cerr << (console ? " (a dispatcher from another computer: the server has no dispatcher password, or not this nick)"
-                                  : " (the server takes no new players)");
+            std::cerr << (console ? " (not a dispatcher on this server: --dispatcher <nick> there)" : " (the server takes no new players)");
             why = console ? "refused console" : "refused full";
             break;
-        case 0x4707: std::cerr << " (a wrong dispatcher password)"; why = "refused password"; break;
         case 0x4705: std::cerr << " (not protocol 101)"; why = "refused version"; break;
         default: {
             std::cerr << " (code 0x" << std::hex << login.refused << std::dec << ")";
@@ -189,8 +187,7 @@ std::optional<openrts::net::LoginReply> login_server(openrts::net::RtsConnection
 // in a status line.
 std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& connection, const std::string& address,
                                                   const std::string& nick, const std::string& route,
-                                                  std::vector<openrts::net::ReceivedPackage>& early, const bool console,
-                                                  const bool without_train) {
+                                                  std::vector<openrts::net::ReceivedPackage>& early, const bool console) {
     namespace net = openrts::net;
     bool asked = false;
     if (console) {
@@ -222,10 +219,7 @@ std::optional<openrts::net::Bytes> wait_for_world(openrts::net::RtsConnection& c
                 report_status("closed");
                 return std::nullopt;
             }
-            // An openRTS server lets an openRTS player in without a train;
-            // only when asked (--mp-no-train): as RTS, the player waits for
-            // the dispatcher's train (testers 2026-11-21).
-            if (!asked && without_train && package.id == net::id(net::Package::openrts_hello)) {
+            if (!asked && package.id == net::id(net::Package::openrts_hello)) {
                 std::cout << "net: an openRTS server: into the world without a train (the dispatcher may give one, a player may take you as his helper)"
                           << std::endl;
                 report_status("loading");
@@ -276,7 +270,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         } catch (...) {
         }
     }
-    options.title = "openRTS " + openrts::core::version_text();
+    options.title = "DTRE " + openrts::core::version_text();
     // --view first: it sets what to open and the conditions; later flags win.
     std::string view_mode;
     std::string view_content;
@@ -320,13 +314,8 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::string save_situation;      // --save-situation
     std::filesystem::path mp_snapshot; // --mp-snapshot
     std::string mp_connect;          // --mp-connect host:port
-    std::string mp_nick = "openRTS"; // --mp-nick
+    std::string mp_nick = "DTRE"; // --mp-nick
     bool mp_console = false;         // --mp-console: as the dispatcher's console
-    bool mp_no_train = false;        // --mp-no-train: in without a train (to look, to help)
-    // --mp-password: the server's dispatcher password (a console from another
-    // computer); else OPENRTS_MP_PASSWORD, as the start menu passes it (not
-    // on the command line, which the log and the task manager show).
-    std::string mp_password;
     std::filesystem::path mp_save;   // --mp-save-snapshot: the snapshot the server sent
     bool time_given = false;         // --time wins over a snapshot's time
     bool fps_given = false;          // --fps-limit wins over the remembered one (not remembered)
@@ -371,10 +360,6 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             mp_nick = std::string(flags[++i]);
         } else if (flags[i] == "--mp-console") {
             mp_console = true;
-        } else if (flags[i] == "--mp-no-train") {
-            mp_no_train = true;
-        } else if (flags[i] == "--mp-password" && has_value) {
-            mp_password = std::string(flags[++i]);
         } else if (flags[i] == "--mp-snapshot" && has_value) {
             const auto value = flags[++i];
             mp_snapshot = std::filesystem::path(std::u8string(value.begin(), value.end()));
@@ -623,18 +608,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
     std::string server_route;
     if (!mp_connect.empty()) {
         connection = std::make_shared<openrts::net::RtsConnection>();
-#ifdef _WIN32
-        if (mp_password.empty()) {
-            wchar_t* value = nullptr;
-            std::size_t size = 0;
-            if (_wdupenv_s(&value, &size, L"OPENRTS_MP_PASSWORD") == 0 && value) {
-                const auto text = std::filesystem::path(std::wstring(value)).u8string();
-                mp_password.assign(text.begin(), text.end());
-                std::free(value);
-            }
-        }
-#endif
-        const auto reply = login_server(*connection, mp_connect, mp_nick, mp_console, mp_password);
+        const auto reply = login_server(*connection, mp_connect, mp_nick, mp_console);
         if (!reply) return exit_code::network_failed;
         server_route = openrts::net::to_utf8(reply->route);
         if (!season_given && reply->season < 4) options.season = static_cast<openrts::renderer::rts::Season>(reply->season);
@@ -775,7 +749,7 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             report_status("no-route " + server_route);
             return exit_code::content_failed;
         }
-        snapshot_bytes = wait_for_world(*connection, mp_connect, mp_nick, server_route, early, mp_console, mp_no_train);
+        snapshot_bytes = wait_for_world(*connection, mp_connect, mp_nick, server_route, early, mp_console);
         if (!snapshot_bytes) return exit_code::network_failed;
         snapshot_source = mp_connect;
         // The world as the server sent it, kept for opening it again without
@@ -844,7 +818,6 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
         .vfs = vfs, .watching = watching, .consist = consist, .path = train_path, .track_control = track_control,
         .start_state = start_state, .situation = situation, .start_view = start_view, .realistic_air = realistic_air,
         .save_situation = save_situation, .root = target->root, .snapshot = snapshot, .connection = connection,
-        .server_address = mp_connect,
         .early = std::move(early), .console = mp_console, .activity = activity, .activity_folder = activity_folder,
         .load_game = load_game, .activity_name = activity_name};
     auto loaded = mode == "--shape" ? openrts::viewer::load_shape_scene(content, target->path)

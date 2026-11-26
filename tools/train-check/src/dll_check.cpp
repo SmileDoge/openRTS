@@ -447,7 +447,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             std::fprintf(stderr, "%s/%s: %s\n", entry.folder.c_str(), name.c_str(), def->error.c_str());
             return 2;
         }
-        setups.push_back({def.get(), flipped, 0.0f});
+        setups.push_back({.definition = def.get(), .flipped = flipped, .handbrake = 0.0f});
         const auto n = static_cast<std::uint32_t>(legacy.size() + 1);
         legacy.push_back({def.get(), path, n, n}); // uid, key
         stock.push_back(std::move(def));
@@ -486,7 +486,6 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     consist->set_own_klub(klub_own);
     if (klub_own) std::printf("openRTS's КЛУБ in place of Brakes.dll's\n");
     if (air != trainplugin::DllAir::rts) {
-        train.set_brake_model(simulation::BrakeModel::realistic);
         std::printf("realistic air, %s\n", air == trainplugin::DllAir::own_valve ? "openRTS's valve over Brakes.dll" : "the DLL's valve");
     }
     if (own_brakes) {

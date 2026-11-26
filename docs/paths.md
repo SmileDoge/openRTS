@@ -44,19 +44,15 @@ train, else the driven one):
   ahead within 10 km with their distances, the next signal;
 - **Ctrl+F4** — the profile strip at the top (openRTS; the testers' request,
   2026-11-19): the track's height along the junctions as set, ahead and a
-  little behind, at every joint of the track's sections (each section is of
-  one grade, its placement's pitch: the line between two joints is
-  straight, nothing smoothed; `simulation/track_profile.hpp`); its grade by
-  colour (rising warm, falling cool, level grey, stronger to 10 per mille)
-  and the grade under the train ("Профиль = -0,4 ‰", from its rear to its
-  front; a hyphen for the minus, the font has no U+2212); under the line
-  each element of one grade numbered in per mille with its sign (rising +)
-  and its ends ticked, as on a regime map: the track's own elements, the
-  neighbouring sections whose grades differ by 0.05 per mille or less one
-  element (`TrackProfile::elements`), so their ends and numbers stay where
-  they are as the train comes near (until 2026-11-19 the train's 10 m
-  steps and the merging for the span made them shift); one too short for
-  its number at the span shown is left unnumbered; the
+  little behind, a point every 10 m (20 m on spans over 5 km), slightly
+  smoothed (`simulation/track_profile.hpp`); its grade by colour (rising
+  warm, falling cool, level grey, stronger to 10 per mille) and the grade
+  under the train ("Профиль = −0,4 ‰", from its rear to its front); under
+  the line each element of one grade numbered in per mille with its sign
+  (rising +) and its ends ticked, as on a regime map: the steps whose
+  grades differ by 0.5 per mille or less make one element, and an element
+  too short for its number at the span shown joins the neighbour nearer in
+  grade (`TrackProfile::elements`); the
   kilometre posts, the speed limits ahead, the signals (their normal heads'
   lamp, names on spans up to 5 km) and the stations; the train as a stroke
   of its length with its mass and cars. The wheel over it: 2, 5, 10, 20 km
@@ -167,11 +163,8 @@ train, else the driven one):
       placed);
   - **path point:** change the start direction, change a waiting time,
     remove the point;
-- saved paths go to `user_paths/<route>/<name>.pat` in the user's openRTS
-  folder (`%LOCALAPPDATA%\openRTS`; next to the program with `portable.txt`),
-  never into the route, and appear in the path lists as `user/<name>`; the
-  route's own `PATHS/*.pat` are listed too (a file that does not read as a
-  path is left out).
+- saved paths go to `user_paths/<route>/<name>.pat` in the working directory
+  (never into the route) and appear in the path lists as `user/<name>`.
 
 ## Paths
 

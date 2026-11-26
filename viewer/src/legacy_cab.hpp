@@ -227,6 +227,10 @@ public:
     }
     [[nodiscard]] bool has_dll(std::size_t car) const { return consist_ && consist_->has_dll(car); }
     [[nodiscard]] const dllhost::CarOutput* output(std::size_t car) const { return consist_ ? consist_->output(car) : nullptr; }
+    // openRTS's KLUB state on the player's car `car` (nullptr: not its KLUB).
+    [[nodiscard]] const simulation::KlubState* klub_state(std::size_t car) const {
+        return consist_ ? consist_->klub_state(car) : nullptr;
+    }
     // SMS Var1..Var8 the DLL set for car `car` (exterior), if any.
     [[nodiscard]] const std::array<float, 8>* sound_variables(std::size_t car) const;
 

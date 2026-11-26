@@ -412,13 +412,9 @@ shadow distance are submitted as shadow casters only
 (`ModelRenderer::submit_shadow_caster`). The depth passes are biased by the
 slope; the lookup pushes the point off its surface by a texel (more on
 slopes and with the softness) and filters 16 compares on a disc (a Vogel
-disc turned per pixel), its radius the softness in texels. Shadows go with
-the sun's strength, out over its last degree above the horizon (until
-2026-11-21 from 8 degrees down to 1 while its light stayed: a rising sun
-shone through walls, a cab's back wall cast nothing on the desk, testers),
-and out over the last tenth of the distance; at night there are none. A low
-sun's light is the clouds' too: where their shadow map does not reach (it
-fades out below some 7 degrees), the cover takes it (CloudShadow::low_sun).
+disc turned per pixel), its radius the softness in texels. Shadows fade in with the sun's height
+and strength and out over the last tenth of the distance; at night there
+are none.
 
 Settings (panel, under «Тени от солнца»; `--shadow-settings
 distance,size,cascades,softness` for one run):
@@ -555,22 +551,6 @@ reads a pixel scattered up to 96 pixels away and the blur's 50 reads, all
 at the frame's size: a GTX 1650 in a cab at Kuban ran 60 fps without GTAO
 and 10 with it (a player's report). Low reads about a ninth of that in the
 occlusion and a third in the blur; the pre-pass stays.
-
-Cheaper since 2026-11-21, as XeGTAO does it: a prefilter (in the
-occlusion's pass and its time) turns the pre-pass depth into view distance
-once and builds three smaller levels of it, each texel the 2 x 2 above it
-weighed towards the farthest (a near sliver does not pull a far wall in),
-all four in one dispatch (a group a 16 x 16 tile, the small levels through
-its shared memory; four storage textures, WebGPU's least). GTAO's steps
-read that distance, a step `round(log2(its pixels) - 3.3)` levels down (at
-most 3: the 96 pixels' reach), the place from its view ray instead of the
-inverse projection a read; the blur reads its tile of the occlusion and
-the distance into its group's shared memory once. A ВЛ80С's cab by day at
-720p (DirectX 12, the medians of three runs each in turn): GTAO 0.19 ->
-0.11 ms, the blur 0.056 -> 0.027; a station's view, where the steps are
-short, 0.10 -> 0.11 and 0.055 -> 0.024. The occlusion is the same within
-the far steps' smoothing (the cab's buffer within 56 of 255 at 0.02 % of
-its pixels; the lit frame within 14).
 
 ## Aerial perspective
 
@@ -777,27 +757,6 @@ Then (2026-11-02):
   - Frames unchanged: pixel for pixel within the run-to-run noise (Vulkan,
     both paths, day and night; DirectX 12 identical byte for byte, OpenGL
     4 pixels).
-  - **Shared buffers** (2026-11-20): a group was a model's, as were its
-    buffers and bindings, so a station's track pieces, fences and houses
-    were a command each however many shared a texture (Kuban, a station:
-    585 calls, 541 commands, the CPU's `encode` 1 ms of a 2.2 ms frame;
-    each command some 1.2 us in wgpu). Now the models' vertices and
-    indices are ranges of shared pages (`ModelPools`: 1 M vertices and 4 M
-    indices a page; a normal-mapped model keeps its own buffers beside its
-    tangents) and their MaterialUniforms ranges of shared storage pages
-    (65536 slots of 224 bytes; a draw's slot is its place there), so a
-    binding is a material page and textures, shared by every model with
-    them; the draws take their offsets as `first_index` and `base_vertex`.
-    The groups go by pipeline, buffers and binding (the blended ones and
-    the cab's as before), so one multi-draw takes every model's parts with
-    the same textures; an opaque depth pass's by the material page alone
-    (it samples no texture). Measured (DirectX 12, 1280 x 720, MSAA 4x):
-    the station at night 541 -> 221 commands, `encode` 0.99 -> 0.61 ms,
-    the frame 2.22 -> 1.84 ms; by day with the sun's shadows 509 -> 221,
-    2.68 -> 2.06 ms; the ВЛ80С's cab by day 785 -> 338, 3.42 -> 2.68 ms.
-    Frames unchanged (within 5 of 255, the cars on the roads apart).
-    `OPENRTS_SHARED_MODEL_BUFFERS=0` gives every model its own as before
-    (a check).
 - **What `finish` was** (2026-11-07): the stage is now four, `end` (the
   main pass ended), `post` (the depth copy for ReShade, the HDR tone pass
   and the panel), `encode` (`wgpuCommandEncoderFinish`) and `join` (waiting
@@ -883,12 +842,7 @@ for:
   radius half the reach + 15 m, at least 25 m. Low over a station it takes
   the near lamps and the far ones; from above it lies on the ground. Until
   2026-11-07 it was 20 m around a point 12 m ahead, so in flight the
-  shadows ended in a ring just ahead. Since 2026-11-21 the reach goes
-  from the ground's to 40 m smoothly across the horizon (looking 3
-  degrees down to 3 up; it jumped from up to 200 m to 40 there) and the
-  sphere eases towards where the view puts it over a quarter of a second
-  (a camera put more than twice its radius away takes it at once): a
-  hair's turn of the camera made a lamp's shadow come and go (testers);
+  shadows ended in a ring just ahead;
 - otherwise 20 m around a point 12 m ahead of the camera. Each lamp is
 scored by its RTS light shape (lights.glsl: cone or box, spot exponent,
 attenuation, no surface) at the focus's middle and 0.4 of its radius each
@@ -908,15 +862,10 @@ separate depth array, half the cascades' size, at least 1024):
 Drawn in depth slots 6..13 (both renderers now have 14) with the shadow
 casters, out of view ones within 80 m too. A map is drawn every other frame
 (the slots alternating, 2026-11-17), at once for a lamp new in its slot or
-when its lamp or the sphere moved at all; between, the shaders take the
-matrix it was drawn with: a frame's lag only of the shadows of other things
-moving. A lamp that takes a slot fades its shadow in over 0.3 s, one that
-drops out of the best fades out before its slot goes to the next (the
-slot's weight, `lamp_shadow_keys[s].w`, times the shadow's fade; 2026-11-21:
-until then they came and went at once). Until 2026-11-20 a lamp or sphere moved under a metre (a twentieth
-of the sphere) kept its map too: in a moving cab every other frame showed
-its shadows a frame behind and they flickered, the more the lower the fps
-(testers). At the night station with five shadowed lamps: their passes 1.0 to 0.5 ms of the
+when its lamp or the sphere moved a metre (a twentieth of the sphere) or
+more; between, the shaders take the matrix it was drawn with, as the far
+sun cascades do: a frame's lag of the shadows of things moving. At the
+night station with five shadowed lamps: their passes 1.0 to 0.5 ms of the
 GPU, their recording on the workers 2.6 to 0.8 ms; a standing picture is
 the same. In the lamp loops of the model
 and terrain shaders a lamp in that list is multiplied by

@@ -23,6 +23,7 @@ struct Live {
     std::int32_t state{};
     float value{};
     float blink = -1.0f;
+    float fade = -1.0f;
     const std::array<float, 4>* area = nullptr; // the DLL's Area
     std::u16string_view text;
 };
@@ -35,6 +36,23 @@ struct Live {
 [[nodiscard]] bool blended(const std::uint32_t shader) { return shader == 3 || shader == 4 || shader == 6 || shader == 7; }
 
 [[nodiscard]] glm::vec3 vec(const std::array<float, 3>& v) { return {v[0], v[1], v[2]}; }
+
+// RTS 0x51CD88: the level ramps to 1 while on and to 0 while not, over `time`
+// seconds; without a time, or on the first frame, it snaps.
+void step_fade(float& level, const bool on, const float time, const float elapsed, const bool snap) {
+    if (snap || !(time > 0.0f) || !std::isfinite(time)) {
+        level = on ? 1.0f : 0.0f;
+        return;
+    }
+    const float step = elapsed / time;
+    level = std::clamp(level + (on ? step : -step), 0.0f, 1.0f);
+}
+
+[[nodiscard]] std::uint32_t faded(const std::uint32_t colour, const float level) {
+    const auto alpha =
+        static_cast<std::uint32_t>(static_cast<float>(colour >> 24) * std::clamp(level, 0.0f, 1.0f) + 0.5f);
+    return (colour & 0x00FFFFFFu) | (alpha << 24);
+}
 
 class Emitter {
 public:
@@ -183,11 +201,14 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
     labels_seen_.clear();
     for (auto& screen : screens_) {
         const auto& display = cab_->displays[screen.display];
-        if (blinked_off && screen.display < blinked_off->size() && (*blinked_off)[screen.display]) continue;
-        // The display itself: State 0 hides it (SetDisplayState).
+        // The display itself: State 0 hides it (SetDisplayState), over its
+        // DisplayFade's time.
         const std::uint32_t display_state = state && display.id < state->displays.size() ? state->displays[display.id].state
                                                                                          : display.initial_state;
-        if (display_state == 0) continue;
+        step_fade(screen.level, display_state != 0, display.fade, elapsed, !screen.primed);
+        screen.primed = true;
+        if (screen.level <= 0.0f) continue;
+        if (blinked_off && screen.display < blinked_off->size() && (*blinked_off)[screen.display]) continue;
         // A ReferenceScreen shows the other display's objects, as they are.
         std::uint32_t source_id = display.id;
         if (display.screen.reference_screen >= 0) source_id = static_cast<std::uint32_t>(display.screen.reference_screen);
@@ -207,6 +228,7 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
                 l.state = o.state;
                 l.value = o.value;
                 l.blink = o.fade[2];
+                l.fade = o.fade[1];
                 l.area = reinterpret_cast<const std::array<float, 4>*>(o.area);
                 if (k < live_screen->texts.size()) l.text = live_screen->texts[k];
             } else {
@@ -216,6 +238,7 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
                     ? (std::min)(0.0f, def.range[0])
                     : 0.0f;
                 l.blink = def.blink;
+                l.fade = def.fade;
             }
         }
         // The DLL moved an object (SetScreenArea): that is its area now.
@@ -267,8 +290,12 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
             auto& o = screen.objects[k];
             const auto& l = live[k];
             const bool label_text = def.type == ScreenObjectType::label && !l.text.empty();
-            if (label_text) labels_seen_.push_back({.display = display.id, .object = k, .text = std::u16string(l.text), .shown = !(l.state < 0 || parent_hidden(k))});
-            if (l.state < 0 || parent_hidden(k)) continue;
+            const bool shown = !(l.state < 0 || parent_hidden(k));
+            if (label_text) labels_seen_.push_back({.display = display.id, .object = k, .text = std::u16string(l.text), .shown = shown});
+            // The sub-object's own SubFade: shown or hidden, over its time.
+            step_fade(o.level, shown, l.fade, elapsed, !o.primed);
+            o.primed = true;
+            if (o.level <= 0.0f) continue;
             const Rect r = rect_of(rect_of, k, 0);
             if (o.texture >= o.textures.size()) continue;
             // SubFade blink: shown the first half of each 2 * blink seconds.
@@ -277,8 +304,10 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
                 if (o.blink_clock >= l.blink * 2.0f) o.blink_clock = std::fmod(o.blink_clock, l.blink * 2.0f);
                 if (o.blink_clock > l.blink) continue;
             }
-            const std::uint32_t colour = (def.flags & formats::screen_has_colour) ? rgba(def.colour) : 0xFFFFFFFFu;
-            emit.use(o.textures[o.texture], blended(def.shader), colour);
+            const float level = o.level * screen.level;
+            const std::uint32_t colour =
+                faded((def.flags & formats::screen_has_colour) ? rgba(def.colour) : 0xFFFFFFFFu, level);
+            emit.use(o.textures[o.texture], blended(def.shader) || level < 0.999f, colour);
             const Rect t{o.uv[0], o.uv[1], o.uv[2], o.uv[3]};
             switch (def.type) {
             case ScreenObjectType::frame:
@@ -478,6 +507,38 @@ void CabScreens::build(const dllhost::CarOutput* state, const float elapsed, std
             if (!out.empty() && out.back().vertices.empty()) out.pop_back();
         }
     }
+}
+
+std::optional<ScreenFocus> cab_screen_focus(const ScreenPlane& plane, const glm::vec3& eye, const float vertical_fov,
+                                            const float aspect) {
+    // TME's InsideThreeDimCamera: the screen fills this much of the frame; the
+    // eye stays between these distances of it, m. The near one is raised from
+    // TME's 0.15 because the cab's near plane is 0.2 m.
+    constexpr float screen_fill = 0.68f;
+    constexpr float min_distance = 0.28f;
+    constexpr float max_distance = 0.9f;
+    const glm::vec3& top_left = plane.top_left;
+    const glm::vec3& top_right = plane.top_right;
+    const glm::vec3& bottom_right = plane.bottom_right;
+    glm::vec3 normal = glm::cross(top_right - top_left, bottom_right - top_right);
+    const float area = glm::length(normal);
+    if (area < 1e-6f || aspect <= 0.0f || vertical_fov <= 0.0f) return std::nullopt;
+    normal /= area;
+    const glm::vec3 centre = (top_left + bottom_right) * 0.5f;
+    // The eye may be on either side of a screen (a cab seen mirrored): the
+    // normal turns to its side, so the focus is always in front of the glass.
+    if (glm::dot(normal, eye - centre) < 0.0f) normal = -normal;
+    const float width = glm::distance(top_left, top_right);
+    const float height = glm::distance(top_right, bottom_right);
+    if (width < 1e-4f || height < 1e-4f) return std::nullopt;
+    // Fit the larger of the height and the width the frame's aspect allows.
+    const float half_fov = std::clamp(vertical_fov, 0.05f, 3.0f) * 0.5f;
+    const float fit = (std::max)(height, width / aspect) * 0.5f / (std::tan(half_fov) * screen_fill);
+    ScreenFocus focus;
+    focus.distance = std::clamp(fit, min_distance, max_distance);
+    focus.eye = centre + normal * focus.distance;
+    focus.forward = -normal;
+    return focus;
 }
 
 } // namespace openrts::viewer

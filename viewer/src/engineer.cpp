@@ -307,6 +307,66 @@ void Engineer::lean(const glm::vec3& along, const float notches) {
     }
 }
 
+void Engineer::focus_screen(const glm::vec3& eye, const glm::vec3& forward) {
+    if (!inside() || glm::length(forward) < 1e-4f) return;
+    const glm::vec3 to = glm::normalize(forward);
+    focus_from_eye_ = eye_cab_; // where the eye is now: no jump
+    focus_from_yaw_ = look_yaw_;
+    focus_from_pitch_ = look_pitch_;
+    focus_to_eye_ = eye;
+    // The screen's own direction, in the cab's axes: the car turns it into the
+    // scene's on each step (the heading is only known there).
+    focus_to_forward_ = to;
+    focus_to_yaw_ = focus_from_yaw_;
+    focus_to_pitch_ = focus_from_pitch_;
+    focus_now_eye_ = focus_from_eye_;
+    focus_now_yaw_ = focus_from_yaw_;
+    focus_now_pitch_ = focus_from_pitch_;
+    focus_t_ = 0.0f;
+    focus_back_ = false;
+    focus_active_ = true;
+}
+
+void Engineer::release_focus() {
+    if (!focus_active_ || focus_back_) return;
+    focus_back_ = true;
+    focus_t_ = 0.0f;
+    focus_from_eye_ = focus_now_eye_;
+    focus_from_yaw_ = focus_now_yaw_;
+    focus_from_pitch_ = focus_now_pitch_;
+}
+
+void Engineer::step_screen_focus(const CabView& cab, const glm::mat4& car, const float base, const float elapsed,
+                                 ViewerCamera& camera) {
+    if (focus_back_) {
+        // Back to where he sits now: the train may have moved on meanwhile.
+        focus_to_eye_ = local_eye(cab);
+        focus_to_yaw_ = focus_from_yaw_ + std::remainder(look_yaw_ - focus_from_yaw_, 2.0f * pi);
+        focus_to_pitch_ = look_pitch_;
+    } else {
+        // The screen's direction in the scene: the cab's axes turn with the car,
+        // and the camera's yaw is measured from the car's heading (base).
+        const glm::vec2 look = look_angles(car, focus_to_forward_);
+        focus_to_pitch_ = look.y;
+        // The shortest turn (the angles wrap).
+        focus_to_yaw_ = focus_from_yaw_ + std::remainder(look.x - base - focus_from_yaw_, 2.0f * pi);
+    }
+    focus_t_ = (std::min)(1.0f, focus_t_ + elapsed / screen_focus_seconds);
+    const float t = focus_t_ * focus_t_ * (3.0f - 2.0f * focus_t_); // TME: smoothstep
+    focus_now_eye_ = focus_from_eye_ + (focus_to_eye_ - focus_from_eye_) * t;
+    focus_now_yaw_ = focus_from_yaw_ + (focus_to_yaw_ - focus_from_yaw_) * t;
+    focus_now_pitch_ = focus_from_pitch_ + (focus_to_pitch_ - focus_from_pitch_) * t;
+    camera.position = glm::vec3{car * glm::vec4{focus_now_eye_, 1.0f}};
+    camera.yaw = base + focus_now_yaw_;
+    camera.pitch = std::clamp(focus_now_pitch_, -1.4f, 1.4f);
+    if (focus_t_ >= 1.0f && focus_back_) {
+        look_yaw_ = focus_now_yaw_; // the head takes the camera as it is now
+        look_pitch_ = focus_now_pitch_;
+        focus_active_ = false;
+        focus_back_ = false;
+    }
+}
+
 void Engineer::sit(const std::size_t chair) {
     mode_ = Mode::seated;
     chair_ = chair;
@@ -767,8 +827,9 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
     const float base = std::atan2(ahead.x, ahead.z) + pi;
     const glm::mat4 to_car = glm::inverse(car);
 
-    // The head: relative to the car inside, to the world outside.
-    if (inside()) {
+    // The head: relative to the car inside, to the world outside. A screen
+    // holding the eye (focus_screen) owns the camera's angles instead.
+    if (inside() && !focus_active_) {
         if (rebase_) {
             look_yaw_ = camera.yaw - base; // the same heading in the next car
             look_pitch_ = camera.pitch;
@@ -781,13 +842,13 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
             look_pitch_ = -0.05f;
         }
         camera.yaw = base + look_yaw_;
-    } else {
+    } else if (!inside()) {
         look_pitch_ = camera.pitch;
     }
 
     // Num0 / Num1 in a chair (RTS 0x4121BC; other keys in the openRTS layout,
     // key_layout.hpp): the chair's window, the head out of it.
-    if (mode_ == Mode::seated) {
+    if (mode_ == Mode::seated && !focus_active_) {
         const auto window = chair_window(cab);
         if (controls.window && window && !head_out_) cab.toggle_window(*window);
         if (controls.head_out && window && (head_out_ || cab.window_open(*window))) {
@@ -803,7 +864,7 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
 
     // Enter.
     const auto choice = choose(cab, car);
-    if (controls.action && !head_out_) {
+    if (controls.action && !head_out_ && !focus_active_) {
         const auto& sd = cab.description();
         switch (choice.target) {
         case Target::stand: {
@@ -995,19 +1056,23 @@ void Engineer::update(CabView& cab, const EngineerControls& controls, const glm:
         lean_ = glm::length(to) <= most ? lean_goal_ : lean_ + glm::normalize(to) * most;
     }
 
-    // The eye.
+    // The eye: the screen's dolly while one holds it, else where he is.
     blend_ = std::min(1.0f, blend_ + elapsed / blend_time);
     camera.fly = true;
-    if (inside()) {
-        const glm::vec3 target = local_eye(cab);
-        const float t = blend_ * blend_ * (3.0f - 2.0f * blend_);
-        const glm::vec3 eye = blend_ < 1.0f ? blend_from_ + (target - blend_from_) * t : target;
-        camera.position = glm::vec3(car * glm::vec4(eye, 1.0f));
-        camera.yaw = base + look_yaw_;
+    if (focus_active_) {
+        step_screen_focus(cab, car, base, elapsed, camera);
     } else {
-        camera.position = feet_ + glm::vec3{0.0f, height_, 0.0f}; // RTS: Height above his feet
+        if (inside()) {
+            const glm::vec3 target = local_eye(cab);
+            const float t = blend_ * blend_ * (3.0f - 2.0f * blend_);
+            const glm::vec3 eye = blend_ < 1.0f ? blend_from_ + (target - blend_from_) * t : target;
+            camera.position = glm::vec3(car * glm::vec4(eye, 1.0f));
+            camera.yaw = base + look_yaw_;
+        } else {
+            camera.position = feet_ + glm::vec3{0.0f, height_, 0.0f}; // RTS: Height above his feet
+        }
+        camera.pitch = std::clamp(look_pitch_, -1.4f, 1.4f);
     }
-    camera.pitch = std::clamp(look_pitch_, -1.4f, 1.4f);
     last_yaw_ = camera.yaw;
     camera_set_ = true;
 }

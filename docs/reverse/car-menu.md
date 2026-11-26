@@ -153,7 +153,8 @@ train that is not the player's wakes it (`0x5067A4(train, 3)`).
 What the flags do in the train update is in `brakes.md`:
 - emergency: the pipe vents at 18 atm/s;
 - release valve: the cylinder bleeds at 0.5 atm/s;
-- each fastened bogie: 10 kN of brake force.
+- each fastened bogie: 10 kN of brake force in RTS; openRTS computes a
+  shoe's force as `F = f q0` (0.17 of the average load on the car's axle).
 
 ## Repair, cargo, cables (2026-11-04)
 

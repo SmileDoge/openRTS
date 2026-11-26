@@ -18,6 +18,7 @@
 #include <openrts/simulation/body_motion.hpp>
 #include <openrts/simulation/car_registry.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
+#include <openrts/simulation/derailment.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/state_text.hpp>
 #include <openrts/simulation/track_traveller.hpp>
@@ -27,10 +28,21 @@ namespace openrts::simulation {
 // One simulation step, s: the RTS coupler sub-step and the network tick.
 inline constexpr double train_step = 0.05;
 
-// The air brake model: RTS's (the default, and the only one with Legacy on)
-// or openRTS's realistic pneumatics (docs/train.md). A train with a legacy
-// DLL keeps RTS's: its driver's valve is tuned to the RTS triple valve.
-enum class BrakeModel : std::uint8_t { rts, realistic };
+// The coupler model: RTS's (a spring of the coupling's stiffness, the
+// default) or the СА-3 friction draft gear: a preloaded block, then the
+// absorbing apparatus, and past its travel the apparatus yields.
+enum class CouplerModel : std::uint8_t { rts, sa3 };
+
+// The running resistance: MSTS's friction law (the car's Friction, the default,
+// as RTS reads it) or the ПТР's own, w0 = b0 + (b1 + b2 V + b3 V^2) / q, q the
+// tonnes on an axle (TrainSettings::resistance).
+enum class ResistanceModel : std::uint8_t { msts, ptr };
+
+// The СА-3 draft gear's force (N) at `travel` m of the gear's stroke past its
+// play, moving at `rate` m/s: the preloaded block takes the first millimetres,
+// the absorbing apparatus the rest of its travel, then it yields; dry friction
+// resists the movement.
+[[nodiscard]] double sa3_draft_gear_force(double travel, double rate);
 
 struct TrainSettings {
     // Coupler solver passes per step: 1 is RTS (0.05 s); 2..4 are the
@@ -39,12 +51,19 @@ struct TrainSettings {
     // Report coupler breaks and derailments (as RTS with its default config).
     bool coupler_break = true;
     bool derailment = true;
-    BrakeModel brake_model = BrakeModel::rts;
+    // The couplers' model (coupler_model above), the same choice for the train.
+    CouplerModel coupler_model = CouplerModel::rts;
+    // The running resistance (ResistanceModel above) and the wheelsets' own
+    // slip: every axle pulls to the rail's grip at its own speed of turning,
+    // as a locomotive's do, not the car as a whole.
+    ResistanceModel resistance = ResistanceModel::msts;
+    bool axle_dynamics = false;
     // The bodies on their springs (body_motion.hpp): RTS's model (the
     // default here) or openRTS's (the viewer's setting).
     BodyMotionModel body_motion = BodyMotionModel::rts;
     // openRTS's body motion: the push aside at switches, a factor (0: none).
     float switch_throws = 1.0f;
+    float cant_reference = 25.0f;
     // openRTS: the rails' state for the wheels' adhesion (adhesion.hpp): rts
     // keeps RTS's traction limit; any other scales it, and under the
     // realistic air the brakes slide (юз) and the shoes wet and warm.
@@ -138,7 +157,7 @@ struct EngineInputs {
     bool distributor_discharge = false;
     bool flipped = false;   // the car faces the train rear
     const formats::WagonDefinition* definition = nullptr;
-    bool realistic_air = false; // the train runs BrakeModel::realistic
+    float cargo_mass{};     // kg, on top of the definition's
     // The rails' adhesion as a share of RTS's (TrainSettings::rails, the
     // treads' wetness): the traction limit's factor.
     float adhesion = 1.0f;
@@ -165,11 +184,8 @@ public:
     // a newer module may read its older blocks).
     [[nodiscard]] virtual bool reads(const int saved) const { return saved == version(); }
     virtual void step(double dt, const EngineInputs& inputs, EngineDemands& demands) = 0;
-    // The module's valve is made for RTS's triple valve (legacy DLLs):
-    // the train keeps BrakeModel::rts.
-    [[nodiscard]] virtual bool rts_brakes() const { return false; }
-    // A saved game (Train::save_state): what the module keeps between steps
-    // (its handles, its valve, its compressor's governor), under keys
+    // A saved game (Train::save_state): what the controller keeps between
+    // steps (its handles, its valve, its compressor's governor), under keys
     // starting with `prefix`. Nothing by default. A DLL's own state is the
     // DLL host's (LegacyConsist::save_state), not this.
     virtual void save(StateWriter& /*out*/, std::string_view /*prefix*/) const {}
@@ -271,10 +287,11 @@ inline constexpr std::uint8_t pipe_cock_rear = 0x80;
 inline constexpr std::uint8_t valve_emergency = 0x10;
 inline constexpr std::uint8_t valve_release = 0x80;
 // Brake shoes (drags) under a car's bogie towards the train front / rear
-// (RTS +31 bits 1, 2): each adds 10 kN of static brake force.
+// (RTS +31 bits 1, 2): a shoe holds with its friction over the average load
+// on the car's axle, F = f q0 (one axle is a wheelset).
 inline constexpr std::uint8_t chock_front = 0x01;
 inline constexpr std::uint8_t chock_rear = 0x02;
-inline constexpr float chock_force = 10000.0f;
+inline constexpr float chock_friction = 0.17f;
 // Coupler ends kept open after uncoupling, so the cars do not couple again
 // on contact (RTS car +14 bits).
 inline constexpr std::uint8_t coupler_open_front = 0x01;
@@ -339,6 +356,8 @@ struct BrakeWear {
 // State of one car (the ts.h Wagon fields RTS simulates on).
 struct CarState {
     const formats::WagonDefinition* definition = nullptr;
+    float cargo_mass{};   // kg (RTS industries), on top of the definition's
+    std::string cargo_id; // the catalog ID; empty: the car carries nothing
     // Its identity (CarSetup::id): moves with the car through couplings,
     // cuts and turns, as the car's state does.
     CarId id{};
@@ -357,6 +376,7 @@ struct CarState {
     float coupler_force{}; // to the car behind, first sub-step
     float pitch{};       // rad, positive uphill towards the train front
     float radius{};      // curve radius under the car, 0 straight
+    float cant{};
     // Brakes, atm.
     float pipe{}, auxiliary{}, cylinder{}, independent{}, control{}, charging_pipe{};
     float ep = -1.0f;
@@ -384,6 +404,10 @@ struct CarState {
     // (0x4F5B34).
     std::uint32_t wheelslip{};
     std::array<float, 8> slip_ratio{};
+    // The wheelsets (TrainSettings::axle_dynamics): their turning, rad/s, and
+    // the slip at the rail, m/s (omega * the wheel's radius - the car's speed).
+    std::array<float, 4> axle_omega{};
+    std::array<float, 4> axle_slip{};
     // With the rails other than "as RTS" (openRTS's traction limit): every
     // axle's force over its adhesion in slip_ratio, this many of them (0:
     // RTS's limit, slip_ratio for the slipping axles alone).
@@ -426,7 +450,9 @@ struct CarState {
     float tilt{};          // rad, roll towards the lateral axis (tipping)
     float tilt_target{};   // rad, the roll it settles at
     float tilt_rate{};     // rad/s
-    float tilt_friction{}; // N at the full target roll
+    std::array<AxleRoll, 8> climb{};
+    std::uint8_t climb_count{};
+    std::int8_t roll_side{};
     bool fallen = false;   // rolled past 0.8 rad: hoses torn off
     float slide{};         // m slid off the track (sliding), signed towards the train front
     float slide_speed{};   // m/s, signed towards the train front
@@ -473,6 +499,12 @@ struct CarState {
     }
 };
 
+
+// The mass the physics runs on: the car's own and its cargo's, kg.
+[[nodiscard]] inline double car_mass(const CarState& car) noexcept {
+    const double base = car.definition ? static_cast<double>(car.definition->mass) : 0.0;
+    return (std::max)(base + static_cast<double>(car.cargo_mass), 1.0);
+}
 
 class Train {
 public:
@@ -628,6 +660,10 @@ public:
     void set_drive_acceleration(float acceleration) noexcept { drive_acceleration_ = acceleration; }
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
+
+    // RTS cargo: car `car` carries `mass_kg` of `id` (its catalog entry);
+    // the physics adds it to the car's own mass. Zero clears the load.
+    void set_cargo(std::size_t car, float mass_kg, std::string id);
     // The train's cars by identity, front to rear: the ordered list the
     // train refers to its cars by (CarState::id, as cars()).
     [[nodiscard]] std::vector<CarId> car_ids() const;
@@ -669,7 +705,11 @@ public:
     // Coupler solver sub-steps (1 = RTS); takes effect on the next step.
     void set_coupler_substeps(std::uint32_t substeps) noexcept;
     // The air brake model from the next step on.
-    void set_brake_model(BrakeModel model) noexcept;
+    // The couplers' model from the next step on (TrainSettings::coupler_model).
+    void set_coupler_model(CouplerModel model) noexcept;
+    // The running resistance and the wheelsets' model (TrainSettings).
+    void set_resistance_model(ResistanceModel model) noexcept;
+    void set_axle_dynamics(bool on) noexcept;
     // What car `car`'s controller asked at the last step (its УР, ЭПТ ...);
     // null past the end.
     [[nodiscard]] const EngineDemands* demands_of(std::size_t car) const noexcept;
@@ -685,14 +725,15 @@ public:
     void set_body_motion(BodyMotionModel model) noexcept;
     // TrainSettings::switch_throws.
     void set_switch_throws(float factor) noexcept { settings_.switch_throws = factor; }
-    // The model this step runs: realistic only when no controller needs RTS's.
-    [[nodiscard]] BrakeModel brake_model() const noexcept;
+    void set_cant_reference(float metres_per_second) noexcept { settings_.cant_reference = metres_per_second; }
+    [[nodiscard]] CouplerModel coupler_model() const noexcept { return settings_.coupler_model; }
     [[nodiscard]] std::uint64_t id() const noexcept { return id_; }
 
 private:
     void reverse_cars();
     void sway();
     void start_tipping(std::size_t index, const CarState* neighbour);
+    void update_derailment(std::size_t index);
     void derailment();
     void occupy_under();
     void advance_clearance(const MoveResult& leading, const MoveResult& trailing);

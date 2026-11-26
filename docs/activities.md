@@ -185,11 +185,8 @@ train through `AssignService`), `SuccessfullyCompleteActivity`,
 names its train (default the event's).
 
 The interface: messages in the middle of the screen; F8 the report menu
-(the main menu: from the start the one marked `MainActivityMenu ( 1 )`,
-then the one `SetMainMenu` sets; "Report: F8" at the top right while
-there is one. Novokuznetsk's "Смена на Грузовом (Вторая Часть)" has its
-first report, the brake test at Томусинская, only so: until 2026-11-21 F8
-said there was nothing to report); F11 the scenario's window with everything said; hints at the
+(the main menu `SetMainMenu` set; "Report: F8" at the top right while
+there is one); F11 the scenario's window with everything said; hints at the
 top. `--capture-ok` closes the messages and `--capture-report` picks each
 menu's first item in an automated run (with `--capture-board`).
 

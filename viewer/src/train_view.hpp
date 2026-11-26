@@ -1,4 +1,4 @@
-#pragma once
+﻿#pragma once
 
 #ifdef OPENRTS_HAS_WGPU
 #include <array>
@@ -23,6 +23,7 @@
 
 #include <openrts/audio/audio_engine.hpp>
 #include <openrts/audio/interior_acoustics.hpp>
+#include <openrts/simulation/alsn.hpp>
 #include <openrts/formats/route_database.hpp>
 #include <openrts/audio/sound_bank.hpp>
 #include <openrts/audio/sound_instance.hpp>
@@ -75,6 +76,7 @@
 
 namespace openrts::viewer {
 
+class CargoSystem;
 class CargoCatalog; // cargo_view.hpp
 
 // A consist from the content on the route: simulated (simulation::Train on a
@@ -147,7 +149,10 @@ public:
         float draw_distance = 0.0f;  // <= 0: no limit
         float shadow_range = 0.0f;
     };
-    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library) {
+        submit(renderer, library, SubmitView{});
+    }
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view);
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
     // The id of the train put on the track last (OPENRTS_SPAWN_CHECK).
@@ -277,12 +282,13 @@ public:
     // The installation (MODS_OPENRTS, openrts.ini): the car menu keeps a
     // car type's distributor in a mod there.
     void set_install_root(std::filesystem::path root) { install_root_ = std::move(root); }
-    // Every train made from now on runs the realistic air (--realistic-air).
-    // --realistic-air: for this run, over the remembered choice.
-    void set_realistic_air(bool on) noexcept {
-        realistic_air_ = on;
-        realistic_air_loaded_ = true;
-    }
+    // The air is always the realistic one; --realistic-air is kept for
+    // older scripts and does nothing.
+    void set_realistic_air(bool on) noexcept { (void)on; }
+    // The brakes' preset of the start menu (brake_settings_ui.hpp): the
+    // fields a train made after this starts with; the Train window's own
+    // settings then go from there.
+    void set_brake_settings(const BrakeSettings& settings);
     // Switch `id` of the player's cab to `state` (--capture-switch).
     void set_cab_switch(std::uint32_t id, std::uint32_t state) {
         if (legacy_) legacy_->set_switch(id, state);
@@ -885,6 +891,9 @@ public:
     // The view from inside his cab or salon: not while the car view has the
     // camera (F3).
     [[nodiscard]] bool viewing_inside() const noexcept { return engineer_.inside() && car_view_ == CarView::off; }
+    // The eye back from a screen of the cab the wheel took it to, smoothly
+    // (the * key: TME's CameraReset does the same).
+    void restore_screen_focus() { engineer_.release_focus(); }
     // The engineer sits in a cab's chair and the view is his.
     [[nodiscard]] bool seated_in_cab() const noexcept { return engineer_.mode() == Engineer::Mode::seated && car_view_ == CarView::off; }
     // F3: the camera orbits the train's first car, then its last, then back.
@@ -917,7 +926,25 @@ public:
     void follow_train(std::uint64_t id);
     // The route's signals, for the test drivers (next signal and its aspect).
     void set_signals(const simulation::SignalSystem* signals) noexcept { signals_ = signals; }
+    // The ALSN codes the track gives the trains (viewer_scene updates it).
+    void set_alsn(const simulation::AlsnSystem* alsn) noexcept { alsn_ = alsn; }
     [[nodiscard]] const simulation::SignalSystem* signals() const noexcept { return signals_; }
+    // The brakes' presets of the Train window: as RTS has them, the realistic
+    // air with every openRTS device, or the player's own (any of them changed
+    // by hand), remembered as brakes_custom and given back when chosen again.
+    struct BrakeSet {
+        bool realistic = false; // realistic_air
+        int dll_air = 0;        // DllAir
+        bool gauges = false;    // gauges_openrts_air
+        int rails = 0;          // rails
+        bool limit = false;     // limit_brake_force
+        bool stability = false; // distributor_stability
+        int condition = 0;      // brake_condition (0: none)
+        int pressing = 100;     // brake_pressing, %
+        bool operator==(const BrakeSet&) const = default;
+    };
+    [[nodiscard]] BrakeSet brake_set() const noexcept;
+    void apply_brake_set(const BrakeSet& set);
     // Text about train `id`'s path: leg, reserved way, what it waits for.
     [[nodiscard]] std::string path_status(std::uint64_t id) const;
     // RTS's information keys (docs/reverse/dispatcher.md): F5 a page of the
@@ -929,10 +956,11 @@ public:
     void toggle_stations_panel() noexcept { stations_panel_ = !stations_panel_; }
     // Ctrl+F4: the profile strip at the top (profile_strip.hpp); remembered as profile_strip.
     void toggle_profile_strip();
-    // F4: a small card of what the driver looks at most (openRTS; like
-    // RTS's old F4 in spirit, not its look): time, speed, limit now and
-    // next, the signal ahead.
-    void toggle_drive_card();
+    // F4: the driver's summary (TME's DrivingHudWindow, the design's
+    // 382x511 panel at the top right): moving or standing, the speed and
+    // its limit, the acceleration, the pressures, the next signal and
+    // platform, the time and the frame rate.
+    void toggle_drive_panel();
     // The names of signal objects (the route database's), for the F4 panel.
     void set_signal_names(std::function<std::string(std::uint32_t object)> names) { signal_names_ = std::move(names); }
     void draw_hud();
@@ -1259,6 +1287,8 @@ private:
     simulation::TrackNetwork* network_ = nullptr;
     std::string consist_;
     std::vector<std::unique_ptr<formats::WagonDefinition>> stock_;
+    std::unique_ptr<CargoSystem> cargo_;
+    std::vector<std::array<float, 3>> cargo_centres_;
     [[nodiscard]] static glm::mat4 car_light_local(const formats::LightDefinition& light, const formats::LightState& s, bool turned);
     // The inspector's held light (hold_car_light): its type, light, State.
     const formats::WagonDefinition* held_light_type_ = nullptr;
@@ -1275,6 +1305,7 @@ private:
     simulation::LineSupply line_;   // the driven train's, last step
     bool line_engines_ = false;     // the driven train has electric engines
     const simulation::SignalSystem* signals_ = nullptr;
+    const simulation::AlsnSystem* alsn_ = nullptr; // the codes the track gives
     std::uint64_t follow_id_ = 0;
     std::size_t spawned_ = 0;
     std::uint32_t numbered_trains_ = 0; // RTS's train counter for car numbers
@@ -1303,7 +1334,7 @@ private:
     // The profile strip (Ctrl+F4): built again every second, or when its
     // span or shift goes past what was built.
     std::optional<bool> profile_strip_on_;
-    std::optional<bool> drive_card_on_; // F4, remembered
+    std::optional<bool> drive_panel_on_; // F4, remembered
     std::unique_ptr<ProfileStrip> profile_strip_;
     simulation::TrackProfile profile_;
     std::vector<simulation::TrackProfileElement> profile_elements_; // the track's own (TrackProfile::elements)
@@ -1326,14 +1357,20 @@ private:
         float pivot_x = 0.0f; // 0: anchored by the left edge, 1: by the right one
         bool loaded = false;
         bool dragging = false;
+        // The plate's state for this frame: its style is pushed around the
+        // window and the plate itself is drawn behind the content.
+        bool plate = false;
+        bool font = false;
+        float plate_alpha = 1.0f;
     };
     HudPanel car_info_place_{.key = "hud_car_info"};
     HudPanel limits_place_{.key = "hud_limits", .pivot_x = 1.0f};
-    HudPanel drive_card_place_{.key = "hud_drive_card", .pivot_x = 1.0f};
     HudPanel stations_place_{.key = "hud_stations", .pivot_x = 1.0f};
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
-    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y);
+    // `bg_alpha` is the plate's opacity, 0: the panel draws its own plate
+    // (the driver's summary).
+    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y, float bg_alpha = 1.0f);
     void end_panel(HudPanel& place);
     std::shared_ptr<simulation::DriverHandles> driver_;
     // The player's train runs locomotive DLLs (legacy_cab.hpp).
@@ -1659,6 +1696,11 @@ private:
     std::size_t keep_in_companion(const Car& car, const std::function<std::string(std::string_view)>& edit,
                                   const std::function<void(formats::WagonDefinition&)>& apply, bool& listed, std::string& error);
     glm::vec3 look_{0.0f, 0.0f, 1.0f}; // the camera's direction, for the cab labels
+    // The frame's view this frame (the window's, from ViewerCamera): the
+    // aspect and the vertical field of view drawn, radians. The wheel on a
+    // screen fits it into the frame with them (cab_screen_focus).
+    float frame_aspect_ = 16.0f / 9.0f;
+    float frame_fov_ = 0.85f;
     // Outside he collides with the world's objects and stands on them
     // (platforms, ballast, bridges), or only with the ground and the trains.
     bool walk_objects_ = true;
@@ -1731,11 +1773,10 @@ private:
     std::uint32_t flat_random_ = 0x9E3779B9u;
     [[nodiscard]] float flat_uniform(float low, float high);
     int substeps_ = 1;
-    // openRTS realistic air for every train (BrakeModel::realistic):
-    // remembered as realistic_air (the panel's checkbox, the launcher's),
-    // read at the first train; never by itself in a network game.
-    mutable bool realistic_air_ = false;
-    mutable bool realistic_air_loaded_ = false;
+    // The running resistance (simulation::ResistanceModel::ptr) and the
+    // wheelsets' own slip (TrainSettings::axle_dynamics).
+    mutable bool ptr_resistance_ = false;
+    mutable bool axle_dynamics_ = false;
     // The RTS model with a distributor's stability (TrainSettings), remembered
     // as distributor_stability; read at the first train.
     mutable bool distributor_stability_ = false;
@@ -1759,10 +1800,18 @@ private:
     // Each engine's Brakes.dll parameters (trainplugin::brakes_parameters).
     mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::BrakesParameters> brakes_parameters_;
     [[nodiscard]] const trainplugin::BrakesParameters& brakes_parameters_of(const formats::EngineDefinition& engine) const;
+    // Each engine's speed recorder parameters (trainplugin::recorder_parameters),
+    // for the F4 panel's vigilance lamp (`SL_PSS`).
+    mutable std::unordered_map<const formats::EngineDefinition*, trainplugin::RecorderParameters> recorder_parameters_;
+    [[nodiscard]] const trainplugin::RecorderParameters& recorder_parameters_of(const formats::EngineDefinition& engine) const;
     // The cab's air gauges (DTM, DTC1/2, DGR) from the realistic air's model
     // (CabView::AirGauges); remembered as gauges_openrts_air, on by default.
     mutable bool gauges_air_ = true;
     mutable bool gauges_air_loaded_ = false;
+    // The realistic air is the only brake model (TrainSettings has none):
+    // kept for the presets' bookkeeping, always on.
+    bool realistic_air_ = true;
+    bool realistic_air_loaded_ = false;
     [[nodiscard]] std::optional<CabView::AirGauges> air_gauges(const Unit& unit, std::size_t car) const;
     // The rails' state for the adhesion (simulation::RailCondition): 0 as
     // RTS, 1 by the weather (rain wet, snow snow), 2 dry, 3 wet, 4 snow, 5
@@ -1781,6 +1830,7 @@ private:
     // brake_condition and brake_pressing; read with the rails.
     int brake_condition_ = 0;
     int brake_pressing_ = 100;
+    std::string brake_custom_code_; // the player's own brake set, as brake_set_code() wrote it
     // The brakes' section (brake_settings_ui.hpp): its settings taken, and
     // what the driven train has now.
     void apply_brake_settings(const BrakeSettings& settings);

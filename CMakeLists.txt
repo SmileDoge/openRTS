@@ -4,6 +4,7 @@ project(openRTS
     VERSION 0.48.3
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
+
 if(WIN32)
     # The programs' icon (resources/openrts.rc).
     enable_language(RC)
@@ -145,7 +146,7 @@ endfunction()
 # (<bin32>/<config>/) either way.
 set(OPENRTS_DLLHOST_GENERATOR "" CACHE STRING "Visual Studio generator for openrts-dllhost32 when the build's is not one (empty: the newest installed)")
 set(openrts_dllhost_generator "")
-if(WIN32 AND MSVC AND CMAKE_SIZEOF_VOID_P EQUAL 8)
+if(WIN32 AND CMAKE_SIZEOF_VOID_P EQUAL 8)
     if(CMAKE_GENERATOR MATCHES "Visual Studio")
         set(openrts_dllhost_generator "${CMAKE_GENERATOR}")
     elseif(OPENRTS_DLLHOST_GENERATOR)
@@ -189,6 +190,23 @@ else()
     function(openrts_copy_dllhost target)
     endfunction()
 endif()
+
+# The 32-bit DLL host inside the 64-bit program too: one file to ship, the
+# host extracted from resource 101 on the first train with legacy DLLs.
+function(openrts_embed_dllhost target)
+    if(WIN32 AND TARGET openrts_dllhost32)
+        set(dllhost_rc "${CMAKE_BINARY_DIR}/${target}_dllhost.rc")
+        file(GENERATE OUTPUT "${dllhost_rc}"
+             CONTENT "101 RCDATA \"${OPENRTS_DLLHOST_DIR}/$<CONFIG>/openrts-dllhost32.exe\"\n")
+        target_sources(${target} PRIVATE "${dllhost_rc}")
+        add_dependencies(${target} openrts_dllhost32)
+        # The resource's bytes come from the host built above: a change of the
+        # host's layout or code rebuilds the program's resource too, not just
+        # its CMake graph.
+        set_source_files_properties("${dllhost_rc}" PROPERTIES OBJECT_DEPENDS
+            "${PROJECT_SOURCE_DIR}/include/openrts/dllhost/protocol.hpp;${PROJECT_SOURCE_DIR}/dllhost/src/host.cpp;${PROJECT_SOURCE_DIR}/dllhost/src/main.cpp")
+    endif()
+endfunction()
 
 # The Tracy profiler's client, optional (docs/profiling.md): the zones of
 # include/openrts/core/profile.hpp. Off, they compile to nothing. On demand
@@ -284,7 +302,8 @@ if(OPENRTS_BUILD_TOOLS)
     add_subdirectory(tools)
 endif()
 
-if(BUILD_TESTING)
+if(BUILD_TESTING AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/CMakeLists.txt")
+    # The tests are local work and are not tracked in the repository.
     add_subdirectory(tests)
 endif()
 

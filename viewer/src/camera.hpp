@@ -3,7 +3,11 @@
 #include <optional>
 
 #include <glm/mat4x4.hpp>
+#include <glm/vec2.hpp>
 #include <glm/vec3.hpp>
+
+#include <algorithm>
+#include <cmath>
 
 namespace openrts::viewer {
 
@@ -45,6 +49,12 @@ struct ViewerCamera {
     // the mouse's look stays as set. Zeroed before each frame's update.
     float head_nod = 0.0f;
     float head_tilt = 0.0f;
+    // The frame drawn (the window's): its aspect (width / height) and the
+    // vertical field of view the projection took, radians. The wheel on a
+    // screen of the cab fits the screen into the frame with them
+    // (cab_screen_focus), so they are set where the projection is built.
+    float aspect = 16.0f / 9.0f;
+    float frame_fov = 0.85f;
 
     // The zoom at once, nothing held (a view put somewhere else).
     void set_zoom(float zoom);
@@ -67,5 +77,17 @@ struct ViewerCamera {
     void toggle_fly();
     void move(const FlyMovement& movement, float seconds);
 };
+
+// The camera's yaw and pitch (radians, in the scene) that look along
+// `direction` given in the cab's axes: the car's own turn is applied first, so
+// a screen straight ahead of a car heading north is looked at, not away from.
+// x is the yaw, y the pitch as ViewerCamera keeps it (+ looks down).
+[[nodiscard]] inline glm::vec2 look_angles(const glm::mat4& car, const glm::vec3& direction) {
+    const glm::vec3 turned = glm::vec3{car * glm::vec4{direction, 0.0f}};
+    const float length = glm::length(turned);
+    if (length < 1e-6f) return glm::vec2{};
+    const glm::vec3 dir = turned / length;
+    return glm::vec2{std::atan2(-dir.x, -dir.z), -std::asin(std::clamp(dir.y, -1.0f, 1.0f))};
+}
 
 } // namespace openrts::viewer

@@ -1197,4 +1197,29 @@ void CabView::wiper_points(std::vector<glm::vec3>& out) const {
     }
 }
 
+std::optional<CabView::PickedScreen> CabView::pick_screen(const glm::vec3& eye, const glm::vec3& along, const float max_distance) const {
+    std::optional<PickedScreen> best;
+    const float length = glm::length(along);
+    if (length < 1e-6f) return best;
+    const glm::vec3 dir = along / length;
+    for (const auto& plane : screen_planes_) {
+        const glm::vec3 across = plane.top_right - plane.top_left;
+        const glm::vec3 down = plane.bottom_right - plane.top_right;
+        const glm::vec3 normal = glm::cross(across, down);
+        const float denominator = glm::dot(dir, normal);
+        if (std::abs(denominator) < 1e-8f) continue;
+        const float t = glm::dot(plane.top_left - eye, normal) / denominator;
+        if (t <= 0.0f || t > max_distance) continue;
+        const glm::vec3 hit = eye + dir * t;
+        const float across_sq = glm::dot(across, across);
+        const float down_sq = glm::dot(down, down);
+        if (across_sq < 1e-8f || down_sq < 1e-8f) continue;
+        const float u = glm::dot(hit - plane.top_left, across) / across_sq;
+        const float v = glm::dot(hit - plane.top_right, down) / down_sq;
+        if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f) continue;
+        if (!best || t < best->distance) best = PickedScreen{.plane = plane, .distance = t};
+    }
+    return best;
+}
+
 } // namespace openrts::viewer

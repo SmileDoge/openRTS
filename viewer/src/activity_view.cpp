@@ -15,6 +15,7 @@
 
 #include <openrts/formats/signal_config.hpp>
 
+#include "hud_style.hpp"
 #include "ui_text.hpp"
 
 namespace openrts::viewer {
@@ -940,8 +941,11 @@ void ActivityView::draw() {
         ImGui::SetNextWindowSizeConstraints(ImVec2{wide, 0.0f}, ImVec2{wide, display.y * 0.8f});
         const std::string title = (window.entry.title.empty() ? activity_->name : window.entry.title) + "###activity_message";
         std::string pressed;
+        hud::push_window_style(20.0f, 16.0f, true);
+        ImGui::SetNextWindowBgAlpha(0.96f);
         if (ImGui::Begin(title.c_str(), nullptr,
                          ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+            hud::push_window_font();
             ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + wide - ImGui::GetStyle().WindowPadding.x * 2.0f);
             ImGui::TextUnformatted(window.entry.text.c_str());
             ImGui::PopTextWrapPos();
@@ -952,35 +956,50 @@ void ActivityView::draw() {
                 if (ImGui::Button(button_label(window.buttons[b]), ImVec2{120.0f, 0.0f})) pressed = window.buttons[b];
             }
             if (pressed.empty() && ImGui::IsWindowFocused() && ImGui::IsKeyPressed(ImGuiKey_Enter, false)) pressed = window.buttons.front();
+            hud::pop_window_font();
         }
         ImGui::End();
+        hud::pop_window_style();
         if (!pressed.empty()) close_message(pressed);
     }
     if (hint_left_ > 0.0f && !hint_.empty()) {
         ImGui::SetNextWindowPos(ImVec2{display.x * 0.5f, display.y * 0.12f}, ImGuiCond_Always, ImVec2{0.5f, 0.0f});
-        ImGui::SetNextWindowBgAlpha(0.75f * (std::min)(hint_left_, 1.0f));
+        hud::push_window_style();
+        ImGui::SetNextWindowBgAlpha(0.0f);
         ImGui::SetNextWindowSizeConstraints(ImVec2{0.0f, 0.0f}, ImVec2{wide, display.y * 0.5f});
         if (ImGui::Begin("###activity_hint", nullptr,
                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
-                             | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
+                             | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs
+                             | ImGuiWindowFlags_NoBackground)) {
+            hud::push_window_font();
+            hud::plate(ImGui::GetWindowDrawList(), ImGui::GetWindowPos(), ImGui::GetWindowSize(), hud::plate_radius,
+                       (std::min)(hint_left_, 1.0f));
             ImGui::PushTextWrapPos(wide - ImGui::GetStyle().WindowPadding.x * 2.0f);
             ImGui::TextUnformatted(hint_.c_str());
             ImGui::PopTextWrapPos();
+            hud::pop_window_font();
         }
         ImGui::End();
+        hud::pop_window_style();
     }
     // Top right: a notice for a while, and a report waiting (F8) as long as it waits.
     const auto* waiting = activity_->menu(main_menu_);
     if ((notice_left_ > 0.0f && !notice_.empty()) || (waiting && !menu_open_)) {
         ImGui::SetNextWindowPos(ImVec2{display.x - 10.0f, display.y * 0.2f}, ImGuiCond_Always, ImVec2{1.0f, 0.0f});
-        ImGui::SetNextWindowBgAlpha(0.75f);
+        hud::push_window_style();
+        ImGui::SetNextWindowBgAlpha(0.0f);
         if (ImGui::Begin("###activity_notice", nullptr,
                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
-                             | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs)) {
+                             | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs
+                             | ImGuiWindowFlags_NoBackground)) {
+            hud::push_window_font();
+            hud::plate(ImGui::GetWindowDrawList(), ImGui::GetWindowPos(), ImGui::GetWindowSize());
             if (notice_left_ > 0.0f && !notice_.empty()) ImGui::TextUnformatted(notice_.c_str());
             if (waiting && !menu_open_ && notice_left_ <= 0.0f) ImGui::Text(tr("Report: F8 (%s)"), waiting->name.c_str());
+            hud::pop_window_font();
         }
         ImGui::End();
+        hud::pop_window_style();
     }
     if (!menu_open_) shown_menu_ = -1;
     if (menu_open_) {
@@ -989,7 +1008,10 @@ void ActivityView::draw() {
         if (const auto* shown = activity_->menu(shown_menu_)) waiting = shown;
         ImGui::SetNextWindowPos(ImVec2{display.x * 0.5f, display.y * 0.55f}, ImGuiCond_Appearing, ImVec2{0.5f, 0.5f});
         const std::string title = std::string(waiting ? waiting->name : std::string(tr("Scenario"))) + "###activity_menu";
+        hud::push_window_style(20.0f, 16.0f, true);
+        ImGui::SetNextWindowBgAlpha(0.96f);
         if (ImGui::Begin(title.c_str(), &menu_open_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {
+            hud::push_window_font();
             if (!waiting) {
                 ImGui::TextDisabled("%s", tr("Nothing to report now."));
             } else {
@@ -1001,15 +1023,21 @@ void ActivityView::draw() {
                     ImGui::EndDisabled();
                 }
             }
+            ImGui::Separator();
             ImGui::TextDisabled("%s", tr("F8 closes this menu."));
+            hud::pop_window_font();
         }
         ImGui::End();
+        hud::pop_window_style();
     }
     if (journal_open_) {
         // F11 (RTS): the scenario and what it has said.
         ImGui::SetNextWindowPos(ImVec2{display.x - 10.0f, 60.0f}, ImGuiCond_FirstUseEver, ImVec2{1.0f, 0.0f});
         ImGui::SetNextWindowSize(ImVec2{wide, display.y * 0.5f}, ImGuiCond_FirstUseEver);
+        hud::push_window_style(20.0f, 16.0f, true);
+        ImGui::SetNextWindowBgAlpha(0.96f);
         if (ImGui::Begin((std::string(tr("Scenario")) + "###activity_journal").c_str(), &journal_open_, ImGuiWindowFlags_NoCollapse)) {
+            hud::push_window_font();
             const auto& a = *activity_;
             ImGui::TextUnformatted(a.name.c_str());
             if (!a.starts_in.empty() || !a.ends_in.empty()) ImGui::Text(tr("From %s to %s"), a.starts_in.c_str(), a.ends_in.c_str());
@@ -1034,8 +1062,10 @@ void ActivityView::draw() {
             ImGui::PopTextWrapPos();
             ImGui::Separator();
             ImGui::TextDisabled("%s", tr("F11 closes this window."));
+            hud::pop_window_font();
         }
         ImGui::End();
+        hud::pop_window_style();
     }
 #endif
 }

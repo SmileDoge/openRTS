@@ -6,8 +6,7 @@
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
-#include <cstdlib>
-#include <fstream>
+#include <ctime>
 #include <optional>
 #include <set>
 #include <string>
@@ -37,7 +36,6 @@
 #include <openrts/renderer/webgpu_context.hpp>
 
 #include "controls_help.hpp"
-#include "discord_status.hpp"
 #include "file_dialog.hpp"
 #include "frame_limiter.hpp"
 #include "brake_settings_ui.hpp"
@@ -49,12 +47,13 @@
 #include "ui_fonts.hpp"
 #include "ui_slider.hpp"
 #include "ui_text.hpp"
-#include "update.hpp"
 #include <openrts/renderer/bc7.hpp>
 
 #include "exit_codes.hpp"
+#include "menu/ui_image.hpp"
 #include "viewer_state.hpp"
 #include "window_mode.hpp"
+#include "window_viewer.hpp"
 
 namespace openrts::game {
 namespace {
@@ -176,8 +175,6 @@ constexpr int no_train = 3;
 // Controls tab of the keys alone, remembered as "controls").
 enum class Tab { single, network, settings, graphics, info };
 constexpr const char* tab_keys[] = {"single", "network", "settings", "graphics", "info"};
-constexpr const char* discord_invite = "https://discord.gg/NGTU7mKJXZ";
-constexpr const char* project_page = "https://github.com/SmileDoge/openRTS";
 constexpr int tab_count = static_cast<int>(std::size(tab_keys));
 
 // How far the running game got in joining a server: its "status:" lines in
@@ -191,10 +188,10 @@ constexpr const char* net_spawn_names[] = {"In the cab", "Above the train"};
 constexpr const char* net_role_names[] = {"Driver", "Dispatcher (console)"};
 constexpr const char* net_role_keys[] = {"driver", "dispatcher"};
 constexpr int net_role_dispatcher = 1;
-// The dispatcher's console in the game (an openRTS server's): hidden from
-// 2026-11-09 until the server was done, shown since 2026-11-21. From another
-// computer it logs in with the server's dispatcher password.
-constexpr bool console_role_shown = true;
+// The dispatcher's console in the game waits until the server is done, as
+// rts_server.exe with its own console (the user's call, 2026-11-09): the
+// choice is hidden, the viewer keeps --mp-console.
+constexpr bool console_role_shown = false;
 constexpr const char* net_spawn_keys[] = {"cab", "above"};
 constexpr int net_spawn_cab = 0;
 
@@ -217,32 +214,32 @@ public:
         ImGui::PushStyleVar(ImGuiStyleVar_CellPadding, {6.0f, 4.0f});
         ImGui::PushStyleVar(ImGuiStyleVar_TabRounding, 5.0f);
         colour(ImGuiCol_WindowBg, {0.085f, 0.095f, 0.115f, 1.0f});
-        colour(ImGuiCol_ChildBg, {0.115f, 0.125f, 0.150f, 1.0f});
-        colour(ImGuiCol_PopupBg, {0.115f, 0.125f, 0.150f, 0.98f});
-        colour(ImGuiCol_Border, {0.22f, 0.24f, 0.29f, 1.0f});
-        colour(ImGuiCol_FrameBg, {0.17f, 0.19f, 0.23f, 1.0f});
-        colour(ImGuiCol_FrameBgHovered, {0.21f, 0.24f, 0.29f, 1.0f});
-        colour(ImGuiCol_FrameBgActive, {0.24f, 0.28f, 0.34f, 1.0f});
-        colour(ImGuiCol_Header, {0.20f, 0.40f, 0.68f, 0.85f});
-        colour(ImGuiCol_HeaderHovered, {0.24f, 0.46f, 0.76f, 0.70f});
-        colour(ImGuiCol_HeaderActive, {0.26f, 0.50f, 0.82f, 1.0f});
-        colour(ImGuiCol_Button, {0.19f, 0.22f, 0.27f, 1.0f});
-        colour(ImGuiCol_ButtonHovered, {0.24f, 0.29f, 0.36f, 1.0f});
-        colour(ImGuiCol_ButtonActive, {0.28f, 0.34f, 0.42f, 1.0f});
-        colour(ImGuiCol_CheckMark, {0.42f, 0.66f, 0.98f, 1.0f});
-        colour(ImGuiCol_SliderGrab, {0.36f, 0.58f, 0.90f, 1.0f});
-        colour(ImGuiCol_SliderGrabActive, {0.46f, 0.68f, 1.0f, 1.0f});
-        colour(ImGuiCol_TableHeaderBg, {0.15f, 0.17f, 0.21f, 1.0f});
-        colour(ImGuiCol_Separator, {0.24f, 0.27f, 0.32f, 1.0f});
+        colour(ImGuiCol_ChildBg, {0.075f, 0.085f, 0.105f, 0.94f});
+        colour(ImGuiCol_PopupBg, {0.09f, 0.10f, 0.12f, 0.98f});
+        colour(ImGuiCol_Border, {0.17f, 0.18f, 0.21f, 1.0f});
+        colour(ImGuiCol_FrameBg, {0.11f, 0.12f, 0.145f, 1.0f});
+        colour(ImGuiCol_FrameBgHovered, {0.15f, 0.16f, 0.19f, 1.0f});
+        colour(ImGuiCol_FrameBgActive, {0.19f, 0.21f, 0.25f, 1.0f});
+        colour(ImGuiCol_Header, {0.95f, 0.95f, 0.96f, 0.10f});
+        colour(ImGuiCol_HeaderHovered, {0.95f, 0.95f, 0.96f, 0.15f});
+        colour(ImGuiCol_HeaderActive, {0.95f, 0.95f, 0.96f, 0.20f});
+        colour(ImGuiCol_Button, {0.14f, 0.15f, 0.18f, 1.0f});
+        colour(ImGuiCol_ButtonHovered, {0.20f, 0.22f, 0.27f, 1.0f});
+        colour(ImGuiCol_ButtonActive, {0.25f, 0.27f, 0.32f, 1.0f});
+        colour(ImGuiCol_CheckMark, {0.95f, 0.96f, 0.98f, 1.0f});
+        colour(ImGuiCol_SliderGrab, {0.80f, 0.82f, 0.86f, 1.0f});
+        colour(ImGuiCol_SliderGrabActive, {1.0f, 1.0f, 1.0f, 1.0f});
+        colour(ImGuiCol_TableHeaderBg, {0.10f, 0.11f, 0.13f, 1.0f});
+        colour(ImGuiCol_Separator, {0.18f, 0.19f, 0.22f, 1.0f});
         colour(ImGuiCol_Text, {0.90f, 0.92f, 0.95f, 1.0f});
-        colour(ImGuiCol_TextDisabled, {0.55f, 0.58f, 0.64f, 1.0f});
-        colour(ImGuiCol_Tab, {0.13f, 0.145f, 0.175f, 1.0f});
-        colour(ImGuiCol_TabHovered, {0.24f, 0.46f, 0.76f, 0.80f});
-        colour(ImGuiCol_TabSelected, {0.20f, 0.40f, 0.68f, 1.0f});
-        colour(ImGuiCol_TabSelectedOverline, {0.46f, 0.68f, 1.0f, 1.0f});
-        colour(ImGuiCol_TabDimmed, {0.13f, 0.145f, 0.175f, 1.0f});
-        colour(ImGuiCol_TabDimmedSelected, {0.20f, 0.40f, 0.68f, 1.0f});
-        colour(ImGuiCol_TabDimmedSelectedOverline, {0.46f, 0.68f, 1.0f, 1.0f});
+        colour(ImGuiCol_TextDisabled, {0.55f, 0.57f, 0.62f, 1.0f});
+        colour(ImGuiCol_Tab, {0.09f, 0.10f, 0.12f, 1.0f});
+        colour(ImGuiCol_TabHovered, {0.20f, 0.22f, 0.26f, 0.90f});
+        colour(ImGuiCol_TabSelected, {0.16f, 0.17f, 0.20f, 1.0f});
+        colour(ImGuiCol_TabSelectedOverline, {0.95f, 0.96f, 0.98f, 1.0f});
+        colour(ImGuiCol_TabDimmed, {0.09f, 0.10f, 0.12f, 1.0f});
+        colour(ImGuiCol_TabDimmedSelected, {0.16f, 0.17f, 0.20f, 1.0f});
+        colour(ImGuiCol_TabDimmedSelectedOverline, {0.95f, 0.96f, 0.98f, 1.0f});
     }
     ~MenuStyle() {
         ImGui::PopStyleColor(colours_);
@@ -292,11 +289,240 @@ void warning(const char* text) {
 }
 
 constexpr auto panel_flags = ImGuiChildFlags_Borders | ImGuiChildFlags_AlwaysUseWindowPadding;
+
+// --- The menu's own look (the mockup): dark cards on a dimmed photograph,
+// Montserrat for names and numbers, Onest for the smaller lines. ---
+constexpr ImU32 rgb(const int r, const int g, const int b, const int a = 255) {
+    return IM_COL32(r, g, b, a);
+}
+constexpr ImU32 card_fill = rgb(23, 24, 28);
+constexpr ImU32 card_fill_hover = rgb(30, 32, 38);
+constexpr ImU32 card_line = rgb(255, 255, 255, 22);
+constexpr ImU32 card_line_hover = rgb(255, 255, 255, 60);
+constexpr ImU32 white = rgb(245, 247, 250);
+constexpr ImU32 grey = rgb(158, 164, 176);
+constexpr ImU32 dim = rgb(116, 122, 134);
+constexpr ImU32 accent = rgb(82, 132, 255);
+
+struct Rect {
+    ImVec2 min, max;
+    [[nodiscard]] float width() const { return max.x - min.x; }
+    [[nodiscard]] float height() const { return max.y - min.y; }
+    [[nodiscard]] ImVec2 centre() const { return {(min.x + max.x) * 0.5f, (min.y + max.y) * 0.5f}; }
+};
+
+[[nodiscard]] float menu_scale() {
+    const auto size = ImGui::GetIO().DisplaySize;
+    return (std::min)(size.x / 1920.0f, size.y / 1080.0f);
+}
+
+void label(ImDrawList* draw, ImFont* font, const float size, const ImVec2 at, const ImU32 colour, const std::string& text) {
+    if (font && size > 0.0f) draw->AddText(font, size, at, colour, text.c_str());
+}
+
+[[nodiscard]] ImVec2 label_size(ImFont* font, const float size, const std::string& text) {
+    if (!font) return {0.0f, 0.0f};
+    return font->CalcTextSizeA(size, FLT_MAX, 0.0f, text.c_str());
+}
+
+void label_right(ImDrawList* draw, ImFont* font, const float size, const float right, const float y, const ImU32 colour,
+                 const std::string& text) {
+    draw->AddText(font, size, {right - label_size(font, size, text).x, y}, colour, text.c_str());
+}
+
+// The text's middle on `centre`: the mockup's circles and buttons.
+void label_centered(ImDrawList* draw, ImFont* font, const float size, const ImVec2 centre, const ImU32 colour,
+                    const std::string& text) {
+    const auto measured = label_size(font, size, text);
+    draw->AddText(font, size, {centre.x - measured.x * 0.5f, centre.y - measured.y * 0.5f}, colour, text.c_str());
+}
+
+
+ImU32 mix_colour(const ImU32 from, const ImU32 to, const float t) {
+    const auto a = ImGui::ColorConvertU32ToFloat4(from);
+    const auto b = ImGui::ColorConvertU32ToFloat4(to);
+    return ImGui::ColorConvertFloat4ToU32(
+        {a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t, a.z + (b.z - a.z) * t, a.w + (b.w - a.w) * t});
+}
+
+// The mockup's arrow, traced from its 13x13 SVG: one filled shape, not a
+// line with a separate open head.
+void arrow_up_right(ImDrawList* draw, const ImVec2 centre, const float size, const ImU32 colour, const float thickness) {
+    (void)thickness;
+    constexpr float box = 13.0f;
+    constexpr ImVec2 outline[] = {
+        {1.248f, 12.0478f}, {0.0f, 10.7998f}, {8.856f, 1.9438f}, {1.32f, 2.7598f}, {1.176f, 0.983804f},
+        {12.048f, -0.000196457f}, {11.064f, 10.8958f}, {9.288f, 10.7278f}, {10.104f, 3.1918f},
+    };
+    ImVec2 points[9];
+    const auto scale = size / box;
+    const auto origin = ImVec2{centre.x - 6.024f * scale, centre.y - 6.024f * scale};
+    for (int i = 0; i < 9; ++i) {
+        points[i] = {origin.x + outline[i].x * scale, origin.y + outline[i].y * scale};
+    }
+    draw->AddConcavePolyFilled(points, 9, colour);
+}
+
+// A picture filling `area`, cropped by its middle (the mockup's photos).
+void picture(ImDrawList* draw, WGPUTextureView view, const std::pair<int, int>& pixels, const Rect area, const float rounding,
+             const ImU32 tint = IM_COL32_WHITE) {
+    if (!view || pixels.first <= 0 || pixels.second <= 0) {
+        draw->AddRectFilled(area.min, area.max, rgb(42, 45, 52), rounding);
+        return;
+    }
+    const auto source = static_cast<float>(pixels.first) / static_cast<float>(pixels.second);
+    const auto target = area.width() / (std::max)(area.height(), 1.0f);
+    ImVec2 uv0{0.0f, 0.0f}, uv1{1.0f, 1.0f};
+    if (source > target) {
+        const auto share = target / source;
+        uv0.x = (1.0f - share) * 0.5f;
+        uv1.x = 1.0f - uv0.x;
+    } else {
+        const auto share = source / target;
+        uv0.y = (1.0f - share) * 0.5f;
+        uv1.y = 1.0f - uv0.y;
+    }
+    draw->AddImageRounded(reinterpret_cast<ImTextureID>(view), area.min, area.max, uv0, uv1, tint, rounding);
+}
+
+void open_link(const char* url) {
+#ifdef _WIN32
+    ShellExecuteA(nullptr, "open", url, nullptr, nullptr, SW_SHOWNORMAL);
+#else
+    (void)url;
 #endif
+}
+
+void soon_badge(ImDrawList* draw, const ImVec2 at, const float scale, const float alpha) {
+    const auto size = ImVec2{72.0f * scale, 28.0f * scale};
+    const Rect box{at, {at.x + size.x, at.y + size.y}};
+    draw->AddRectFilled(box.min, box.max, rgb(12, 13, 16, static_cast<int>(215.0f * alpha)), 14.0f * scale);
+    draw->AddRect(box.min, box.max, rgb(255, 255, 255, static_cast<int>(70.0f * alpha)), 14.0f * scale);
+    const auto text = std::string("Скоро");
+    const auto measured = label_size(ui::small_font(), 13.0f * scale, text);
+    label(draw, ui::small_font(), 13.0f * scale, {box.centre().x - measured.x * 0.5f, box.centre().y - measured.y * 0.5f},
+          rgb(235, 238, 244, static_cast<int>(255.0f * alpha)), text);
+}
+
+// A card of the mockup: the picture, its number, name and line, and the round
+// arrow. Returns true when clicked (not for a card that is only "soon").
+[[nodiscard]] bool draw_card(ImDrawList* draw, const char* id, const Rect area, const char* number, const char* name, const char* description,
+                             WGPUTextureView view, const std::pair<int, int>& pixels, const bool primary, const bool soon, const bool clickable,
+                             float& hover, const float scale) {
+    (void)primary;
+    hover += ((ImGui::IsMouseHoveringRect(area.min, area.max) ? 1.0f : 0.0f) - hover) * (std::min)(1.0f, ImGui::GetIO().DeltaTime * 12.0f);
+    ImGui::SetCursorScreenPos(area.min);
+    ImGui::PushID(id);
+    const bool pressed = ImGui::InvisibleButton("##card", {area.width(), area.height()}) && clickable;
+    ImGui::PopID();
+
+    const auto lift = 3.0f * scale * hover;
+    const Rect box{{area.min.x, area.min.y - lift}, {area.max.x, area.max.y - lift}};
+    // The card stays quiet: only the arrow lights and the card rises.
+    draw->AddRectFilled(box.min, box.max, card_fill, 24.0f * scale);
+    draw->AddRect(box.min, box.max, card_line, 24.0f * scale, 0, 1.0f);
+
+    const auto pad = 25.0f * scale;
+    const auto text_height = (area.height() > 400.0f * scale ? 110.0f : 105.0f) * scale;
+    const Rect photo{{box.min.x + pad, box.min.y + pad}, {box.max.x - pad, box.max.y - text_height}};
+    if (view) {
+        picture(draw, view, pixels, photo, 13.0f * scale, rgb(255, 255, 255, 255));
+        // The picture's own thin frame, as in the mockup.
+        draw->AddRect(photo.min, photo.max, rgb(255, 255, 255, 32), 13.0f * scale, 0, 1.0f * scale);
+    } else {
+        draw->AddRectFilled(photo.min, photo.max, rgb(38, 41, 48), 13.0f * scale);
+        draw->AddRect(photo.min, photo.max, rgb(255, 255, 255, 32), 13.0f * scale, 0, 1.0f * scale);
+    }
+
+    // The mockup puts the number on the same line as the name, to its left.
+    label(draw, ui::small_font(), 14.0f * scale, {box.min.x + 29.0f * scale, box.max.y - 87.0f * scale}, dim, number);
+    label(draw, ui::heading_font(), 30.0f * scale, {box.min.x + 53.0f * scale, box.max.y - 94.0f * scale}, white, name);
+    label(draw, ui::body_font(), 14.0f * scale, {box.min.x + 30.0f * scale, box.max.y - 50.0f * scale}, grey, description);
+
+    const auto radius = 22.0f * scale;
+    const auto centre = ImVec2{box.max.x - pad - radius, box.max.y - 57.0f * scale};
+    const auto lit = hover;
+    draw->AddCircleFilled(centre, radius, mix_colour(rgb(45, 48, 55), rgb(247, 248, 250), lit), 48);
+    arrow_up_right(draw, centre, 13.0f * scale, mix_colour(rgb(205, 210, 219), rgb(20, 21, 24), lit), 1.6f * scale);
+
+    if (soon) {
+        soon_badge(draw, {box.max.x - pad - 72.0f * scale, box.min.y + pad + 12.0f * scale}, scale, 0.9f);
+    }
+    return pressed;
+}
+
+// A small outlined button of the header ("Войти").
+[[nodiscard]] bool header_button(ImDrawList* draw, const char* id, const Rect area, const char* text, const float scale, float& hover) {
+    hover += ((ImGui::IsMouseHoveringRect(area.min, area.max) ? 1.0f : 0.0f) - hover) * (std::min)(1.0f, ImGui::GetIO().DeltaTime * 14.0f);
+    ImGui::SetCursorScreenPos(area.min);
+    ImGui::PushID(id);
+    const bool pressed = ImGui::InvisibleButton("##button", {area.width(), area.height()});
+    ImGui::PopID();
+    draw->AddRectFilled(area.min, area.max, rgb(255, 255, 255, static_cast<int>(8.0f + 10.0f * hover)), 10.0f * scale);
+    draw->AddRect(area.min, area.max, rgb(255, 255, 255, static_cast<int>(48.0f + 45.0f * hover)), 10.0f * scale);
+    const auto measured = label_size(ui::button_font(), 14.0f * scale, text);
+    label(draw, ui::button_font(), 14.0f * scale,
+          {area.centre().x - measured.x * 0.5f, area.centre().y - measured.y * 0.5f}, white, text);
+    return pressed;
+}
+
+// The header of an inner page: back, its name and line, the same clock and
+// account as the home page.
+void page_heading(ImDrawList* draw, const Rect content, const char* name, const char* line, const float scale, const std::string& clock,
+                  const std::string& date, const bool guest, float& account_hover, bool& back, bool& account_clicked) {
+    const auto back_box = Rect{{content.min.x, content.min.y}, {content.min.x + 42.0f * scale, content.min.y + 42.0f * scale}};
+    ImGui::SetCursorScreenPos(back_box.min);
+    back = ImGui::InvisibleButton("##back", {back_box.width(), back_box.height()});
+    draw->AddRectFilled(back_box.min, back_box.max, rgb(255, 255, 255, ImGui::IsItemHovered() ? 20 : 8), 12.0f * scale);
+    draw->AddRect(back_box.min, back_box.max, rgb(255, 255, 255, 40), 12.0f * scale);
+    label_centered(draw, ui::button_font(), 22.0f * scale, back_box.centre(), white, "←");
+
+    label(draw, ui::brand_font(), 27.0f * scale, {content.min.x + 60.0f * scale, content.min.y + 3.0f * scale}, white, name);
+    label(draw, ui::small_font(), 13.0f * scale, {content.min.x + 60.0f * scale, content.min.y + 43.0f * scale}, grey, line);
+
+    label_right(draw, ui::clock_font(), 27.0f * scale, content.max.x - 330.0f * scale, content.min.y + 2.0f * scale, white, clock);
+    label_right(draw, ui::small_font(), 12.0f * scale, content.max.x - 330.0f * scale, content.min.y + 40.0f * scale, grey, date);
+    const ImVec2 avatar_centre{content.max.x - 274.0f * scale, content.min.y + 26.0f * scale};
+    draw->AddLine({content.max.x - 304.0f * scale, avatar_centre.y - 26.0f * scale},
+                  {content.max.x - 304.0f * scale, avatar_centre.y + 26.0f * scale}, rgb(255, 255, 255, 40), 1.0f);
+    draw->AddCircleFilled(avatar_centre, 22.0f * scale, rgb(42, 46, 55), 40);
+    label_centered(draw, ui::heading_font(), 18.0f * scale, avatar_centre, white, guest ? "Г" : "D");
+    const auto name_size = label_size(ui::button_font(), 13.0f * scale, guest ? "Гость" : "Игрок");
+    const auto level_size = label_size(ui::small_font(), 11.0f * scale, guest ? "Уровень 0" : "Уровень 1");
+    const auto name_block = name_size.y + 3.0f * scale + level_size.y;
+    const auto name_top = avatar_centre.y - name_block * 0.5f;
+    label(draw, ui::button_font(), 13.0f * scale, {content.max.x - 240.0f * scale, name_top}, white,
+          guest ? "Гость" : "Игрок");
+    label(draw, ui::small_font(), 11.0f * scale, {content.max.x - 240.0f * scale, name_top + name_size.y + 3.0f * scale}, dim,
+          guest ? "Уровень 0" : "Уровень 1");
+    const auto button = Rect{{content.max.x - 132.0f * scale, avatar_centre.y - 22.0f * scale},
+                             {content.max.x, avatar_centre.y + 22.0f * scale}};
+    (void)back_box;
+    account_clicked = header_button(draw, "##account", button, guest ? "Войти" : "Выход", scale, account_hover);
+}
+
+#endif
+
 
 } // namespace
 
 struct Launcher::State {
+    // The new shell's pages: the mockup's home, the solo setup (the old Single
+    // player tab), settings, the account place, and a "soon" card's page.
+    enum class Page { home, solo, settings, account, soon };
+    Page page = Page::home;
+    bool embedded_settings = false;
+    bool embedded_back = false;
+    int settings_section = 0; // 0 game, 1 graphics, 2 controls
+    int soon_kind = 0;        // 0 multiplayer, 1 depot, 2 editor
+    std::optional<SessionRequest> pending_session;
+    std::string session_note;
+    float card_hover[8]{};
+    float account_hover = 0.0f;
+    float start_hover = 0.0f;
+    std::unique_ptr<menu::ImageCache> images;
+    std::string image_dir;
+
     fs::path exe_dir;
     fs::path root;
     std::array<char, 1024> root_text{};
@@ -333,7 +559,7 @@ struct Launcher::State {
     viewer::OwnPresetsUi own_presets; // the presets of one's own, to share
     std::optional<float> fov; // "fov", else RTS's config.ini
     int fps_limit = 0; // the game's FPS limit, shared with its panel ("fps_limit"): 0 none, 30..500
-    viewer::WindowMode window_mode = viewer::WindowMode::windowed; // the game's window ("window_mode"), shared with its panel
+    viewer::WindowMode window_mode = viewer::WindowMode::fullscreen; // the game's window ("window_mode"), shared with its panel
     std::string status;
     bool registry_missing = false; // "From the registry" found nothing
     Tab tab = Tab::single;
@@ -345,12 +571,10 @@ struct Launcher::State {
     std::vector<std::string> servers;
     int net_spawn = 1; // net_spawn_names
     int net_role = 0;  // net_role_names
-    bool net_no_train = false; // in without a train (--mp-no-train)
-    // The dispatcher's password for a server elsewhere (not kept: passed to
-    // the game in OPENRTS_MP_PASSWORD, off its command line).
-    std::array<char, 64> password{};
-    // An own server: openrts-server.exe started from here with the RTS
-    // folder; its window takes the rest, the port too (docs/server.md).
+    // An own server: only its settings' place, the server is not there yet
+    // (docs/roadmap.md, stage 3).
+    int host_port = 800;
+    int host_players = 0; // 0: RTS and openRTS (Legacy), 1: openRTS only
     // The running game; for a network game, how far it got in joining.
     bool network_game = false;
     bool cancelled = false;
@@ -366,32 +590,7 @@ struct Launcher::State {
     std::chrono::steady_clock::time_point next_situation_scan{};
 #ifdef _WIN32
     HANDLE process = nullptr;
-    HANDLE server_process = nullptr; // openrts-server.exe started here
 #endif
-    // Updates (update.hpp): a check at the start ("update_check"), the offer
-    // as a modal window; a version skipped there ("update_skip") is not
-    // offered at the start again.
-    update::Updater updater;
-    bool update_check = true;
-    bool update_started = false;  // the start's check asked
-    bool update_manual = false;   // "Check now": offered even when skipped
-    bool update_popup = false;    // the offer opens on the next frame
-    bool update_dev = false;      // a build folder of the sources: told, not replaced
-    bool update_writable = true;  // the game's folder can be written to
-    update::Updater::Stage update_seen = update::Updater::Stage::idle;
-    bool restart = false;         // installed: the menu closes and starts again
-    std::chrono::steady_clock::time_point old_files_again{}; // the last update's .old files deleted once more
-
-    [[nodiscard]] fs::path update_folder() const { return viewer::user_data_directory() / "update"; }
-    [[nodiscard]] fs::path old_files() const { return update_folder() / "old_files.txt"; }
-    void offer_update() {
-        update_dev = update::development_build(exe_dir);
-        update_writable = !update_dev && update::folder_writable(exe_dir);
-        update_popup = true;
-    }
-    void poll_update();
-    void draw_update_popup();
-    void draw_update_settings(float label_width);
 
     // openrts-ace (tools/ace): beside the game in a release's tools\, in a
     // build's tools\ace\Release\; empty when neither is there.
@@ -430,13 +629,6 @@ struct Launcher::State {
     [[nodiscard]] bool running() const {
 #ifdef _WIN32
         return process != nullptr;
-#else
-        return false;
-#endif
-    }
-    [[nodiscard]] bool server_running() const {
-#ifdef _WIN32
-        return server_process != nullptr;
 #else
         return false;
 #endif
@@ -481,8 +673,6 @@ struct Launcher::State {
         vr_scale = std::clamp(remembered_int("launcher_vr_scale", 150), 50, 250);
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
-        viewer::set_mouse_smoothing(remembered_float("mouse_smoothing_ms", viewer::default_mouse_smoothing));
-        viewer::set_mouse_lock(remembered_int("mouse_lock", 0) != 0);
         viewer::set_head_motion(remembered_float("head_motion", viewer::default_head_motion));
         viewer::set_background_sound(viewer::parse_background_sound(remembered("background_sound").value_or("").c_str()));
         viewer::set_rail_joint_layout(viewer::parse_rail_joint_layout(remembered("rail_joints").value_or("openrts").c_str()));
@@ -492,7 +682,7 @@ struct Launcher::State {
         load_graphics();
         spawn = std::clamp(remembered_int("launcher_spawn", 0), 0, no_train);
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
-        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
+        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::fullscreen);
         if (const auto value = remembered("launcher_tab")) {
             for (int i = 0; i < tab_count; ++i)
                 if (*value == tab_keys[i]) tab = static_cast<Tab>(i);
@@ -505,7 +695,6 @@ struct Launcher::State {
             for (int i = 0; i < 2; ++i)
                 if (*value == net_spawn_keys[i]) net_spawn = i;
         }
-        net_no_train = remembered("mp_no_train").value_or("0") == "1";
         if (const auto value = remembered("mp_role"); value && console_role_shown) {
             for (int i = 0; i < 2; ++i)
                 if (*value == net_role_keys[i]) net_role = i;
@@ -561,7 +750,6 @@ struct Launcher::State {
         remember("mp_servers", join_list(servers));
         remember("mp_spawn", net_spawn_keys[net_spawn]);
         remember("mp_role", net_role_keys[net_role]);
-        remember("mp_no_train", net_no_train ? "1" : "0");
     }
 
     void scan() {
@@ -698,6 +886,49 @@ struct Launcher::State {
         return activity >= 0 && activity < static_cast<int>(activities.size()) ? &activities[static_cast<std::size_t>(activity)] : nullptr;
     }
 
+    // The shell's request from the solo choices. A saved game or a scenario
+    // sets its own clock and trains; the request then only names the files.
+    [[nodiscard]] SessionRequest make_session() const {
+        SessionRequest request;
+        request.root = root;
+        if (route >= 0) request.route = routes[static_cast<std::size_t>(route)];
+        if (save >= 0 && save < static_cast<int>(saves.size())) {
+            request.save = saves_folder() / (saves[static_cast<std::size_t>(save)] + ".save");
+        } else if (const auto* chosen = chosen_activity()) {
+            request.activity = chosen->file;
+            request.minutes = std::clamp(chosen->activity.start_time / 60, 0, 24 * 60 - 1);
+            request.season = std::clamp(chosen->activity.season, 0, 3);
+            request.weather = std::clamp(chosen->activity.weather, 0, 3);
+        } else if (situation >= 0 && situation < static_cast<int>(situations.size())) {
+            request.situation = situation_folder() / (situations[static_cast<std::size_t>(situation)] + ".situation");
+        } else if (consist_used() && consist >= 0) {
+            request.consist = consists[static_cast<std::size_t>(consist)];
+            if (path >= 0 && path < static_cast<int>(paths.size())) request.path = paths[static_cast<std::size_t>(path)].file;
+        }
+        request.start_state = start == 1 ? 1 : start == 2 ? 0 : -1;
+        request.start_view = spawn == 0 ? 1 : spawn == 1 ? 2 : spawn == 2 ? 3 : 0;
+        if (request.save.empty() && request.activity.empty()) {
+            request.minutes = minutes;
+            request.season = season;
+            request.weather = weather;
+        }
+        request.realistic_air = true;
+        request.brakes = brakes;
+        request.sound = sound;
+        request.volume = volume;
+        request.title = request.route;
+        if (!request.consist.empty()) request.title += " — " + request.consist;
+        return request;
+    }
+
+    void begin_session() {
+        if (running() || !ready()) return;
+        pending_session = make_session();
+        save_settings();
+        status.clear();
+        session_note.clear();
+    }
+
     [[nodiscard]] std::string address_text() const { return trimmed(address.data()); }
     [[nodiscard]] std::string nick_text() const { return trimmed(nick.data()); }
     [[nodiscard]] bool nick_fits() const {
@@ -729,29 +960,6 @@ struct Launcher::State {
         }
     }
 
-    // The port the own server's window was last started with (its
-    // server_window.ini, in the same user data folder); 800 by default.
-    [[nodiscard]] static int own_server_port() {
-        std::ifstream in(viewer::user_data_directory() / "server_window.ini");
-        for (std::string line; std::getline(in, line);) {
-            if (!line.starts_with("port=")) continue;
-            const int port = std::atoi(line.c_str() + 5);
-            if (port > 0 && port <= 65535) return port;
-        }
-        return 800;
-    }
-
-    [[nodiscard]] fs::path server_exe() const {
-        const std::vector<fs::path> candidates{
-            exe_dir / "openrts-server.exe",
-            exe_dir.parent_path().parent_path() / "server" / exe_dir.filename() / "openrts-server.exe",
-        };
-        std::error_code error;
-        for (const auto& candidate : candidates)
-            if (fs::is_regular_file(candidate, error)) return candidate;
-        return {};
-    }
-
     [[nodiscard]] fs::path game_exe() const {
         const std::vector<fs::path> candidates{
             exe_dir / "openrts_viewer.exe",
@@ -774,9 +982,8 @@ struct Launcher::State {
             args.insert(args.end(), {"--mp-connect", address_text(), "--mp-nick", nick_text(), "--root", utf8(root)});
             if (net_role == net_role_dispatcher) {
                 args.push_back("--mp-console");
-            } else {
-                if (net_spawn == net_spawn_cab) args.insert(args.end(), {"--spawn", "cab"});
-                if (net_no_train) args.push_back("--mp-no-train");
+            } else if (net_spawn == net_spawn_cab) {
+                args.insert(args.end(), {"--spawn", "cab"});
             }
         } else {
             args.insert(args.end(), {"--route", routes[static_cast<std::size_t>(route)], "--root", utf8(root)});
@@ -838,10 +1045,8 @@ struct Launcher::State {
         if (net_reason == "unreachable") return trf("The server %s does not answer: check the address and the port.", net_address.c_str());
         if (net_reason == "refused") {
             if (net_detail == "nick") return trf("The nick %s is in use on the server: choose another.", net_nick.c_str());
-            if (net_detail == "full") return tr("The server takes no new players: all its places are taken, or it lets nobody new in.");
+            if (net_detail == "full") return tr("The server takes no new players.");
             if (net_detail == "version") return tr("The server speaks another protocol version (RTS's is 101).");
-            if (net_detail == "console") return tr("The server lets in the dispatcher from another computer only with its dispatcher password, and it has none set.");
-            if (net_detail == "password") return tr("The dispatcher password is wrong.");
             return trf("The server refused the login (code %s).", net_detail.c_str());
         }
         if (net_reason == "closed") return tr("The server closed the connection.");
@@ -954,18 +1159,8 @@ struct Launcher::State {
             startup.hStdInput = nullptr;
         }
         PROCESS_INFORMATION info{};
-        // The dispatcher's password goes in the game's environment alone.
-        const bool with_password = network_game && net_role == net_role_dispatcher && password[0] != 0;
-        if (with_password) {
-            const std::string text(password.data());
-            const int units = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, nullptr, 0);
-            std::wstring value(static_cast<std::size_t>((std::max)(units, 1)), L'\0');
-            MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, value.data(), units);
-            SetEnvironmentVariableW(L"OPENRTS_MP_PASSWORD", value.c_str());
-        }
         const BOOL ok = CreateProcessW(nullptr, wide.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
                                        &startup, &info);
-        if (with_password) SetEnvironmentVariableW(L"OPENRTS_MP_PASSWORD", nullptr);
         if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
         if (!ok) {
             net_step = NetStep::none;
@@ -978,76 +1173,6 @@ struct Launcher::State {
 #else
         status = tr("Starting the game is only done on Windows yet.");
 #endif
-    }
-
-    // openrts-server.exe in its own window (its start form: the route, the
-    // season, the weather, the time, the port, the dispatcher password),
-    // with the RTS folder given; its log beside the settings.
-    void start_server() {
-#ifdef _WIN32
-        if (server_running()) return;
-        const auto exe = server_exe();
-        if (exe.empty()) {
-            status = tr("openrts-server.exe is not found next to the menu.");
-            return;
-        }
-        std::vector<std::string> args{utf8(exe)};
-        if (!root.empty()) args.insert(args.end(), {"--root", utf8(root)});
-        std::string command;
-        for (const auto& a : args) command += (command.empty() ? "" : " ") + quoted(a);
-        const int length = MultiByteToWideChar(CP_UTF8, 0, command.c_str(), -1, nullptr, 0);
-        std::wstring wide(static_cast<std::size_t>((std::max)(length, 1)), L'\0');
-        MultiByteToWideChar(CP_UTF8, 0, command.c_str(), -1, wide.data(), length);
-        SECURITY_ATTRIBUTES inherit{sizeof(SECURITY_ATTRIBUTES), nullptr, TRUE};
-        const auto log_path = viewer::user_data_directory() / L"openrts-server.log";
-        const HANDLE log = CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
-                                       CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
-        STARTUPINFOW startup{};
-        startup.cb = sizeof startup;
-        if (log != INVALID_HANDLE_VALUE) {
-            startup.dwFlags = STARTF_USESTDHANDLES;
-            startup.hStdOutput = log;
-            startup.hStdError = log;
-            startup.hStdInput = nullptr;
-        }
-        PROCESS_INFORMATION info{};
-        const BOOL ok = CreateProcessW(nullptr, wide.data(), nullptr, nullptr, TRUE, CREATE_NO_WINDOW, nullptr, nullptr,
-                                       &startup, &info);
-        if (log != INVALID_HANDLE_VALUE) CloseHandle(log);
-        if (!ok) {
-            status = viewer::trf("The server did not start (error %lu).", static_cast<unsigned long>(GetLastError()));
-            return;
-        }
-        CloseHandle(info.hThread);
-        server_process = info.hProcess;
-        status = tr("The server's window opens: pick the route there and press \"Start\".");
-#else
-        status = tr("Starting the server is only done on Windows yet.");
-#endif
-    }
-
-    // A game joined from a player's Discord profile ("Join"; Discord started
-    // this menu for it, or it was open): its server in the address, as a
-    // driver, joined at once when the nick and the RTS folder are there.
-    void join_from_discord(const std::string& secret) {
-        constexpr std::string_view prefix = "openrts1 ";
-        const auto where = secret.starts_with(prefix) ? secret.substr(prefix.size()) : std::string();
-        constexpr std::string_view allowed = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-:[]";
-        if (where.empty() || where.size() > 100 || where.find_first_not_of(allowed) != std::string::npos) {
-            status = tr("Discord handed over a game that is not an openRTS server's.");
-            return;
-        }
-        set_text(address, where);
-        net_role = 0;
-        tab = Tab::network;
-        select_tab = true;
-        if (running()) {
-            status = viewer::trf("Discord: joining %s. Close the running game first, then press \"Connect\".", where.c_str());
-        } else if (!network_ready()) {
-            status = viewer::trf("Discord: the server %s is filled in. Give a nick (and the RTS folder in Settings), then press \"Connect\".", where.c_str());
-        } else {
-            launch(Tab::network);
-        }
     }
 
     // Stops a network game that is still joining (the server sees the
@@ -1067,11 +1192,6 @@ struct Launcher::State {
             refresh_saves();
         }
 #ifdef _WIN32
-        // The own server's window closed: it is stopped.
-        if (server_process && WaitForSingleObject(server_process, 0) == WAIT_OBJECT_0) {
-            CloseHandle(server_process);
-            server_process = nullptr;
-        }
         if (!process) return;
         const bool ended = WaitForSingleObject(process, 0) == WAIT_OBJECT_0;
         const auto now = std::chrono::steady_clock::now();
@@ -1088,7 +1208,7 @@ struct Launcher::State {
         refresh_situations();
         // The game's panel may have changed it.
         fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
-        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
+        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::fullscreen);
         load_graphics();
         if (cancelled) {
             net_step = NetStep::none;
@@ -1105,6 +1225,12 @@ struct Launcher::State {
     }
 
 #ifdef OPENRTS_HAS_IMGUI
+    void draw_home();
+    void draw_solo();
+    void draw_settings_page();
+    void draw_account();
+    void draw_soon();
+    void draw_footer(ImDrawList* draw, float scale, ImVec2 display);
     void draw_tabs();
     void draw_single(float height);
     void draw_network(float height);
@@ -1116,9 +1242,341 @@ struct Launcher::State {
 };
 
 #ifdef OPENRTS_HAS_IMGUI
+// The clock and the date of the header (the mockup's right side).
+[[nodiscard]] std::pair<std::string, std::string> header_clock() {
+    const auto now = std::time(nullptr);
+    std::tm local{};
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
+    char time[8]{};
+    std::snprintf(time, sizeof time, "%02d:%02d", local.tm_hour, local.tm_min);
+    constexpr const char* months[] = {"января", "февраля", "марта", "апреля", "мая", "июня",
+                                      "июля", "августа", "сентября", "октября", "ноября", "декабря"};
+    char date[64]{};
+    std::snprintf(date, sizeof date, "%d %s %d", local.tm_mday, months[std::clamp(local.tm_mon, 0, 11)], local.tm_year + 1900);
+    return {time, date};
+}
+
+void Launcher::State::draw_footer(ImDrawList* draw, const float scale, const ImVec2 display) {
+    const auto y = display.y - 38.0f * scale;
+    const auto left = std::string("DARK TEAM  /  Build: ") + std::string(core::version());
+    label(draw, ui::small_font(), 12.0f * scale, {72.0f * scale, y}, dim, left);
+
+    struct Link {
+        const char* text;
+        const char* url;
+    };
+    constexpr Link links[] = {{"Discord ↗", "https://discord.gg/j8pkDAB4be"},
+                              {"Telegram ↗", "https://t.me/darkteamdev"},
+                              {"ВКонтакте ↗", "https://vk.com/darkteamdev"},
+                              {"dark-team.ru ↗", "https://dark-team.ru"}};
+    float right = display.x - 72.0f * scale;
+    for (int i = 3; i >= 0; --i) {
+        const auto text = std::string(links[i].text);
+        const auto measured = label_size(ui::small_font(), 12.0f * scale, text);
+        const auto area = Rect{{right - measured.x, y - 2.0f * scale}, {right, y + measured.y + 2.0f * scale}};
+        ImGui::SetCursorScreenPos(area.min);
+        ImGui::PushID(i + 100);
+        const bool pressed = ImGui::InvisibleButton("##link", {area.width(), area.height()});
+        const bool hovered = ImGui::IsItemHovered();
+        ImGui::PopID();
+        label(draw, ui::small_font(), 12.0f * scale, area.min, hovered ? white : grey, text);
+        if (pressed) open_link(links[i].url);
+        right -= measured.x + 22.0f * scale;
+    }
+}
+
+void Launcher::State::draw_home() {
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const auto scale = menu_scale();
+    const auto margin = 72.0f * scale;
+
+    auto* cache = images.get();
+    draw->AddRectFilledMultiColor({0, 0}, display, rgb(14, 16, 19, 255), rgb(15, 17, 20, 255), rgb(21, 23, 28, 255),
+                                  rgb(19, 21, 25, 255));
+
+    const auto [clock, date] = header_clock();
+    label(draw, ui::brand_font(), 34.0f * scale, {margin, 48.0f * scale}, white, "DARK TEAM RAILWAY ENGINE");
+    label(draw, ui::body_font(), 14.0f * scale, {margin + 1.0f * scale, 92.0f * scale}, grey, "Инновации в движении");
+
+    const auto top_right = display.x - margin;
+    const ImVec2 avatar_centre{top_right - 274.0f * scale, 82.0f * scale};
+    const auto clock_size = label_size(ui::clock_font(), 29.0f * scale, clock);
+    const auto date_size = label_size(ui::small_font(), 12.0f * scale, date);
+    const auto clock_block = clock_size.y + 6.0f * scale + date_size.y;
+    const auto clock_top = avatar_centre.y - clock_block * 0.5f;
+    label_right(draw, ui::clock_font(), 29.0f * scale, top_right - 330.0f * scale, clock_top, white, clock);
+    label_right(draw, ui::small_font(), 12.0f * scale, top_right - 330.0f * scale, clock_top + clock_size.y + 6.0f * scale, grey, date);
+    draw->AddLine({top_right - 304.0f * scale, avatar_centre.y - 26.0f * scale},
+                  {top_right - 304.0f * scale, avatar_centre.y + 26.0f * scale}, rgb(255, 255, 255, 38), 1.0f);
+    draw->AddCircleFilled(avatar_centre, 22.0f * scale, rgb(42, 46, 55), 44);
+    label_centered(draw, ui::heading_font(), 18.0f * scale, avatar_centre, white, "Г");
+
+    const auto name_size = label_size(ui::button_font(), 14.0f * scale, "Гость");
+    const auto level_size = label_size(ui::small_font(), 11.0f * scale, "Уровень 0");
+    const auto name_block = name_size.y + 3.0f * scale + level_size.y;
+    const auto name_top = avatar_centre.y - name_block * 0.5f;
+    label(draw, ui::button_font(), 14.0f * scale, {top_right - 240.0f * scale, name_top}, white, "Гость");
+    label(draw, ui::small_font(), 11.0f * scale, {top_right - 240.0f * scale, name_top + name_size.y + 3.0f * scale}, dim,
+          "Уровень 0");
+    const auto account = Rect{{top_right - 132.0f * scale, avatar_centre.y - 22.0f * scale},
+                              {top_right, avatar_centre.y + 22.0f * scale}};
+    if (header_button(draw, "##account", account, "Войти", scale, account_hover)) page = Page::account;
+
+    const auto content = Rect{{margin, 156.0f * scale}, {display.x - margin, display.y - 88.0f * scale}};
+    const auto gap = 24.0f * scale;
+    const auto row1 = content.height() * (452.0f / 836.0f);
+    const auto first = content.width() * (1072.0f / 1776.0f);
+    // The second row's three cards share what the gaps leave: 616, 616 and 496 px.
+    const auto row2_width = content.width() - 2.0f * gap;
+    const auto third = row2_width * (616.0f / 1728.0f);
+    const auto fourth = third;
+    const auto fifth = row2_width - third - fourth;
+
+    const auto load = [&](const char* name) {
+        if (!cache) return WGPUTextureView{};
+        return cache->load(fs::path(image_dir) / name);
+    };
+    const auto pixels_of = [&](const char* name) {
+        return cache ? cache->size(fs::path(image_dir) / name) : std::pair{0, 0};
+    };
+
+    if (draw_card(draw, "card1", {content.min, {content.min.x + first, content.min.y + row1}}, "01", "Машинист",
+                  "Займите место за пультом. Ваш первый рейс начинается здесь", load("cab.png"), pixels_of("cab.png"), true, false,
+                  true, card_hover[0], scale)) {
+        page = Page::solo;
+    }
+    if (draw_card(draw, "card2", {{content.min.x + first + gap, content.min.y}, {content.max.x, content.min.y + row1}}, "02", "Редактор",
+                  "Создавайте составы и собственные сценарии", load("field.png"), pixels_of("field.png"), false, false, false,
+                  card_hover[1], scale)) {
+        soon_kind = 2;
+        page = Page::soon;
+    }
+    const auto row2_top = content.min.y + row1 + gap;
+    (void)draw_card(draw, "card3", {{content.min.x, row2_top}, {content.min.x + third, content.max.y}}, "03", "Мультиплеер",
+                    "Общий маршрут. Настоящее РП", load("station.png"), pixels_of("station.png"), false, true, false, card_hover[2], scale);
+    (void)draw_card(draw, "card4", {{content.min.x + third + gap, row2_top}, {content.min.x + third + gap + fourth, content.max.y}}, "04",
+                    "Депо", "Обучение управлению", load("emu.png"), pixels_of("emu.png"), false, true, false, card_hover[3], scale);
+
+    // Settings: no picture, the mockup's list of rows.
+    const Rect settings_box{{content.max.x - fifth, row2_top}, {content.max.x, content.max.y}};
+    draw->AddRectFilled(settings_box.min, settings_box.max, card_fill, 24.0f * scale);
+    draw->AddRect(settings_box.min, settings_box.max, card_line, 24.0f * scale);
+    label(draw, ui::small_font(), 14.0f * scale, {settings_box.min.x + 28.0f * scale, settings_box.min.y + 35.0f * scale}, dim, "05");
+    label(draw, ui::heading_font(), 28.0f * scale, {settings_box.min.x + 55.0f * scale, settings_box.min.y + 27.0f * scale}, white,
+          "Настройки");
+    constexpr const char* rows[] = {"Графика", "Звук", "Интерфейс", "Улучшения", "Управление"};
+    const auto row_top = settings_box.min.y + 92.0f * scale;
+    const Rect settings_head{{settings_box.min.x + 20.0f * scale, settings_box.min.y + 16.0f * scale},
+                             {settings_box.max.x - 20.0f * scale, row_top - 4.0f * scale}};
+    ImGui::SetCursorScreenPos(settings_head.min);
+    const bool settings_head_pressed = ImGui::InvisibleButton("##settings_head", {settings_head.width(), settings_head.height()});
+    if (settings_head_pressed) {
+        page = Page::settings;
+        settings_section = 0;
+    }
+    const auto row_height = (settings_box.height() - 116.0f * scale) / 5.0f;
+    for (int i = 0; i < 5; ++i) {
+        const Rect row{{settings_box.min.x + 20.0f * scale, row_top + row_height * static_cast<float>(i)},
+                       {settings_box.max.x - 20.0f * scale, row_top + row_height * static_cast<float>(i) + row_height}};
+        ImGui::SetCursorScreenPos(row.min);
+        ImGui::PushID(i + 20);
+        const bool pressed = ImGui::InvisibleButton("##row", {row.width(), row.height()});
+        const bool hovered = ImGui::IsItemHovered();
+        ImGui::PopID();
+        const auto row_text = label_size(ui::body_font(), 15.0f * scale, rows[i]);
+        label(draw, ui::body_font(), 15.0f * scale, {row.min.x + 8.0f * scale, row.centre().y - row_text.y * 0.5f},
+              hovered ? white : grey, rows[i]);
+        arrow_up_right(draw, {row.max.x - 15.0f * scale, row.centre().y}, 12.0f * scale,
+                       hovered ? white : dim, 1.5f * scale);
+        if (pressed) {
+            page = Page::settings;
+            settings_section = i == 0 ? 1 : i == 1 ? 3 : i == 2 ? 0 : i == 4 ? 2 : 4;
+        }
+    }
+
+    draw_footer(draw, scale, display);
+}
+
+void Launcher::State::draw_solo() {
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const auto scale = menu_scale();
+    const auto margin = 72.0f * scale;
+    const auto background = fs::path(image_dir) / "station.png";
+    auto* cache = images.get();
+    picture(draw, cache ? cache->load(background) : nullptr, cache ? cache->size(background) : std::pair{0, 0}, {{0, 0}, display}, 0.0f);
+    draw->AddRectFilled({0, 0}, display, rgb(10, 12, 16, 238));
+
+    const auto [clock, date] = header_clock();
+    const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
+    bool back = false, account_clicked = false;
+    page_heading(draw, header, "Машинист", "Маршрут, локомотив, состав и условия поездки", scale, clock, date, true, account_hover, back,
+                 account_clicked);
+    if (back) page = Page::home;
+    if (account_clicked) page = Page::account;
+
+    const auto top = 128.0f * scale;
+    const auto bottom = display.y - 116.0f * scale;
+    ImGui::SetCursorScreenPos({margin, top});
+    ImGui::BeginChild("##solo_setup", {display.x - margin * 2.0f, bottom - top}, ImGuiChildFlags_None, ImGuiWindowFlags_NoScrollbar);
+    draw_single(bottom - top - 4.0f * scale);
+    ImGui::EndChild();
+
+    const auto button = Rect{{display.x - margin - 250.0f * scale, bottom + 14.0f * scale}, {display.x - margin, bottom + 58.0f * scale}};
+    start_hover += ((ImGui::IsMouseHoveringRect(button.min, button.max) && ready() ? 1.0f : 0.0f) - start_hover) *
+                   (std::min)(1.0f, ImGui::GetIO().DeltaTime * 12.0f);
+    ImGui::SetCursorScreenPos(button.min);
+    ImGui::BeginDisabled(!ready());
+    const bool start = ImGui::InvisibleButton("##start", {button.width(), button.height()});
+    ImGui::EndDisabled();
+    draw->AddRectFilled(button.min, button.max, ready() ? rgb(247, 248, 250) : rgb(45, 48, 55), 12.0f * scale);
+    const auto start_text = std::string("Начать поездку  →");
+    const auto measured = label_size(ui::button_font(), 15.0f * scale, start_text);
+    label(draw, ui::button_font(), 15.0f * scale, {button.centre().x - measured.x * 0.5f, button.centre().y - measured.y * 0.5f},
+          ready() ? rgb(19, 21, 25) : dim, start_text);
+    if (start) begin_session();
+
+    if (!ready()) {
+        label(draw, ui::small_font(), 12.0f * scale, {margin, button.centre().y - 8.0f * scale}, grey,
+              "Выберите маршрут и состав, чтобы начать");
+    } else if (!status.empty()) {
+        label(draw, ui::small_font(), 12.0f * scale, {margin, button.centre().y - 8.0f * scale}, grey, status);
+    }
+}
+
+void Launcher::State::draw_settings_page() {
+    MenuStyle style;
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const auto scale = menu_scale();
+    const auto margin = 72.0f * scale;
+    const auto background = fs::path(image_dir) / "station.png";
+    auto* cache = images.get();
+    picture(draw, cache ? cache->load(background) : nullptr, cache ? cache->size(background) : std::pair{0, 0}, {{0, 0}, display}, 0.0f);
+    draw->AddRectFilled({0, 0}, display, rgb(10, 12, 16, 242));
+
+    const auto [clock, date] = header_clock();
+    const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
+    bool back = false, account_clicked = false;
+    page_heading(draw, header, "Настройки", "Игра, графика и управление", scale, clock, date, true, account_hover, back, account_clicked);
+    if (back) {
+        if (embedded_settings) embedded_back = true;
+        else page = Page::home;
+    }
+    if (account_clicked && !embedded_settings) page = Page::account;
+
+    const auto top = 128.0f * scale;
+    const auto bottom = display.y - 80.0f * scale;
+    const auto side_width = 260.0f * scale;
+    const Rect side{{margin, top}, {margin + side_width, bottom}};
+    draw->AddRectFilled(side.min, side.max, rgb(20, 22, 27, 230), 18.0f * scale);
+    draw->AddRect(side.min, side.max, card_line, 18.0f * scale);
+    constexpr const char* sections[] = {"Игра и звук", "Графика", "Управление", "Звук", "Улучшения"};
+    for (int i = 0; i < 5; ++i) {
+        const Rect row{{side.min.x + 10.0f * scale, side.min.y + 12.0f * scale + static_cast<float>(i) * 46.0f * scale},
+                       {side.max.x - 10.0f * scale, side.min.y + 50.0f * scale + static_cast<float>(i) * 46.0f * scale}};
+        ImGui::SetCursorScreenPos(row.min);
+        ImGui::PushID(i + 400);
+        const bool pressed = ImGui::InvisibleButton("##section", {row.width(), row.height()});
+        const bool hovered = ImGui::IsItemHovered();
+        ImGui::PopID();
+        if (settings_section == i) draw->AddRectFilled(row.min, row.max, rgb(255, 255, 255, 14), 10.0f * scale);
+        const auto section_size = label_size(ui::button_font(), 14.0f * scale, sections[i]);
+        label(draw, ui::button_font(), 14.0f * scale, {row.min.x + 14.0f * scale, row.centre().y - section_size.y * 0.5f},
+              settings_section == i || hovered ? white : grey, sections[i]);
+        if (pressed) settings_section = i;
+    }
+
+    const auto content_left = side.max.x + 24.0f * scale;
+    ImGui::SetCursorScreenPos({content_left, top});
+    ImGui::PushFont(ui::body_font());
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4{0.075f, 0.085f, 0.105f, 0.94f});
+    ImGui::BeginChild("##settings_content", {display.x - margin - content_left, bottom - top}, ImGuiChildFlags_Borders,
+                      ImGuiWindowFlags_AlwaysVerticalScrollbar);
+    switch (settings_section) {
+    case 1: draw_graphics(bottom - top - 24.0f * scale); break;
+    case 2: draw_info(bottom - top - 24.0f * scale); break;
+    case 3: draw_settings(bottom - top - 24.0f * scale); break;
+    case 4: draw_ace_settings(); break;
+    default: draw_settings(bottom - top - 24.0f * scale); break;
+    }
+    ImGui::EndChild();
+    ImGui::PopStyleColor();
+    ImGui::PopFont();
+}
+
+void Launcher::State::draw_account() {
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const auto scale = menu_scale();
+    const auto margin = 72.0f * scale;
+    const auto background = fs::path(image_dir) / "station.png";
+    auto* cache = images.get();
+    picture(draw, cache ? cache->load(background) : nullptr, cache ? cache->size(background) : std::pair{0, 0}, {{0, 0}, display}, 0.0f);
+    draw->AddRectFilled({0, 0}, display, rgb(10, 12, 16, 242));
+
+    const auto [clock, date] = header_clock();
+    const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
+    bool back = false, account_clicked = false;
+    page_heading(draw, header, "Профиль", "Личный кабинет", scale, clock, date, true, account_hover, back, account_clicked);
+    if (back) page = Page::home;
+
+    const auto width = 560.0f * scale;
+    const auto height = 300.0f * scale;
+    const Rect box{{(display.x - width) * 0.5f, (display.y - height) * 0.5f}, {(display.x + width) * 0.5f, (display.y + height) * 0.5f}};
+    draw->AddRectFilled(box.min, box.max, card_fill, 24.0f * scale);
+    draw->AddRect(box.min, box.max, card_line, 24.0f * scale);
+    draw->AddCircleFilled({box.centre().x, box.min.y + 76.0f * scale}, 36.0f * scale, rgb(42, 46, 55), 48);
+    label_centered(draw, ui::heading_font(), 30.0f * scale, {box.centre().x, box.min.y + 76.0f * scale}, white, "Г");
+    const auto title = std::string("Вы вошли как гость");
+    const auto title_size = label_size(ui::heading_font(), 24.0f * scale, title);
+    label(draw, ui::heading_font(), 24.0f * scale, {box.centre().x - title_size.x * 0.5f, box.min.y + 128.0f * scale}, white, title);
+    const auto text = std::string("Вход в аккаунт появится в следующих обновлениях. Одиночная игра доступна без аккаунта.");
+    const auto text_size = label_size(ui::body_font(), 14.0f * scale, text);
+    label(draw, ui::body_font(), 14.0f * scale, {box.centre().x - text_size.x * 0.5f, box.min.y + 166.0f * scale}, grey, text);
+    soon_badge(draw, {box.centre().x - 36.0f * scale, box.min.y + 212.0f * scale}, scale, 1.0f);
+}
+
+void Launcher::State::draw_soon() {
+    auto* draw = ImGui::GetWindowDrawList();
+    const auto display = ImGui::GetIO().DisplaySize;
+    const auto scale = menu_scale();
+    const auto margin = 72.0f * scale;
+    const auto background = fs::path(image_dir) / "station.png";
+    auto* cache = images.get();
+    picture(draw, cache ? cache->load(background) : nullptr, cache ? cache->size(background) : std::pair{0, 0}, {{0, 0}, display}, 0.0f);
+    draw->AddRectFilled({0, 0}, display, rgb(10, 12, 16, 242));
+
+    const char* names[] = {"Мультиплеер", "Депо", "Редактор"};
+    const char* lines[] = {"Совместные поездки на серверах dark-team.ru", "Подвижной состав и раскраски", "Создание и правка маршрутов"};
+    const auto [clock, date] = header_clock();
+    const Rect header{{margin, 26.0f * scale}, {display.x - margin, 94.0f * scale}};
+    bool back = false, account_clicked = false;
+    page_heading(draw, header, names[std::clamp(soon_kind, 0, 2)], lines[std::clamp(soon_kind, 0, 2)], scale, clock, date, true,
+                 account_hover, back, account_clicked);
+    if (back) page = Page::home;
+
+    const auto width = 620.0f * scale;
+    const auto height = 220.0f * scale;
+    const Rect box{{(display.x - width) * 0.5f, (display.y - height) * 0.5f}, {(display.x + width) * 0.5f, (display.y + height) * 0.5f}};
+    draw->AddRectFilled(box.min, box.max, card_fill, 24.0f * scale);
+    draw->AddRect(box.min, box.max, card_line, 24.0f * scale);
+    soon_badge(draw, {box.centre().x - 41.4f * scale, box.min.y + 42.0f * scale}, scale * 1.15f, 1.0f);
+    const auto text = std::string("Раздел появится в одном из следующих обновлений.");
+    const auto measured = label_size(ui::body_font(), 15.0f * scale, text);
+    label(draw, ui::body_font(), 15.0f * scale, {box.centre().x - measured.x * 0.5f, box.min.y + 110.0f * scale}, grey, text);
+    const auto sub = std::string("Следите за новостями в Discord и Telegram.");
+    const auto sub_size = label_size(ui::small_font(), 13.0f * scale, sub);
+    label(draw, ui::small_font(), 13.0f * scale, {box.centre().x - sub_size.x * 0.5f, box.min.y + 142.0f * scale}, dim, sub);
+}
+
 // The tabs. Their items close at once; the chosen tab is drawn below them.
-void Launcher::State::draw_tabs() {
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {20.0f, 8.0f});
+void Launcher::State::draw_tabs() {    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, {20.0f, 8.0f});
     auto* large = viewer::large_font();
     if (large) ImGui::PushFont(large);
     // A tab chosen in code shows on the next frame; till then the bar's
@@ -1148,6 +1606,7 @@ void Launcher::State::draw_tabs() {
 // Single player: route, consist (with its search) and path on the left, the
 // trip on the right.
 void Launcher::State::draw_single(const float height) {
+    MenuStyle style;
     if (!vfs) {
         if (ImGui::BeginChild("##single_empty", {0.0f, height}, panel_flags)) {
             ImGui::TextWrapped("%s", tr("The routes and consists are read from the RTS folder: give it in Settings."));
@@ -1161,6 +1620,7 @@ void Launcher::State::draw_single(const float height) {
         return;
     }
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
+    ImGui::PushFont(ui::body_font());
     const float options_width = std::clamp(ImGui::GetIO().DisplaySize.x * 0.36f, 430.0f, 540.0f);
     const float lists_width = ImGui::GetContentRegionAvail().x - options_width - spacing;
 
@@ -1334,9 +1794,11 @@ void Launcher::State::draw_single(const float height) {
         ImGui::EndDisabled(); // the choices a saved game sets
     }
     ImGui::EndChild();
+    ImGui::PopFont();
 }
 
-// Network play: joining a server on the left; an own server on the right.
+// Network play: joining a server on the left; an own server on the right,
+// its place kept for when there is one.
 void Launcher::State::draw_network(const float height) {
     const float spacing = ImGui::GetStyle().ItemSpacing.x;
     const float host_width = std::clamp(ImGui::GetIO().DisplaySize.x * 0.36f, 430.0f, 540.0f);
@@ -1356,28 +1818,20 @@ void Launcher::State::draw_network(const float height) {
                 form_row(tr("Join as"));
                 ImGui::Combo("##net_role", &net_role, roles, 2);
             }
-            if (net_role == net_role_dispatcher) {
-                form_row(tr("Dispatcher password"));
-                ImGui::InputText("##password", password.data(), password.size(), ImGuiInputTextFlags_Password);
-            }
             if (net_role != net_role_dispatcher) {
                 const char* spawns[2];
                 for (int i = 0; i < 2; ++i) spawns[i] = tr(net_spawn_names[i]);
                 form_row(tr("Start at"));
                 ImGui::Combo("##net_spawn", &net_spawn, spawns, 2);
-                form_row(tr("Without a train"));
-                ImGui::Checkbox(tr("Go in without a train (to look round, to help a driver)##no_train"), &net_no_train);
             }
             ImGui::EndTable();
         }
         if (net_role == net_role_dispatcher) {
-            hint(tr("The dispatcher's console of an openRTS server: the route's map and the console's window (trains, players, station routes, signals, time). "
-                    "On the server's own computer no password is needed; from another one the dispatcher password set in the server's window."));
+            hint(tr("The dispatcher's console of an openRTS server: the route's map and the console's window (trains, players, routes, signals, time). "
+                    "The server lets in a console from its own computer with any nick, from elsewhere the nicks given to it with --dispatcher."));
         } else {
             hint(net_spawn == net_spawn_cab ? tr("When the dispatcher assigns your train, you sit at its desk.")
                                             : tr("When the dispatcher assigns your train, the camera follows it from above."));
-            hint(net_no_train ? tr("You go into the world at once, without a train: the dispatcher may give you one later, a driver may take you as his helper.")
-                              : tr("As in RTS, the game waits until the dispatcher gives you a train."));
         }
         hint(tr("The port is 800 when none is given. The nick is how the other players and the dispatcher see you."));
         const auto length = characters(nick_text());
@@ -1411,31 +1865,24 @@ void Launcher::State::draw_network(const float height) {
     ImGui::SameLine();
 
     if (ImGui::BeginChild("##host", {host_width, height}, panel_flags)) {
+        const float label_width = std::clamp(host_width * 0.40f, 150.0f, 210.0f);
         ImGui::SeparatorText(tr("Own server"));
-        hint(tr("openRTS's server opens a window of its own: there the route, season, weather, time and the dispatcher password are set, "
-                "then it is the dispatcher's console on the route's map. openRTS and RTS (rts1.exe) players join it."));
+        hint(tr("Not there yet: an openRTS server is the next stage. For now start an RTS server (rts_server.exe) and join it."));
         ImGui::Spacing();
-        if (server_running()) {
-            ImGui::TextUnformatted(tr("The server's window is open. Closing it stops the server."));
-            ImGui::BeginDisabled(running());
-            if (ImGui::Button(tr("Join my server"), {-FLT_MIN, 0.0f})) {
-                set_text(address, "127.0.0.1:" + std::to_string(own_server_port()));
-                launch(Tab::network);
-            }
-            ImGui::EndDisabled();
-            hint(tr("Joins 127.0.0.1 at the port set in the server's window, with the nick and the role on the left, once the route is started there."));
-        } else {
-            const bool found = !server_exe().empty();
-            ImGui::BeginDisabled(!found);
-            if (ImGui::Button(tr("Open the server's start window"), {-FLT_MIN, 0.0f})) start_server();
-            ImGui::EndDisabled();
-            if (!found) warning(tr("openrts-server.exe is not found next to the menu."));
+        ImGui::BeginDisabled(true);
+        if (begin_form("##host_form", label_width)) {
+            form_row(tr("Port"));
+            ImGui::InputInt("##host_port", &host_port, 0, 0);
+            form_row(tr("Players"));
+            const char* kinds[] = {tr("RTS and openRTS (Legacy)"), tr("openRTS only")};
+            ImGui::Combo("##host_players", &host_players, kinds, 2);
+            ImGui::EndTable();
         }
+        hint(host_players == 0 ? tr("Legacy: rts1.exe joins too; the simulation follows RTS for everyone.")
+                               : tr("openRTS only: its own protocol, and the server's simulation settings."));
         ImGui::Spacing();
-        ImGui::SeparatorText(tr("For the players"));
-        hint(tr("Players join by this computer's address and the port. From the internet the port (TCP) must be open on the router, "
-                "or everyone plays in one virtual network (Radmin VPN, ZeroTier and the like)."));
-        hint(tr("A dispatcher at another computer joins as \"Dispatcher (console)\" with the dispatcher password."));
+        ImGui::Button(tr("Start the server"), {-FLT_MIN, 0.0f});
+        ImGui::EndDisabled();
     }
     ImGui::EndChild();
 }
@@ -1518,21 +1965,6 @@ void Launcher::State::draw_settings(const float height) {
                 viewer::set_mouse_sensitivity(sensitivity);
                 remember("mouse_sensitivity", std::to_string(viewer::mouse_sensitivity()));
             }
-            form_row(tr("Mouse smoothing, ms"));
-            float smooth = viewer::mouse_smoothing();
-            ImGui::SetNextItemWidth(220.0f);
-            if (viewer::slider_with_input("##mouse_smoothing", &smooth, 0.0f, viewer::max_mouse_smoothing, "%.0f", "%.0f")) {
-                viewer::set_mouse_smoothing(smooth);
-                remember("mouse_smoothing_ms", std::to_string(viewer::mouse_smoothing()));
-            }
-            ImGui::TextDisabled("%s", tr("(0: the view turns at once with the mouse; more: smoother, a little behind it)"));
-            form_row(tr("Mouse lock (the wheel's click)"));
-            bool lock = viewer::mouse_lock();
-            if (ImGui::Checkbox("##mouse_lock", &lock)) {
-                viewer::set_mouse_lock(lock);
-                remember("mouse_lock", lock ? "1" : "0");
-            }
-            ImGui::TextDisabled("%s", tr("(the view always turns with the mouse, the cursor hidden; a dot in the middle clicks the cab's controls; while the panel (Esc) is shown the cursor is free)"));
             form_row(tr("Head motion in the cab"));
             float head = viewer::head_motion();
             ImGui::SetNextItemWidth(220.0f);
@@ -1572,7 +2004,7 @@ void Launcher::State::draw_settings(const float height) {
             ImGui::EndDisabled();
             form_row(tr("Rail joints"));
             int joints = viewer::rail_joint_layout() == simulation::RailJointLayout::rts ? 1 : 0;
-            const char* joint_layouts[] = {"openRTS", "RTS"};
+            const char* joint_layouts[] = {"DTRE", "RTS"};
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::Combo("##rail_joints", &joints, joint_layouts, 2)) {
                 viewer::set_rail_joint_layout(joints == 1 ? simulation::RailJointLayout::rts : simulation::RailJointLayout::openrts);
@@ -1582,7 +2014,7 @@ void Launcher::State::draw_settings(const float height) {
                                                   : tr("(25 m rails; on stretches of 1 km or more between switches welded strings of about 800 m with 3 or 4 joints 12.5 m apart between them)"));
             form_row(tr("Body motion"));
             int bodies = viewer::body_motion_model() == simulation::BodyMotionModel::rts ? 1 : 0;
-            const char* body_models[] = {"openRTS", "RTS"};
+            const char* body_models[] = {"DTRE", "RTS"};
             ImGui::SetNextItemWidth(220.0f);
             if (ImGui::Combo("##body_motion", &bodies, body_models, 2)) {
                 viewer::set_body_motion_model(bodies == 1 ? simulation::BodyMotionModel::rts : simulation::BodyMotionModel::openrts);
@@ -1592,10 +2024,6 @@ void Launcher::State::draw_settings(const float height) {
                                                   : tr("(each body on its own springs over its bogies: the track's errors under each bogie, rail joints and switches, hunting, curves; bounce, pitch, sway, yaw and roll)"));
             ImGui::EndTable();
         }
-        // The brakes: the game's Train window's section (brake_settings_ui.hpp).
-        ImGui::Spacing();
-        ImGui::SeparatorText(tr("Brakes"));
-        viewer::draw_brake_settings(brakes, nullptr, label_width);
     }
     ImGui::EndChild();
     ImGui::SameLine();
@@ -1609,18 +2037,6 @@ void Launcher::State::draw_settings(const float height) {
         hint(utf8(viewer::user_data_directory()).c_str());
         ImGui::Spacing();
 #endif
-        draw_update_settings(label_width);
-        ImGui::Spacing();
-        // Discord (discord_status.hpp): the profile says what the game does.
-        ImGui::SeparatorText("Discord");
-        if (begin_form("##discord_form", label_width)) {
-            form_row(tr("Show the game in the Discord profile"));
-            bool shown = viewer::discord_presence_enabled();
-            if (ImGui::Checkbox("##discord_presence", &shown)) viewer::set_discord_presence_enabled(shown);
-            ImGui::EndTable();
-        }
-        hint(tr("Others see \"Playing openRTS\": in the menu or driving which engine, on which route and for how long. Only the Discord program on this computer is told; nothing of a server's."));
-        ImGui::Spacing();
         draw_ace_settings();
         ImGui::Spacing();
         // For developers (viewer_state.hpp): F12 in the game too.
@@ -2096,21 +2512,13 @@ void Launcher::State::draw_graphics(const float height) {
 }
 
 namespace {
-void open_page(const std::string& url);
 }
 
-// The version, the project's Discord and GitHub, then the simulator's keys
-// and mouse (the game's panel has the same in its Controls tab).
+// The version, then the simulator's keys and mouse (the game's panel has the
+// same in its Controls tab).
 void Launcher::State::draw_info(const float height) {
     if (ImGui::BeginChild("##info", {0.0f, height}, panel_flags)) {
         ImGui::TextUnformatted(core::version_text().c_str());
-        ImGui::TextWrapped("%s", tr("Questions, discussion and bug reports: our Discord. The releases, the source and the documentation: GitHub."));
-        if (ImGui::Button(tr("Discord: join the server"))) open_page(discord_invite);
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", discord_invite);
-        if (ImGui::Button(tr("GitHub: the project's page"))) open_page(project_page);
-        ImGui::SameLine();
-        ImGui::TextDisabled("%s", project_page);
         ImGui::SeparatorText(tr("Controls"));
         viewer::draw_controls_help();
     }
@@ -2172,202 +2580,64 @@ void Launcher::State::draw_bar(const float button_width, const float button_heig
 }
 #endif
 
-// The check at the start, and what a finished one leads to.
-void Launcher::State::poll_update() {
-    using Stage = update::Updater::Stage;
-    if (!update_started && update_check) {
-        update_started = true;
-        updater.check(std::string(core::version()));
-    }
-    if (old_files_again != std::chrono::steady_clock::time_point{} && std::chrono::steady_clock::now() >= old_files_again) {
-        old_files_again = {};
-        update::remove_old_files(old_files());
-    }
-    const auto now = updater.status();
-    if (update_seen == Stage::checking && now.stage != Stage::checking) {
-        // Offered when newer, unless skipped (asked for by hand: anyway).
-        if (now.stage == Stage::available && now.release && (update_manual || remembered("update_skip").value_or("") != now.release->tag))
-            offer_update();
-        update_manual = false;
-    }
-    if (now.stage == Stage::installed) restart = true;
-    update_seen = now.stage;
-}
-
-#ifdef OPENRTS_HAS_IMGUI
-namespace {
-
-void open_page(const std::string& url) {
-#ifdef _WIN32
-    if (url.rfind("https://", 0) != 0) return;
-    const int size = MultiByteToWideChar(CP_UTF8, 0, url.data(), static_cast<int>(url.size()), nullptr, 0);
-    std::wstring wide(static_cast<std::size_t>(size), L'\0');
-    MultiByteToWideChar(CP_UTF8, 0, url.data(), static_cast<int>(url.size()), wide.data(), size);
-    ShellExecuteW(nullptr, L"open", wide.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-#else
-    (void)url;
-#endif
-}
-
-[[nodiscard]] std::string failure_text(const update::Updater::Status& status) {
-    std::string text = tr(status.error.c_str());
-    if (!status.detail.empty()) text += ": " + status.detail;
-    return text;
-}
-
-} // namespace
-
-// The offer: what is new, then update / the release's page / later / skip;
-// the download's progress; a failure.
-void Launcher::State::draw_update_popup() {
-    using Stage = update::Updater::Stage;
-    if (update_popup) {
-        ImGui::OpenPopup("##update");
-        update_popup = false;
-    }
-    const auto& io = ImGui::GetIO();
-    ImGui::SetNextWindowPos({io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f}, ImGuiCond_Always, {0.5f, 0.5f});
-    ImGui::SetNextWindowSize({(std::min)(620.0f, io.DisplaySize.x - 40.0f), 0.0f});
-    if (!ImGui::BeginPopupModal("##update", nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove))
-        return;
-    const auto now = updater.status();
-    if (!now.release || (now.stage != Stage::available && now.stage != Stage::downloading && now.stage != Stage::installing &&
-                         now.stage != Stage::installed && now.stage != Stage::failed)) {
-        ImGui::CloseCurrentPopup();
-        ImGui::EndPopup();
-        return;
-    }
-    const auto& release = *now.release;
-    if (auto* large = viewer::large_font()) ImGui::PushFont(large);
-    ImGui::TextUnformatted(tr("A new version of openRTS"));
-    if (viewer::large_font()) ImGui::PopFont();
-    ImGui::TextUnformatted(trf("%s is out; you have %s.", release.tag.c_str(), std::string(core::version()).c_str()).c_str());
-    if (!release.summary.empty()) {
-        ImGui::Spacing();
-        ImGui::TextWrapped("%s", release.summary.c_str());
-    }
-    ImGui::Spacing();
-    ImGui::Separator();
-    ImGui::Spacing();
-    const float button_height = ImGui::GetFrameHeight() * 1.3f;
-    switch (now.stage) {
-    case Stage::available: {
-        const bool can_install = !update_dev && update_writable;
-        if (update_dev) {
-            hint(tr("This is a build folder of the sources: an update does not replace it. The release can be downloaded from its page."));
-        } else if (!update_writable) {
-            warning(trf("The game's folder cannot be written to (%s): download the release from its page, or start the menu as administrator.",
-                        utf8(exe_dir).c_str())
-                        .c_str());
-        } else if (running()) {
-            hint(tr("Close the game to update."));
-        } else {
-            hint(tr("The archive is downloaded and checked, the game's files are replaced, and the menu starts again. Your settings stay."));
-        }
-        ImGui::Spacing();
-        if (can_install) {
-            ImGui::BeginDisabled(running());
-            ImGui::PushStyleColor(ImGuiCol_Button, ImVec4{0.16f, 0.52f, 0.30f, 1.0f});
-            ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4{0.20f, 0.62f, 0.36f, 1.0f});
-            ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4{0.14f, 0.45f, 0.26f, 1.0f});
-            if (ImGui::Button(tr("Update"), {0.0f, button_height})) updater.install(exe_dir, update_folder(), old_files());
-            ImGui::PopStyleColor(3);
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-        }
-        if (ImGui::Button(tr("Release page"), {0.0f, button_height})) open_page(release.page);
-        ImGui::SameLine();
-        if (ImGui::Button(tr("Later"), {0.0f, button_height})) ImGui::CloseCurrentPopup();
-        ImGui::SameLine();
-        if (ImGui::Button(tr("Skip this version"), {0.0f, button_height})) {
-            remember("update_skip", release.tag);
-            ImGui::CloseCurrentPopup();
-        }
-        break;
-    }
-    case Stage::downloading: {
-        const double total = static_cast<double>(now.total);
-        const float fraction = total > 0.0 ? static_cast<float>(static_cast<double>(now.done) / total) : 0.0f;
-        const auto label = trf("Downloading: %.1f of %.1f MB", static_cast<double>(now.done) / 1048576.0, total / 1048576.0);
-        ImGui::ProgressBar(fraction, {-FLT_MIN, 0.0f}, label.c_str());
-        ImGui::Spacing();
-        if (ImGui::Button(tr("Cancel"), {0.0f, button_height})) updater.cancel();
-        break;
-    }
-    case Stage::installing: ImGui::TextUnformatted(tr("Checking the archive and installing...")); break;
-    case Stage::installed: ImGui::TextUnformatted(tr("Installed. The menu starts again.")); break;
-    case Stage::failed:
-        warning(failure_text(now).c_str());
-        ImGui::Spacing();
-        if (!update_dev && update_writable) {
-            ImGui::BeginDisabled(running());
-            if (ImGui::Button(tr("Try again"), {0.0f, button_height})) updater.install(exe_dir, update_folder(), old_files());
-            ImGui::EndDisabled();
-            ImGui::SameLine();
-        }
-        if (ImGui::Button(tr("Release page"), {0.0f, button_height})) open_page(release.page);
-        ImGui::SameLine();
-        if (ImGui::Button(tr("Close"), {0.0f, button_height})) ImGui::CloseCurrentPopup();
-        break;
-    default: break;
-    }
-    ImGui::EndPopup();
-}
-
-// Settings: this version, the check at the start, the last check's answer.
-void Launcher::State::draw_update_settings(const float label_width) {
-    using Stage = update::Updater::Stage;
-    ImGui::SeparatorText(tr("Updates"));
-    if (begin_form("##update_form", label_width)) {
-        form_row(tr("Version"));
-        ImGui::TextUnformatted(core::version_text().c_str());
-        form_row(tr("Check for a new version at the start"));
-        if (ImGui::Checkbox("##update_check", &update_check)) remember("update_check", update_check ? "1" : "0");
-        ImGui::EndTable();
-    }
-    const auto now = updater.status();
-    switch (now.stage) {
-    case Stage::checking: hint(tr("Asking GitHub for the latest version...")); break;
-    case Stage::up_to_date:
-        hint(trf("This is the latest version (%s).", now.release ? now.release->tag.c_str() : "").c_str());
-        break;
-    case Stage::available:
-    case Stage::downloading:
-    case Stage::installing:
-    case Stage::installed:
-        if (now.release) {
-            ImGui::TextUnformatted(trf("Version %s is out.", now.release->tag.c_str()).c_str());
-            ImGui::SameLine();
-            if (ImGui::SmallButton(tr("Update..."))) offer_update();
-        }
-        break;
-    case Stage::failed: warning(failure_text(now).c_str()); break;
-    default: break;
-    }
-    ImGui::BeginDisabled(updater.busy());
-    if (ImGui::Button(tr("Check now"))) {
-        update_manual = true;
-        updater.check(std::string(core::version()));
-    }
-    ImGui::EndDisabled();
-    hint(tr("The menu asks GitHub for the latest release (not the nightly build). An update downloads its archive, checks it and replaces the game's files; the settings stay."));
-}
-#else
-void Launcher::State::draw_update_popup() {}
-void Launcher::State::draw_update_settings(float) {}
-#endif
 
 Launcher::Launcher(std::filesystem::path exe_dir) : state_(std::make_unique<State>()) {
     state_->exe_dir = std::move(exe_dir);
-    // The last update's old files (the menu that ran it may still be closing:
-    // once more a few seconds on).
-    update::remove_old_files(state_->old_files());
-    state_->old_files_again = std::chrono::steady_clock::now() + std::chrono::seconds(5);
-    state_->update_check = remembered_int("update_check", 1) != 0;
+    state_->image_dir = utf8(state_->exe_dir / "menu");
     state_->load_settings();
     state_->scan();
     // No RTS folder yet: the settings first, where it is given.
-    if (!state_->vfs) state_->tab = Tab::settings;
+    if (!state_->vfs) {
+        state_->page = State::Page::settings;
+        state_->settings_section = 0;
+    }
+}
+
+std::string Launcher::attach(const viewer::SceneGpu& gpu, viewer::ViewerCamera&) {
+#ifdef OPENRTS_HAS_IMGUI
+    if (!state_->images) state_->images = std::make_unique<menu::ImageCache>();
+    state_->images->set_device(gpu.device);
+#endif
+    return {};
+}
+
+void Launcher::detach() {
+    if (state_->images) state_->images->clear();
+}
+
+std::optional<SessionRequest> Launcher::take_session_request() {
+    auto request = std::move(state_->pending_session);
+    state_->pending_session.reset();
+    return request;
+}
+
+void Launcher::session_finished(const std::string& note) {
+    state_->page = State::Page::home;
+    state_->session_note = note;
+    state_->status = note;
+    state_->scan();
+    state_->load_graphics();
+    state_->fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
+    state_->window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::fullscreen);
+}
+
+void Launcher::session_failed(const std::string& error) {
+    state_->page = State::Page::solo;
+    state_->status = error;
+}
+
+void Launcher::show_home() {
+    state_->page = State::Page::home;
+}
+
+bool Launcher::draw_embedded_settings() {
+    state_->embedded_settings = true;
+    state_->embedded_back = false;
+    state_->draw_settings_page();
+    state_->embedded_settings = false;
+    const bool back = state_->embedded_back;
+    state_->embedded_back = false;
+    return back;
 }
 
 std::string Launcher::command() const { return state_->command_line(Tab::single); }
@@ -2380,6 +2650,36 @@ void Launcher::show_tab(const std::string_view key) {
         state_->tab = static_cast<Tab>(i);
         state_->select_tab = true;
     }
+    if (key == "single") state_->page = State::Page::solo;
+    else if (key == "settings") state_->page = State::Page::settings;
+    else if (key == "graphics") {
+        state_->page = State::Page::settings;
+        state_->settings_section = 1;
+    } else if (key == "network") {
+        state_->page = State::Page::soon;
+        state_->soon_kind = 0;
+    } else if (key == "info") {
+        state_->page = State::Page::settings;
+        state_->settings_section = 2;
+    } else if (key == "controls") {
+        state_->page = State::Page::settings;
+        state_->settings_section = 2;
+    } else if (key == "sound") {
+        state_->page = State::Page::settings;
+        state_->settings_section = 3;
+    }
+}
+
+void Launcher::apply_window_options(viewer::WindowOptions& options) const {
+    const auto& s = *state_;
+    options.msaa = viewer::valid_msaa_samples(static_cast<int>(s.graphics.msaa));
+    options.vsync = s.vsync;
+    options.shading = s.graphics.experimental ? renderer::ShadingPath::experimental : renderer::ShadingPath::rts_compatible;
+    options.hdr = s.graphics.hdr;
+    options.pbr = s.graphics.pbr;
+    options.fps_limit = s.fps_limit;
+    options.window_mode = s.window_mode;
+    options.sound_volume = s.volume;
 }
 
 std::string Launcher::summary() const {
@@ -2395,16 +2695,6 @@ Launcher::~Launcher() {
 #endif
 }
 
-void Launcher::set_update_check(const bool on) { state_->update_check = on && state_->update_check; }
-
-void Launcher::set_updated_from(std::string version) {
-    state_->status = trf("openRTS is updated: %s -> %s.", version.c_str(), std::string(core::version()).c_str());
-}
-
-bool Launcher::wants_close() const { return state_->restart; }
-
-void Launcher::discord_join(const std::string& secret) { state_->join_from_discord(secret); }
-
 std::optional<viewer::ScenePresence> Launcher::presence() const {
     if (state_->running()) return std::nullopt;
     return viewer::ScenePresence{.details = tr("In the menu")};
@@ -2412,7 +2702,6 @@ std::optional<viewer::ScenePresence> Launcher::presence() const {
 
 void Launcher::update(renderer::ModelRenderer&, viewer::ViewerCamera&, const viewer::SceneClock&, const viewer::SceneInput&) {
     state_->poll();
-    state_->poll_update();
 }
 
 viewer::SceneEnvironment Launcher::environment() const {
@@ -2425,55 +2714,26 @@ void Launcher::draw_overlay(const viewer::ViewerCamera&) const {
 #ifdef OPENRTS_HAS_IMGUI
     auto& s = *state_;
     const auto& io = ImGui::GetIO();
-    const MenuStyle style;
     ImGui::SetNextWindowPos({0.0f, 0.0f});
     ImGui::SetNextWindowSize(io.DisplaySize);
     constexpr auto flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
                            ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings |
-                           ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar;
+                           ImGuiWindowFlags_NoBringToFrontOnFocus | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse;
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, {0.0f, 0.0f});
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0f);
+    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4{0.0f, 0.0f, 0.0f, 0.0f});
     ImGui::Begin("##launcher", nullptr, flags);
 
-    // The name, then the tabs.
-    if (auto* title = viewer::title_font()) {
-        ImGui::PushFont(title);
-        ImGui::TextUnformatted("openRTS");
-        ImGui::PopFont();
-    } else {
-        ImGui::TextUnformatted("openRTS");
-    }
-    s.draw_tabs();
-    ImGui::Spacing();
-
-    // The bottom keeps its height (the separator with its spacing, on a game
-    // tab the button, a status line or two); the tab's panels take the rest.
-    constexpr float button_width = 240.0f, button_height = 46.0f;
-    const bool game_tab = s.tab == Tab::single || s.tab == Tab::network;
-    const auto& style_now = ImGui::GetStyle();
-    const float status_height = s.status.empty() ? 0.0f : ImGui::GetTextLineHeightWithSpacing() * 2.0f;
-    const float bar = (game_tab ? button_height + style_now.ItemSpacing.y * 4.0f : style_now.ItemSpacing.y * 2.0f) + 6.0f;
-    const float middle = (std::max)(200.0f, ImGui::GetContentRegionAvail().y - bar - status_height);
-
-    ImGui::BeginDisabled(s.running());
-    switch (s.tab) {
-    case Tab::single: s.draw_single(middle); break;
-    case Tab::network: s.draw_network(middle); break;
-    case Tab::settings: s.draw_settings(middle); break;
-    case Tab::graphics: s.draw_graphics(middle); break;
-    case Tab::info: s.draw_info(middle); break;
-    }
-    ImGui::EndDisabled();
-
-    s.draw_update_popup();
-
-    ImGui::Separator();
-    if (game_tab) s.draw_bar(button_width, button_height, status_height);
-    if (!s.status.empty()) {
-        const bool failed = s.net_step == NetStep::failed;
-        ImGui::PushStyleColor(ImGuiCol_Text, failed ? ImVec4{1.0f, 0.55f, 0.45f, 1.0f} : ImVec4{0.95f, 0.80f, 0.45f, 1.0f});
-        ImGui::TextWrapped("%s", s.status.c_str());
-        ImGui::PopStyleColor();
+    switch (s.page) {
+    case State::Page::home: s.draw_home(); break;
+    case State::Page::solo: s.draw_solo(); break;
+    case State::Page::settings: s.draw_settings_page(); break;
+    case State::Page::account: s.draw_account(); break;
+    case State::Page::soon: s.draw_soon(); break;
     }
     ImGui::End();
+    ImGui::PopStyleColor();
+    ImGui::PopStyleVar(2);
 #endif
 }
 
