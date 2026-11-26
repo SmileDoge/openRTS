@@ -871,6 +871,12 @@ void step_recorder(RecorderState& s, const RecorderSettings& k, const RecorderIn
     for (const auto& c : in.cabs) key = key || c.epk_key;
     if (in.powered && key) s.alsn_on = true;
     if (!in.powered || (!key && !(k.setup & 0x20))) s.alsn_on = false;
+    if (s.alsn_on) {
+        s.alsn_on_for += in.dt;
+    } else {
+        s.alsn_on_for = 0.0f;
+        s.request_at_switch_on = false;
+    }
     const Vigilance v{s, in, out};
     if (!key || (in.powered && (!(k.klub_setup & 0x10) || in.saut_powered))) {
         if (k.setup & 8) {
@@ -925,6 +931,7 @@ void step_recorder(RecorderState& s, const RecorderSettings& k, const RecorderIn
             } else if (static_cast<std::uint32_t>(static_cast<std::int64_t>(s.aspect_seen)) >= aspect || aspect == 8 || aspect <= 1) {
                 // A worse aspect: a request.
                 if (speed < 0.1) s.flags |= f::stood;
+                if (s.alsn_on_for <= 1.0f) s.request_at_switch_on = true;
                 if (s.whistle < 2.0f) {
                     s.whistle = 2.0f;
                     s.periodic = static_cast<float>(35.0 - dt * 0.5);
@@ -1048,12 +1055,14 @@ void recorder_switched(RecorderState& s, const RecorderSettings& k, const Record
             const auto answer = [&] {
                 s.periodic = (aspect == 1 && c.als >= 0 && ci.als) ? -10.0f : 0.0f;
                 s.flags &= ~f::stood;
+                s.request_at_switch_on = false;
                 if (s.whistle != 0.0f) sound(57);
                 s.whistle = 0.0f;
             };
             const double limit_rb = ((k.setup & 1) ? 0.0 : 10.0) + 35.0;
             const double limit_rbs = ((k.setup & 1) ? 0.0 : 10.0) + 45.0;
-            if (c.rb >= 0 && ci.rb_pressed && !s.whistle_flag && (limit_rb > s.periodic || (s.flags & f::moving)) && in.powered && !(k.setup & 8))
+            if (c.rb >= 0 && ci.rb_pressed && !s.whistle_flag && (limit_rb > s.periodic || (s.flags & f::moving) || s.request_at_switch_on) &&
+                in.powered && !(k.setup & 8))
                 answer();
             if (c.rbs >= 0 && ci.rbs_pressed && !s.whistle_flag && limit_rbs > s.periodic && in.powered && !(k.setup & 8)) answer();
             if (c.vk >= 0 && ci.vk_pressed && s.alsn_on && !(k.setup & 8)) {

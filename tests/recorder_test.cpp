@@ -142,6 +142,16 @@ void alsn_on_at_kzh() {
         check(u.s.whistle == 0.0f, "ALSN on at КЖ standing: the РБС answers (periodic " + std::to_string(u.s.periodic) + ", flags "
                                        + std::to_string(u.s.flags) + ", whistle_flag " + std::to_string(u.s.whistle_flag) + ")");
     }
+    {
+        // openRTS: the РБ answers it too (Brakes.dll's does not past 35 s).
+        auto u = make();
+        step(u, 2.0f);
+        u.cabs[0].rb = u.cabs[0].rb_pressed = true;
+        step(u, dt);
+        check(u.s.whistle == 0.0f && !(u.s.flags & recorder_flag::stood), "ALSN on at КЖ standing: the РБ answers (openRTS)");
+        step(u, 10.0f);
+        check(!u.out.vent, "ALSN on at КЖ standing, answered: no ЭПК");
+    }
 }
 
 void kpd() {

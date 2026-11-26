@@ -121,6 +121,12 @@ struct RecorderState {
     bool whistle_flag = false; // + 8 0x10000000
     bool epk_bit = false;      // + 32 bit 1
     bool alsn_on = false;      // Engine +106
+    // openRTS (not Brakes.dll): the request the ALSN's coming on made (a КЖ
+    // or no code at once, a hot start too) the РБ answers as well as the
+    // РБС, as on a real engine; Brakes.dll's РБ does not past 35 s
+    // standing (testers 2026-11-26). The time since the ALSN came on, s.
+    bool request_at_switch_on = false;
+    float alsn_on_for{};
     // The КПД-3's (mode 1): + 164 its page and flags (1 lit by its key, 2
     // the acceleration, 4 the clock, 8 the test "1000", 0x20 the menu, 0x40
     // / 0x80 the date, number 1, number 2), + 168 .. + 180 day, month and the
