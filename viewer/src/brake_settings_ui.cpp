@@ -32,6 +32,7 @@ constexpr BrakeSettings rts_brakes{.realistic = false, .dll_air = 0, .gauges = f
 [[nodiscard]] bool same_preset(BrakeSettings a, const BrakeSettings& b) {
     a.klub_objects = b.klub_objects;
     a.klub_map = b.klub_map;
+    a.saut_brakes = b.saut_brakes;
     return a == b;
 }
 
@@ -135,6 +136,7 @@ BrakeSettings brake_preset(const BrakePreset preset, const BrakeSettings& now) {
     }
     out.klub_objects = now.klub_objects;
     out.klub_map = now.klub_map;
+    out.saut_brakes = now.saut_brakes;
     return out;
 }
 
@@ -160,6 +162,7 @@ BrakeSettings load_brake_settings() {
     s.no_brakes_dll = remembered_int("no_brakes_dll", 1) != 0;
     s.klub_objects = remembered_int("klub_objects", 0) != 0;
     s.klub_map = remembered_int("klub_map", 1) != 0;
+    s.saut_brakes = remembered_int("saut_brakes", 1) != 0;
     return s;
 }
 
@@ -179,6 +182,7 @@ void remember_brake_settings(const BrakeSettings& s) {
     remember("no_brakes_dll", flag(s.no_brakes_dll));
     remember("klub_objects", flag(s.klub_objects));
     remember("klub_map", flag(s.klub_map));
+    remember("saut_brakes", flag(s.saut_brakes));
     if (brake_preset_of(s) == BrakePreset::own) remember("brakes_custom", custom_code(s));
 }
 
@@ -240,6 +244,8 @@ bool draw_brake_settings(BrakeSettings& s, const BrakeSettingsStatus* status, co
                         row(tr("Electronic map (ЭК)"));
                         ImGui::Checkbox(tr("from the route database"), &s.klub_map);
                         if (s.klub_map) note(now.map);
+                        row(tr("САУТ"));
+                        ImGui::Checkbox(tr("brakes over its speed (openRTS's brakes; off: only cuts traction, as Brakes.dll)"), &s.saut_brakes);
                     }
                 }
                 row(tr("Cab gauges"));

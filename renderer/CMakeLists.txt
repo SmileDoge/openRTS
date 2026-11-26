@@ -8,6 +8,7 @@ add_library(openrts_renderer STATIC
     src/weather_particles.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
+    src/hdr_output.cpp
     src/temporal_aa.cpp
     src/motion_vectors.cpp
     src/auto_exposure.cpp
@@ -23,6 +24,7 @@ add_library(openrts_renderer STATIC
     src/cargo_shape.cpp
     src/forest_shape.cpp
     src/forest_clearance.cpp
+    src/grass_blockers.cpp
     src/scene_effects.cpp
     src/video_memory.cpp
     src/task_pool.cpp
@@ -37,6 +39,7 @@ add_library(openrts_renderer STATIC
     src/sky_light.cpp
     src/native_sky.cpp
     src/terrain_renderer.cpp
+    src/terrain_grass.cpp
     src/shader_code.cpp)
 openrts_configure_target(openrts_renderer)
 

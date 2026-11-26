@@ -125,6 +125,8 @@ struct LegacyConsist::KlubCar {
     std::uint32_t ek_logged_track = 0;
     int ek_logged_mode = -1;
     std::uint32_t ek_logged_object = ~0u;
+    float ek_turn_hold = 0.0f;   // m: the head over a switch the map's way takes off the straight
+    float ek_turn_speed = 0.0f;  // m/s: that switch's (switch_speed)
 };
 
 namespace {
@@ -585,6 +587,23 @@ private:
         if (sounds) sounds->insert(sounds->end(), r.sounds.begin(), r.sounds.end());
         demands.equalising = r.equalising;
         demands.equalising_kept = r.equalising_kept;
+        // openRTS's САУТ's service braking: the УР taken down to the charging
+        // pressure less its reduction, at a service rate (0.3 atm/s), as the
+        // valve's lap holds it; let go, the valve's own УР again.
+        {
+            const float asked = o && car_ < o->klub_saut_service.size() ? o->klub_saut_service[car_] : 0.0f;
+            if (asked > 0.0f) {
+                const float target = controls.charging - asked;
+                if (saut_ur_ <= 0.0f) saut_ur_ = r.equalising;
+                saut_ur_ = (std::max)(saut_ur_ - 0.3f * static_cast<float>(dt), target);
+                if (saut_ur_ < demands.equalising) {
+                    demands.equalising = saut_ur_;
+                    brakes_state_.valve.equalising = (std::min)(brakes_state_.valve.equalising, saut_ur_);
+                }
+            } else {
+                saut_ur_ = 0.0f;
+            }
+        }
         demands.emergency = r.emergency || vent;
         demands.pipe_feed = r.feed;
         demands.pipe_direct = r.direct;
@@ -625,6 +644,7 @@ private:
     int brakes_library_ = -1;      // that library in the host
     std::uint32_t wagons_ = 0;     // its train's wagons, not engines (RTSGetInteger 2: the ТМ needle)
     simulation::CabBrakeState brakes_state_;
+    float saut_ur_ = 0.0f; // the УР openRTS's САУТ has taken down to (0: none)
     bool brakes_started_ = false;
 };
 
@@ -2159,6 +2179,37 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
                 car.ek_entries = car.state.track_entries;
             }
             const auto target = world.electronic_map(car.state.track & 0x7Fu, car.ek);
+            // The entered track's way's limits in place of the train's
+            // (testers 2026-11-26): the next as the most restrictive one
+            // ahead, a switch off the straight 40 km/h from its head on (the
+            // КЛУБ lifts it once the train's entered length has run past).
+            car.ek_turn_hold = (std::max)(car.ek_turn_hold - std::abs(in.speed) * in.dt, 0.0f);
+            if (target.matched && target.way_known) {
+                for (const auto& [d, v] : target.turns) {
+                    if (d > 3.0) continue;
+                    car.ek_turn_speed = car.ek_turn_hold > 0.0f ? (std::min)(car.ek_turn_speed, v) : v;
+                    car.ek_turn_hold = 12.0f;
+                }
+                if (car.ek_turn_hold > 0.0f)
+                    in.limit = in.limit < 0.0f ? car.ek_turn_speed : (std::min)(in.limit, car.ek_turn_speed);
+                float speed = -1.0f, distance = -1.0f;
+                const auto need = [](const float v, const double d) { return v * v + 1.2 * d; }; // v² + 2·0.6 m/s²·d
+                for (const auto& [v, d] : target.limits) {
+                    if (d <= 0.0 || (in.limit >= 0.0f && v >= in.limit)) continue;
+                    if (speed < 0.0f || need(v, d) < need(speed, distance)) {
+                        speed = v;
+                        distance = static_cast<float>(d);
+                    }
+                }
+                // None lower: the next one ahead (the screen's target), as the train's way gives it.
+                for (const auto& [v, d] : target.limits) {
+                    if (speed >= 0.0f || d <= 0.0) continue;
+                    speed = v;
+                    distance = static_cast<float>(d);
+                }
+                in.next_limit = speed;
+                in.next_limit_distance = distance;
+            }
             in.ek = {.given = true, .matched = target.matched, .has_target = target.has_target, .distance = static_cast<float>(target.distance)};
             if (target.matched && target.has_target && world.route_database && target.unit >= 0
                 && static_cast<std::size_t>(target.unit) < world.route_database->signal_units.size())
@@ -2350,6 +2401,8 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
             out.sound_cab.insert(out.sound_cab.end(), car.out.sounds.begin(), car.out.sounds.end());
         }
         outputs_->klub_vent[i] = car.out.vent ? 1 : 0;
+        if (outputs_->klub_saut_service.size() != outputs_->cars.size()) outputs_->klub_saut_service.assign(outputs_->cars.size(), 0.0f);
+        outputs_->klub_saut_service[i] = car.out.saut_service;
     }
 }
 
@@ -2551,13 +2604,7 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             else car.previous_aspect = aspect;
             ri.aspect = aspect;
         }
-        // Its safety devices' power: Brakes.dll's bit, which openRTS's КЛУБ
-        // writes for a car with a КЛУБ; a car without one (the ВЛ85's АЛСН,
-        // SL_SETUP 1: no KLUB_PIT, Brakes.dll's power list empty) is
-        // powered. Until 2026-11-26 the bit stayed 0 there, the ЭПК key on
-        // read "the ALSN not powered": the whistle at once and the trip 7 s
-        // on, at every hot start (testers).
-        ri.powered = (var_bits(32) & 4u) != 0 || klub_car(i) == nullptr;
+        ri.powered = (var_bits(32) & 4u) != 0;
         ri.tskbm_on = (car.last_var4 & 8u) != 0;
         ri.bypass = (car.last_var4 & 0x200u) != 0;
         ri.ep_pressure = car.last_ep;
@@ -2577,20 +2624,6 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             ri.date_weekday = local.tm_wday;
         }
         simulation::step_recorder(car.state, p.settings, ri, car.out);
-        if (static const bool trace = std::getenv("OPENRTS_RECORDER_TRACE") != nullptr; trace) {
-            static double clock = 0.0;
-            clock += request.dt;
-            static double next = 0.0;
-            if (clock >= next) {
-                next = clock + 1.0;
-                bool key = false;
-                for (const auto& c : ri.cabs) key = key || c.epk_key;
-                std::fprintf(stdout, "recorder trace %.1f car %zu: powered %d key %d alsn_on %d periodic %.2f whistle %.2f flags 0x%X aspect %u setup %u\n", clock, i,
-                             ri.powered ? 1 : 0, key ? 1 : 0, car.state.alsn_on ? 1 : 0, car.state.periodic, car.state.whistle, car.state.flags, ri.aspect,
-                             p.settings.setup, p.settings.klub_setup, ri.saut_powered ? 1 : 0);
-                std::fflush(stdout);
-            }
-        }
         simulation::recorder_switched(car.state, p.settings, ri, car.out);
         // Brakes.dll's odometer goes on in its Run all the same: the same.
         car.last_var4 = var_bits(4);

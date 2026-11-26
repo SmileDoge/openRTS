@@ -1712,6 +1712,7 @@ void TrainView::load_brake_choices() {
         own_klub_ = std::clamp(std::atoi(remembered("own_klub").value_or("1").c_str()), 0, 1);
         klub_map_ = remembered("klub_map").value_or("1") != "0";
         klub_objects_ = remembered("klub_objects").value_or("0") == "1";
+        simulation::saut_service_braking() = remembered("saut_brakes").value_or("1") != "0";
         no_brakes_dll_ = remembered("no_brakes_dll").value_or("1") == "1";
     }
     trainplugin::LegacyConsist::set_without_brakes_dll(no_brakes_dll_ && realistic_air_ && dll_air_ != 0 && own_klub_ == 1 && own_brakes_ == 1);
@@ -3109,6 +3110,7 @@ void TrainView::apply_brake_settings(const BrakeSettings& s) {
     no_brakes_dll_ = s.no_brakes_dll;
     klub_objects_ = s.klub_objects;
     klub_map_ = s.klub_map;
+    simulation::saut_service_braking() = s.saut_brakes;
     own_brakes_loaded_ = true;
     if (legacy_) legacy_->set_air(static_cast<trainplugin::DllAir>(dll_air_));
     for (auto& unit : units_) {
@@ -9737,8 +9739,16 @@ const simulation::ElectronicMap* TrainView::electronic_map() {
         // The train signals (a NORMAL head, placed): one place each.
         std::vector<simulation::MapSignal> signals;
         std::set<std::uint32_t> taken;
+        const auto* units = signal_units();
         for (const auto& head : signals_->heads()) {
             if (!head.placed || !head.type || head.type->function != formats::SignalFunction::normal) continue;
+            // A shunting signal (М36) described as a train one: not the map's.
+            if (head.track_item < units->item_unit.size()) {
+                const auto u = units->item_unit[head.track_item];
+                if (u >= 0 && static_cast<std::size_t>(u) < units->database.signal_units.size()
+                    && simulation::shunting_signal_name(units->database.signal_units[static_cast<std::size_t>(u)].name))
+                    continue;
+            }
             if (!taken.insert(head.object).second) continue;
             signals.push_back({.object = head.object, .node = head.node, .offset = head.offset, .forward = head.forward});
         }
@@ -10298,9 +10308,26 @@ void TrainView::feed_world(const Unit& unit) {
         const auto front = train.front_end();
         if (map && !map->empty() && front) {
             world.electronic_map = [map, network = train.network(), node = front->node(), offset = front->offset(),
-                                    forward = front->forward(), passed = std::move(passed), units, signals = signals_](
+                                    forward = front->forward(), passed = std::move(passed), units, signals = signals_,
+                                    limits = limits_.get(), category = unit.speed_category()](
                                        const std::uint32_t number, simulation::EkState& state) {
                 auto target = map->update(state, *network, node, offset, forward, number, passed);
+                // In the ЭК mode the limits ahead are the entered track's
+                // way's (testers 2026-11-26): its speed posts, and 40 km/h
+                // at each switch it takes off the straight.
+                if (target.matched && limits) {
+                    const auto way = map->way(*network, node, offset, forward, number);
+                    if (!way.parts.empty()) {
+                        target.way_known = true;
+                        for (const auto& part : way.parts)
+                            limits->limits_on(part.node, part.entry, part.exit, part.forward, part.distance, category, target.limits);
+                        for (const auto& turn : way.turns) {
+                            target.turns.emplace_back(turn.distance, turn.speed);
+                            target.limits.emplace_back(turn.speed, turn.distance);
+                        }
+                        std::sort(target.limits.begin(), target.limits.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+                    }
+                }
                 if (target.has_target && units && target.object < signals->objects().size()) {
                     const auto& heads = signals->objects()[target.object].heads;
                     if (!heads.empty() && heads.front() < signals->heads().size()) {
@@ -10681,8 +10708,7 @@ void TrainView::update_lights(const float elapsed, const glm::vec3& eye) {
             // as RTS runs a shape's lamps (0x4B0284): RUNNING burns,
             // NIGHT_AUTO by the light level (AutoWhenWorldLit, else at
             // night), NIGHT_ONLY never by day.
-            bool on = out && k < out->internal_lights.size() && out->internal_lights[k] != 0;
-            if (!out) {
+            bool on = out && k < out->internal_lights.size() && out->internal_lights[k] != 0;            if (!out) {
                 const std::string lamp_flags = lower(lamp.flags);
                 on = lamp_flags.find("running") != std::string::npos;
                 if (lamp_flags.find("night_auto") != std::string::npos)

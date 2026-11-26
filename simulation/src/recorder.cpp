@@ -869,12 +869,8 @@ void step_recorder(RecorderState& s, const RecorderSettings& k, const RecorderIn
     s.vented = 0.0f;
     bool key = false;
     for (const auto& c : in.cabs) key = key || c.epk_key;
-    const bool alsn_was = s.alsn_on;
     if (in.powered && key) s.alsn_on = true;
     if (!in.powered || (!key && !(k.setup & 0x20))) s.alsn_on = false;
-    if (s.alsn_on && !alsn_was && !s.ever_on) s.start_grace = 6.0f;
-    if (s.alsn_on) s.ever_on = true;
-    else if (s.start_grace > 0.0f) s.start_grace = (std::max)(s.start_grace - in.dt, 0.0f);
     const Vigilance v{s, in, out};
     if (!key || (in.powered && (!(k.klub_setup & 0x10) || in.saut_powered))) {
         if (k.setup & 8) {
@@ -887,15 +883,7 @@ void step_recorder(RecorderState& s, const RecorderSettings& k, const RecorderIn
         } else {
             s.whistle_flag = false;
             const std::uint32_t aspect = in.aspect;
-            if (s.start_grace > 0.0f && std::abs(in.speed) < 0.1) {
-                // Just on, standing: the aspect as it is (a better one still
-                // beeps, as Brakes.dll's).
-                if (static_cast<std::int64_t>(s.aspect_seen) < static_cast<std::int64_t>(aspect) && aspect != 8 && aspect > 1)
-                    out.sounds.push_back(106);
-                s.periodic = 0.0f;
-                if (s.whistle != 0.0f) out.sounds.push_back(57);
-                s.whistle = 0.0f;
-            } else if (((s.flags & f::moving) && speed > 1.6 && !(s.flags & f::acts)) || (s.flags & f::stood)) {
+            if (((s.flags & f::moving) && speed > 1.6 && !(s.flags & f::acts)) || (s.flags & f::stood)) {
                 v.from_34(true, false);
             } else if (static_cast<std::int64_t>(s.aspect_seen) == aspect && s.whistle != 2.0f) {
                 if ((s.flags & f::vk) && (aspect == 0 || aspect == 8)) out.cab_aspect = 2;

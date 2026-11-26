@@ -284,6 +284,7 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 
 #include "rts_light_shapes.hpp"
 #include "shader_code.hpp"
+#include "terrain_grass.hpp"
 
 namespace openrts::renderer {
 namespace {
@@ -563,8 +564,18 @@ struct TerrainRenderer::Impl {
     std::map<TileKey, bool> failed_tiles;
     std::map<std::string, GpuTexture> textures; // by virtual path key
     std::map<std::pair<std::string, std::string>, WGPUBindGroup> materials;
+    // openRTS's grass: the blades near the eye, their buffer, its pipelines
+    // ([experimental] as the terrain's; the RTS path draws none).
+    detail::GrassField grass;
+    WGPUBuffer grass_buffer = nullptr;
+    std::uint64_t grass_capacity = 0; // blades it holds
+    std::uint32_t grass_count = 0;
+    WGPURenderPipeline grass_pipeline = nullptr;
+    std::size_t grass_drawn = 0;
 
     ~Impl() {
+        if (grass_buffer) wgpuBufferRelease(grass_buffer);
+        if (grass_pipeline) wgpuRenderPipelineRelease(grass_pipeline);
         for (auto& [_, job] : tile_jobs) {
             if (job.valid()) job.wait();
         }
@@ -820,6 +831,7 @@ struct TerrainRenderer::Impl {
             failed_tiles[key] = true;
             return;
         }
+        grass.add_tile(mesh);
         GpuTile tile;
         tile.vertices = create_buffer(device, WGPUBufferUsage_Vertex, mesh.vertices.size() * sizeof(TerrainVertex),
                                       mesh.vertices.data());
@@ -876,12 +888,12 @@ namespace {
     std::array<WGPUBindGroupLayoutEntry, 6> entries{};
     for (std::uint32_t i : {0u, 1u, 3u, 4u}) {
         entries[i].binding = i;
-        entries[i].visibility = WGPUShaderStage_Fragment;
+        entries[i].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment; // the grass tests its ground in the vertex shader
         entries[i].texture.sampleType = WGPUTextureSampleType_Float;
         entries[i].texture.viewDimension = WGPUTextureViewDimension_2D;
     }
     entries[2].binding = 2;
-    entries[2].visibility = WGPUShaderStage_Fragment;
+    entries[2].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[2].sampler.type = WGPUSamplerBindingType_Filtering;
     // The ground's material (normal map 3, ORM 4, its numbers 5).
     entries[5].binding = 5;
@@ -998,6 +1010,59 @@ namespace {
             .buffers = &vertex_layout,
         },
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .depthStencil = &depth,
+        .multisample = scene_multisample(),
+        .fragment = &fragment,
+    };
+    return wgpuDeviceCreateRenderPipeline(device, &descriptor);
+}
+
+// The grass (docs/grass.md): the terrain's fragment shader, its blades from
+// an instance buffer (GrassInstance), both faces drawn.
+[[nodiscard]] WGPURenderPipeline create_grass_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout,
+                                                       const WGPUShaderModule shader, const WGPUTextureFormat target_format) {
+    const std::array<WGPUVertexAttribute, 2> attributes{{
+        {.format = WGPUVertexFormat_Float32x4, .offset = 0, .shaderLocation = 6},
+        {.format = WGPUVertexFormat_Float32x4, .offset = 16, .shaderLocation = 7},
+    }};
+    const WGPUVertexBufferLayout vertex_layout{
+        .stepMode = WGPUVertexStepMode_Instance,
+        .arrayStride = sizeof(detail::GrassInstance),
+        .attributeCount = attributes.size(),
+        .attributes = attributes.data(),
+    };
+    constexpr WGPUStencilFaceState keep_stencil{
+        .compare = WGPUCompareFunction_Always,
+        .failOp = WGPUStencilOperation_Keep,
+        .depthFailOp = WGPUStencilOperation_Keep,
+        .passOp = WGPUStencilOperation_Keep,
+    };
+    const WGPUDepthStencilState depth{
+        .format = depth_format,
+        .depthWriteEnabled = WGPUOptionalBool_True,
+        .depthCompare = depth_nearer_or_equal,
+        .stencilFront = keep_stencil,
+        .stencilBack = keep_stencil,
+        .stencilReadMask = ~0u,
+        .stencilWriteMask = ~0u,
+    };
+    const WGPUColorTargetState target{.format = target_format, .writeMask = WGPUColorWriteMask_All};
+    const std::array<WGPUConstantEntry, 2> constants{{
+        {.key = wgsl_name("experimental"), .value = 1.0},
+        {.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0},
+    }};
+    const WGPUFragmentState fragment{
+        .module = shader,
+        .entryPoint = wgsl_name("fs_grass"),
+        .constantCount = constants.size(),
+        .constants = constants.data(),
+        .targetCount = 1,
+        .targets = &target,
+    };
+    const WGPURenderPipelineDescriptor descriptor{
+        .layout = layout,
+        .vertex = {.module = shader, .entryPoint = wgsl_name("vs_grass"), .bufferCount = 1, .buffers = &vertex_layout},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList, .cullMode = WGPUCullMode_None},
         .depthStencil = &depth,
         .multisample = scene_multisample(),
         .fragment = &fragment,
@@ -1205,6 +1270,8 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
     impl_->pipeline = create_pipeline(device, pipeline_layout, shader, target_format, false);
     impl_->experimental_pipeline = create_pipeline(device, pipeline_layout, shader, target_format, true);
+    impl_->grass_pipeline = create_grass_pipeline(device, pipeline_layout, shader, target_format);
+    impl_->grass.set_settings(formats::load_route_grass(*impl_->vfs, impl_->route));
     for (int experimental = 0; experimental < 2; ++experimental) {
         for (int blended = 0; blended < 2; ++blended) {
             impl_->water_pipelines[experimental][blended] =
@@ -1354,11 +1421,33 @@ void TerrainRenderer::update(const formats::RoutePosition& camera) {
     for (auto it = impl.tiles.begin(); it != impl.tiles.end();) {
         if (std::abs(it->first.first - camera.tile_x) > keep || std::abs(it->first.second - camera.tile_z) > keep) {
             Impl::release_tile(it->second);
+            impl.grass.remove_tile(it->first.first, it->first.second);
             it = impl.tiles.erase(it);
         } else {
             ++it;
         }
     }
+
+    // The grass near the eye (the experimental path; docs/grass.md).
+    const bool grass_on = impl.shading == ShadingPath::experimental && impl.grass_pipeline;
+    if (impl.grass.update(camera, impl.season, impl.weather, grass_reach(), grass_on ? grass_density() : 0.0f)) {
+        const auto& blades = impl.grass.instances();
+        impl.grass_count = static_cast<std::uint32_t>(blades.size());
+        if (!blades.empty()) {
+            if (!impl.grass_buffer || impl.grass_capacity < blades.size()) {
+                if (impl.grass_buffer) wgpuBufferRelease(impl.grass_buffer);
+                impl.grass_capacity = (std::max<std::uint64_t>)(blades.size() + blades.size() / 2, 4096);
+                impl.grass_buffer = create_buffer(impl.device, WGPUBufferUsage_Vertex, impl.grass_capacity * sizeof(detail::GrassInstance), nullptr);
+            }
+            const auto queue = wgpuDeviceGetQueue(impl.device);
+            wgpuQueueWriteBuffer(queue, impl.grass_buffer, 0, blades.data(), blades.size() * sizeof(detail::GrassInstance));
+            if (queue) wgpuQueueRelease(queue);
+        }
+    }
+}
+
+std::size_t TerrainRenderer::grass_blades() const noexcept {
+    return impl_->grass_drawn;
 }
 
 void TerrainRenderer::prepare_depth() {
@@ -1461,7 +1550,10 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         water_tiles += tile.water_vertices > 0 ? 1 : 0;
         surface_tiles += tile.surface_index_count > 0 ? 1 : 0;
     }
-    const std::size_t draws = impl.tiles.size() + (native ? surface_tiles : water_tiles * impl.water_layers.size());
+    const bool grass_on = impl.shading == ShadingPath::experimental && impl.grass_pipeline && impl.grass_buffer && impl.grass_count > 0;
+    const auto& grass_groups = impl.grass.groups();
+    const std::size_t draws = impl.tiles.size() + (native ? surface_tiles : water_tiles * impl.water_layers.size())
+        + (grass_on ? grass_groups.size() : 0);
     impl.ensure_draw_capacity(draws);
     if (!impl.frame_binding) return;
 
@@ -1560,6 +1652,32 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         }
     }
 
+    // The grass groups' (docs/grass.md): their tile's place, the clock, the
+    // reach, the colour test (no .rtst), the wind; the lamps' ring.
+    const std::size_t first_grass_draw = index;
+    if (grass_on) {
+        for (const auto& group : grass_groups) {
+            const auto offset = glm::vec3{
+                static_cast<float>((group.tile.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+                static_cast<float>(-impl.origin.y),
+                static_cast<float>((group.tile.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+            };
+            glm::mat4 model{1.0f};
+            model[3] = glm::vec4{offset, 1.0f};
+            DrawUniform uniform{.mvp = view_projection * model, .offset = {offset.x, offset.y, offset.z, 0.0f}};
+            const auto tile = impl.tiles.find(group.tile);
+            const auto* patch = tile != impl.tiles.end() && group.patch < tile->second.patches.size() ? &tile->second.patches[group.patch] : nullptr;
+            uniform.uv_rect[0] = patch ? static_cast<float>(lighting.light_rings.ring_for(offset + glm::vec3{patch->center[0], patch->center[1], patch->center[2]}, patch->radius))
+                                       : 0.0f;
+            uniform.uv_mode[0] = static_cast<float>(std::fmod(impl.water_clock, 3600.0));
+            uniform.uv_mode[1] = grass_reach();
+            uniform.uv_mode[2] = group.test_colour ? 1.0f : 0.0f;
+            uniform.uv_mode[3] = 0.35f;
+            std::memcpy(uniforms.data() + index * draw_uniform_stride, &uniform, sizeof(uniform));
+            ++index;
+        }
+    }
+
     FrameUniform frame{};
     copy_vec4(frame.light_diffuse, lighting.sun_diffuse);
     copy_vec4(frame.light_ambient, lighting.sun_ambient + lighting.flash);
@@ -1617,6 +1735,25 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
             // The patch's ring of further lights (RTS 0x4A2AD4) as the first instance.
             const auto ring = rings.ring_for(tile_offset + glm::vec3{patch.center[0], patch.center[1], patch.center[2]}, patch.radius);
             wgpuRenderPassEncoderDrawIndexed(pass, patch.index_count, 1, patch.first_index, 0, ring);
+        }
+    }
+
+    // The grass over the ground.
+    impl.grass_drawn = 0;
+    if (grass_on) {
+        wgpuRenderPassEncoderSetPipeline(pass, impl.grass_pipeline);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, impl.grass_buffer, 0, WGPU_WHOLE_SIZE);
+        std::size_t g = first_grass_draw;
+        for (const auto& group : grass_groups) {
+            const auto offset = static_cast<std::uint32_t>(g++ * draw_uniform_stride);
+            const auto tile = impl.tiles.find(group.tile);
+            if (tile == impl.tiles.end() || group.patch >= tile->second.patches.size()) continue;
+            const auto material = impl.material(tile->second.patches[group.patch]);
+            if (!material) continue;
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, material, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(pass, 1, impl.frame_binding, 1, &offset);
+            wgpuRenderPassEncoderDraw(pass, 45, group.count, 0, group.first);
+            impl.grass_drawn += group.count;
         }
     }
 

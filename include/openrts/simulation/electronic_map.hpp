@@ -7,6 +7,7 @@
 #include <string>
 #include <string_view>
 #include <tuple>
+#include <utility>
 #include <unordered_map>
 #include <vector>
 
@@ -72,6 +73,12 @@ struct MapSignal {
     bool forward = true;
 };
 
+// A shunting signal by its name ("литера"): М and digits (М36, М46; not a
+// route signal: ЧМ2В, НМ10). Routes describe some as train signals (a
+// NORMAL head); the КЛУБ-У's map has no shunting signals (testers
+// 2026-11-26: a distance shown to an М signal). Left out of the map.
+[[nodiscard]] bool shunting_signal_name(std::string_view name);
+
 // A station track of the map.
 struct MapTrack {
     std::string station;
@@ -116,6 +123,41 @@ struct EkTarget {
     std::uint32_t object{};  // the target's SignalSystem object
     double distance{};       // m from the front along the map's way
     std::int32_t unit = -1;  // its route database unit (set by the caller, for its name)
+    // The limits along the map's way (set by the caller from EkWay, in the
+    // ЭК mode): the speed posts' and the switches' it takes off the
+    // straight, (m/s, m from the front), nearest first; `turns` the
+    // switches alone (m from the front). Empty `way_known`: none found,
+    // the train's own way's limits stand.
+    bool way_known = false;
+    std::vector<std::pair<float, double>> limits;
+    std::vector<std::pair<double, float>> turns; // (m, m/s)
+};
+
+// A switch taken off the straight: 40 km/h, the route's data give a switch
+// no speed of its own (testers 2026-11-26); by its shape's side branch
+// (tsection.dat): radius 600 m and more 80 (1/18), 1100 m and more 120
+// (1/22); a slip's (an English switch's part: "Slip" in its file) 25.
+inline constexpr float switch_turn_speed = 40.0f / 3.6f; // m/s
+[[nodiscard]] float switch_speed(const formats::TrackShapeDefinition* shape, const formats::TrackSectionLibrary& sections) noexcept;
+
+// The map's way from the front to the entered track and on through it
+// (testers 2026-11-26: the КЛУБ's limits from the entered track's way, not
+// the train's): its parts in order and the switches it takes off the
+// straight (MainRoute): a facing one onto its other branch, a trailing one
+// from it (off a side track on to the main).
+struct EkWay {
+    struct Part {
+        std::uint32_t node{};
+        bool forward = true;
+        double entry{}, exit{}; // offsets along the node: from where the way comes on to where it leaves
+        double distance{};      // m from the front at `entry`
+    };
+    struct Turn {
+        double distance{}; // m from the front
+        float speed = switch_turn_speed; // m/s (switch_speed)
+    };
+    std::vector<Part> parts;
+    std::vector<Turn> turns;
 };
 
 class ElectronicMap {
@@ -139,6 +181,11 @@ public:
     // map was made on (its junctions' MainRoute).
     EkTarget update(EkState& state, const TrackNetwork& network, std::uint32_t node, double offset, bool forward,
                     std::uint32_t number, std::span<const std::uint32_t> passed) const;
+
+    // The way to the nearest track `number` within the horizon and `beyond`
+    // m on past it along MainRoute (empty: no such track ahead).
+    [[nodiscard]] EkWay way(const TrackNetwork& network, std::uint32_t node, double offset, bool forward, std::uint32_t number,
+                            double beyond = 1500.0) const;
 
     // A station track's number: its name's leading digits (1 .. 98), else 0.
     [[nodiscard]] static std::uint32_t track_number(std::string_view name);

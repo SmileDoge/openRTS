@@ -90,6 +90,140 @@ fn vs_main(input: VertexIn) -> VertexOut {
     return out;
 }
 
+// openRTS's grass (docs/grass.md): a blade a instance, 15 vertices (three
+// quads and the tip), bent by its lean and the wind, coloured by the ground
+// under its root (the fragment shader samples the ground texture at its
+// uv). The draw's uv_mode: the clock (s), the reach (m), 1 to grow only on
+// green ground (no .rtst), the wind's strength; uv_rect.x: the lamps' ring.
+struct GrassIn {
+    @location(6) place: vec4<f32>,  // xyz in the tile, w the height
+    @location(7) ground: vec4<f32>, // uv, seed, width
+    @builtin(vertex_index) corner: u32,
+};
+
+@vertex
+fn vs_grass(input: GrassIn) -> VertexOut {
+    var out: VertexOut;
+    out.ring = min(u32(draw.uv_rect.x), 9u);
+    let seed = input.ground.z;
+    var height = input.place.w;
+    // The ground under it, blurred (a texel alone gives a speckle): the
+    // blade's colour, and no grass on ballast, sand, tarmac or snow.
+    let ground = textureSampleLevel(base_texture, terrain_sampler, input.ground.xy, 5.0).rgb;
+    if (draw.uv_mode.z > 0.5) {
+        // Green to olive (g at least 0.88 r, over b; linear light, the
+        // textures are sRGB): not grey ballast or tarmac, brown soil, sand,
+        // nor snow.
+        let bright = max(max(ground.r, ground.g), ground.b);
+        // Soft: shorter as the ground turns less green (no hard edge).
+        let olive = smoothstep(0.86, 0.95, ground.g / max(ground.r, 1e-3));
+        let over_blue = smoothstep(0.008, 0.03, ground.g - ground.b);
+        height = height * olive * over_blue * (1.0 - smoothstep(0.6, 0.75, bright));
+    }
+    // Shorter towards the edge of its reach.
+    let root_world = input.place.xyz + draw.offset.xyz;
+    let away = length(root_world.xz - frame.fog_sun.zw);
+    height = height * (1.0 - smoothstep(draw.uv_mode.y * 0.75, draw.uv_mode.y, away));
+
+    // A tuft: three blades from one root fanning out (45 vertices), each 15:
+    // two quads and the pointed tip. A flower (width < 0): a thin stem and,
+    // in place of the other two blades, two crossed petal quads at its top.
+    let flower = input.ground.w < 0.0;
+    let blade = input.corner / 15u;
+    let c = input.corner % 15u;
+    var level = 0.0;
+    var side = 0.0;
+    var up = 0.0;
+    var k = 0u;
+    if (c >= 12u) {
+        level = select(3.0, 4.0, c == 14u);
+        side = select(-1.0, 1.0, c == 13u);
+        if (c == 14u) { side = 0.0; }
+    } else {
+        let quad = f32(c / 6u);
+        k = c % 6u;
+        // two triangles: (0,-) (0,+) (1,-) ; (1,-) (0,+) (1,+)
+        up = select(0.0, 1.0, k == 2u || k == 3u || k == 5u);
+        level = quad * 1.5 + up * 1.5; // 0, 1.5, 3 over the two quads
+        side = select(-1.0, 1.0, k == 1u || k == 4u || k == 5u);
+    }
+    let fb = f32(blade);
+    let jitter = fract(seed * (17.3 + fb * 9.1));
+    let angle = seed * 6.2831853 + fb * 2.094 + (jitter - 0.5) * 0.9;
+    let facing = vec3<f32>(cos(angle), 0.0, sin(angle));
+    let across = vec3<f32>(-facing.z, 0.0, facing.x);
+    let blade_height = height * select(0.55 + 0.45 * jitter, 1.0, blade == 0u);
+    let t = clamp(level / 4.0, 0.0, 1.0);
+    // Lean out of the tuft, and the wind: more at the top.
+    let time = draw.uv_mode.x;
+    let gust = sin(time * 1.3 + root_world.x * 0.11 + root_world.z * 0.07) * 0.5
+             + sin(time * 2.9 + root_world.x * 0.31 - root_world.z * 0.23 + seed * 6.0) * 0.25;
+    let wind = vec3<f32>(0.8, 0.0, 0.6) * gust * draw.uv_mode.w;
+    let lean = select(0.2 + 0.45 * jitter, 0.08, flower);
+    let bend = (facing * lean + wind) * t * t * blade_height;
+    let width = abs(input.ground.w) * (1.0 - t * 0.9);
+    let root = input.place.xyz + facing * 0.015;
+    var local = root + vec3<f32>(0.0, t * blade_height, 0.0) + bend + across * side * width;
+    out.normal = normalize(mix(facing, vec3<f32>(0.0, 1.0, 0.0), 0.6));
+    var petal = false;
+    if (flower && blade > 0u) {
+        // The petals: crossed quads round the stem's top (the tip collapsed).
+        // A flat star of five petals round the stem's top, nearly level:
+        // blade 1 the petals 0..2, blade 2 the petals 3..4 (a triangle each,
+        // three corners: the middle, two at the petal's tip either side),
+        // none where the stem is cut (the ground's test, the reach's edge).
+        let top = input.place.xyz + vec3<f32>(0.0, height, 0.0) + (vec3<f32>(0.08, 0.0, 0.0) + wind) * height;
+        let r = (0.03 + 0.015 * fract(seed * 3.7)) * smoothstep(0.08, 0.2, height);
+        let tri = c / 3u;
+        let corner = c % 3u;
+        let petal_index = select(tri, tri + 3u, blade == 2u);
+        local = top;
+        if (tri < 3u && petal_index < 5u && corner > 0u) {
+            let a = seed * 6.2831853 + f32(petal_index) * 1.2566371 + select(-0.38, 0.38, corner == 2u);
+            local = top + vec3<f32>(cos(a), 0.12, sin(a)) * r;
+        }
+        out.normal = vec3<f32>(0.0, 1.0, 0.0);
+        petal = true;
+    }
+    out.clip = draw.mvp * vec4<f32>(local, 1.0);
+    out.uv = input.ground.xy;
+    out.world = vec4<f32>(local + draw.offset.xyz, 1.0);
+
+    // Its colour (fs_grass): the ground's, a little greener, a blade a bit
+    // apart from the next, darker at the root among the others; a flower's
+    // petals white, yellow, blue or red.
+    let luma = dot(ground, vec3<f32>(0.3, 0.55, 0.15));
+    let greener = mix(ground, vec3<f32>(luma * 0.85, luma * 1.12, luma * 0.55), 0.45);
+    let tone = 0.85 + 0.3 * jitter;
+    out.colour = vec4<f32>(greener * tone * (0.55 + 0.55 * t), 1.0);
+    if (petal) {
+        let pick = u32(fract(seed * 13.7) * 4.0);
+        var tint = vec3<f32>(0.92, 0.92, 0.88);
+        if (pick == 1u) { tint = vec3<f32>(0.95, 0.82, 0.18); }
+        if (pick == 2u) { tint = vec3<f32>(0.45, 0.5, 0.9); }
+        if (pick == 3u) { tint = vec3<f32>(0.85, 0.2, 0.18); }
+        out.colour = vec4<f32>(tint, 1.0);
+    }
+
+    let fog_start = frame.fog_distance.x;
+    let fog_end = frame.fog_distance.y;
+    if (fog_end <= 0.0) {
+        out.fog = vec4<f32>(0.0);
+    } else if (fog_end > fog_start) {
+        let amount = clamp(frame.fog_colour.w * ((out.clip.w - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), amount);
+    } else {
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), frame.fog_colour.w);
+    }
+    return out;
+}
+
+// The grass's colour is its vertices' (vs_grass), lit as the ground is.
+@fragment
+fn fs_grass(input: VertexOut) -> @location(0) vec4<f32> {
+    return shade_experimental(input, vec4<f32>(input.colour.xyz, 1.0), normalize(input.normal), vec3<f32>(1.0, 0.85, 0.0));
+}
+
 // Water layers (RTS water.vert): lit with the normal up; UVs per patch, or
 // following the camera (world_water_layer_sky_reflection, 0x4A2144).
 struct WaterIn {

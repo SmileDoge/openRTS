@@ -1,6 +1,7 @@
 #include <openrts/simulation/electronic_map.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <optional>
 #include <queue>
@@ -171,6 +172,70 @@ constexpr double line_cell = 64.0;
 }
 
 } // namespace
+
+float switch_speed(const formats::TrackShapeDefinition* shape, const formats::TrackSectionLibrary& sections) noexcept {
+    if (!shape) return switch_turn_speed;
+    std::string name = shape->file_name;
+    for (auto& ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (name.find("slip") != std::string::npos) return 25.0f / 3.6f;
+    const auto main = shape->main_route.value_or(0);
+    float radius = 0.0f;
+    for (std::size_t p = 0; p < shape->paths.size(); ++p) {
+        if (p == main) continue;
+        for (const auto index : shape->paths[p].sections) {
+            const auto* section = sections.section(index);
+            if (section && section->radius > 0.0f && (radius == 0.0f || section->radius < radius)) radius = section->radius;
+        }
+    }
+    if (radius >= 1100.0f) return 120.0f / 3.6f;
+    if (radius >= 600.0f) return 80.0f / 3.6f;
+    return switch_turn_speed;
+}
+
+namespace {
+// The lowest speed of the junctions between `from`'s end in `forward` and
+// vector node `to` (the switch_speed of each).
+[[nodiscard]] float junctions_speed(const TrackNetwork& network, const std::uint32_t from, const bool forward, const std::uint32_t to) {
+    float speed = -1.0f;
+    const auto* node = network.node(from);
+    if (!node || node->pins.size() < 2) return switch_turn_speed;
+    struct Pending {
+        formats::TrackPin pin;
+        int depth{};
+        float speed{};
+    };
+    std::vector<Pending> stack{{node->pins[forward ? 1 : 0], 0, -1.0f}};
+    while (!stack.empty()) {
+        const auto pending = stack.back();
+        stack.pop_back();
+        if (pending.depth > 32) continue;
+        const auto* target = network.node(pending.pin.node);
+        if (!target) continue;
+        if (target->kind == formats::TrackNodeKind::vector) {
+            if (target->index == to && (speed < 0.0f || (pending.speed >= 0.0f && pending.speed < speed))) speed = pending.speed;
+            continue;
+        }
+        if (target->kind != formats::TrackNodeKind::junction || target->pins.size() < 2) continue;
+        const float own = switch_speed(target->shape, network.sections());
+        const float here = pending.speed < 0.0f ? own : (std::min)(pending.speed, own);
+        if (pending.pin.direction == 1) {
+            for (std::size_t b = 1; b < target->pins.size(); ++b) stack.push_back({target->pins[b], pending.depth + 1, here});
+        } else {
+            stack.push_back({target->pins[0], pending.depth + 1, here});
+        }
+    }
+    return speed > 0.0f ? speed : switch_turn_speed;
+}
+} // namespace
+
+bool shunting_signal_name(const std::string_view name) {
+    // "М" (U+041C, UTF-8 D0 9C) or a Latin M, then a digit.
+    std::size_t at = 0;
+    if (name.size() >= 2 && static_cast<unsigned char>(name[0]) == 0xD0 && static_cast<unsigned char>(name[1]) == 0x9C) at = 2;
+    else if (!name.empty() && name[0] == 'M') at = 1;
+    else return false;
+    return at < name.size() && name[at] >= '0' && name[at] <= '9';
+}
 
 std::uint32_t ElectronicMap::track_number(const std::string_view name) {
     std::uint32_t number = 0;
@@ -712,6 +777,63 @@ ElectronicMap::Found ElectronicMap::search(const TrackNetwork& network, const st
     found.object = on.object;
     found.distance = on.distance;
     return found;
+}
+
+EkWay ElectronicMap::way(const TrackNetwork& network, const std::uint32_t node, const double offset, const bool forward,
+                         const std::uint32_t number, const double beyond) const {
+    EkWay out;
+    if (number == 0 || number > 98 || empty()) return out;
+    std::vector<Visit> visits;
+    double best = 0.0;
+    const auto last = nearest(network, visits, {{.node = node, .forward = forward, .entry = offset}}, horizon,
+                              [&](const Visit& v, double& at) {
+                                  const auto spans = spans_.find(v.node);
+                                  if (spans == spans_.end()) return false;
+                                  bool any = false;
+                                  for (const auto& span : spans->second) {
+                                      if (tracks_[span.track].number != number) continue;
+                                      if (v.forward ? span.to < v.entry : span.from > v.entry) continue;
+                                      const double onto = v.forward ? (std::max)(span.from, v.entry) : (std::min)(span.to, v.entry);
+                                      const double d = v.distance + std::abs(onto - v.entry);
+                                      if (!any || d < at) {
+                                          at = d;
+                                          any = true;
+                                      }
+                                  }
+                                  return any;
+                              },
+                              best);
+    if (!last) return out;
+    auto steps = way_to(visits, *last);
+    // On through the track along MainRoute (a trailing junction's trunk
+    // whichever branch it is entered by: the way off a side track).
+    double reach = best + beyond;
+    std::vector<Arrival> next;
+    for (int guard = 0; guard < 256; ++guard) {
+        const auto& v = steps.back();
+        const double leave = v.distance + (v.forward ? node_length(network, v.node) - v.entry : v.entry);
+        if (leave > reach) break;
+        arrivals(network, v.node, v.forward, true, next);
+        if (next.empty()) break;
+        steps.push_back({.node = next.front().node,
+                         .forward = next.front().forward,
+                         .entry = next.front().forward ? 0.0 : node_length(network, next.front().node),
+                         .distance = leave});
+    }
+    for (std::size_t i = 0; i < steps.size(); ++i) {
+        const auto& v = steps[i];
+        out.parts.push_back({.node = v.node,
+                             .forward = v.forward,
+                             .entry = i == 0 ? offset : v.entry,
+                             .exit = v.forward ? node_length(network, v.node) : 0.0,
+                             .distance = v.distance});
+        if (i + 1 < steps.size()) {
+            const auto main = main_onward(network, v.node, v.forward);
+            if (!main || main->node != steps[i + 1].node || main->forward != steps[i + 1].forward)
+                out.turns.push_back({.distance = steps[i + 1].distance, .speed = junctions_speed(network, v.node, v.forward, steps[i + 1].node)});
+        }
+    }
+    return out;
 }
 
 EkTarget ElectronicMap::update(EkState& state, const TrackNetwork& network, const std::uint32_t node, const double offset, const bool forward,

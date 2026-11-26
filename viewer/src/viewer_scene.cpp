@@ -35,6 +35,7 @@
 #include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
+#include <openrts/renderer/grass_blockers.hpp>
 #include <openrts/renderer/occlusion_probe.hpp>
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/model_assets.hpp>
@@ -1305,6 +1306,7 @@ public:
         last_vertical_fov_ = frame.vertical_fov;
         const auto frustum = renderer::Frustum::from_view_projection(frame.projection * frame.view);
 
+        update_grass_blockers(frame.eye);
         drawn_instances_ = 0;
         // Which instances are drawn, or only cast a shadow into view: decided
         // on the workers (the library is only read meanwhile), applied below
@@ -2283,6 +2285,11 @@ public:
             remember("world_own_precipitation", renderer::own_precipitation() ? "1" : "0");
         ImGui::SameLine();
         if (ImGui::Checkbox(tr("Fog in rain and snow"), &effects_.fog)) remember("world_precipitation_fog", effects_.fog ? "1" : "0");
+        ImGui::BeginDisabled(!renderer::own_precipitation());
+        ImGui::SetNextItemWidth(160.0f);
+        if (ImGui::SliderFloat(tr("Rain and snow reach"), &renderer::precipitation_reach(), 18.0f, 60.0f, tr("%.0f m")))
+            remember("world_precipitation_reach", std::to_string(renderer::precipitation_reach()));
+        ImGui::EndDisabled();
         {
             const char* strengths[] = {tr("as the weather"), tr("drizzle"), tr("rain##strength"), tr("downpour"), tr("my own##strength"), tr("blizzard")};
             ImGui::SetNextItemWidth(160.0f);
@@ -3401,9 +3408,55 @@ private:
         effects.strength_custom = std::clamp(static_cast<float>(std::atof(remembered("world_precipitation_custom").value_or("1").c_str())), 0.1f, 3.0f);
         effects.fog = remembered("world_precipitation_fog").value_or("1") != "0";
         renderer::own_precipitation() = remembered("world_own_precipitation").value_or("1") != "0";
+        renderer::precipitation_reach() =
+            std::clamp(static_cast<float>(std::atof(remembered("world_precipitation_reach").value_or("30").c_str())), 18.0f, 60.0f);
         return effects;
     }();
     std::size_t drawn_instances_ = 0;
+    // The grass's blockers (renderer/grass_blockers.hpp): built from the
+    // objects around the camera when they or their models change.
+    void update_grass_blockers(const glm::vec3& eye) {
+        if (!streamer_ || !library_) return;
+        const auto& visible = streamer_->visible_instances();
+        if (model_cache_.size() != visible.size()) return;
+        const auto models = static_cast<std::size_t>(std::count_if(model_cache_.begin(), model_cache_.end(), [](const auto* m) { return m != nullptr; }));
+        if (streamer_->visible_generation() == grass_blockers_generation_ && models == grass_blockers_models_) return;
+        grass_blockers_generation_ = streamer_->visible_generation();
+        grass_blockers_models_ = models;
+        auto blockers = std::make_shared<renderer::GrassBlockers>();
+        for (std::size_t k = 0; k < visible.size(); ++k) {
+            const auto* model = model_cache_[k];
+            const auto& instance = visible[k];
+            if (!model) continue;
+            using Kind = formats::WorldObjectKind;
+            if (instance.kind != Kind::static_object && instance.kind != Kind::collide_object && instance.kind != Kind::level_crossing
+                && instance.kind != Kind::pickup)
+                continue;
+            // Not plants (trees, bushes, the routes' own grass and flowers).
+            std::string name(instance.source_path.filename());
+            for (auto& ch : name) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+            static constexpr const char* plants[] = {"tree", "bush", "grass", "flower", "derev", "kust", "trava", "cvet", "les", "forest", "plant", "hedge"};
+            if (std::any_of(std::begin(plants), std::end(plants), [&](const char* p) { return name.find(p) != std::string::npos; })) continue;
+            const auto bounds = model->bounds();
+            const glm::vec3 size = bounds.max - bounds.min;
+            // Standing on the ground (its bottom near the shape's origin), not a wire or a bridge's span.
+            if (bounds.min.y > 1.0f || size.x <= 0.0f || size.z <= 0.0f || size.x > 300.0f || size.z > 300.0f) continue;
+            const glm::vec3 middle{(bounds.min.x + bounds.max.x) * 0.5f, 0.0f, (bounds.min.z + bounds.max.z) * 0.5f};
+            const glm::vec3 at = glm::vec3{instance.transform * glm::vec4{middle, 1.0f}};
+            if (glm::length(glm::vec2{at.x - eye.x, at.z - eye.z}) > 250.0f + 0.5f * std::max(size.x, size.z)) continue;
+            const glm::vec3 axis = glm::vec3{instance.transform * glm::vec4{1.0f, 0.0f, 0.0f, 0.0f}};
+            const float flat = std::hypot(axis.x, axis.z);
+            if (flat < 1e-3f) continue;
+            // In route metres: the instance's place plus the middle turned.
+            const glm::vec3 turned = glm::vec3{instance.transform * glm::vec4{middle, 0.0f}};
+            const double cx = instance.position.tile_x * 2048.0 + instance.position.x + turned.x;
+            const double cz = instance.position.tile_z * 2048.0 + instance.position.z + turned.z;
+            blockers->add(cx, cz, axis.x / flat, axis.z / flat, size.x * 0.5, size.z * 0.5);
+        }
+        renderer::set_grass_blockers(std::move(blockers));
+    }
+    std::uint64_t grass_blockers_generation_ = ~0ull;
+    std::size_t grass_blockers_models_ = 0;
 };
 
 } // namespace

@@ -22,6 +22,7 @@ add_library(openrts_formats STATIC
     src/route_database.cpp
     src/route_world.cpp
     src/environment.cpp
+    src/route_grass.cpp
     src/terrain.cpp
     src/track_database.cpp
     src/track_sections.cpp

@@ -312,6 +312,7 @@ public:
         // openRTS's КЛУБ's ЭПК or КОН venting the pipe at a car (by the
         // index of `cars`; set_own_klub).
         std::vector<std::uint8_t> klub_vent;
+        std::vector<float> klub_saut_service; // openRTS's САУТ's УР reduction asked, atm (KlubOutput::saut_service)
         // openRTS's cab brake devices' air sounds since the last step, by
         // car, and whether a car's devices worked (own_brakes): its
         // controller writes them (through the read-only outputs it holds),

@@ -239,6 +239,49 @@ void test_vigilance() {
     check(ok.heard(57), "the whistle off");
 }
 
+// openRTS's САУТ brakes (saut_service_braking()): over its permitted speed a
+// service application of 0.5 atm, deeper after 5 s, let go 3 km/h under it.
+void test_saut_service_braking() {
+    KlubSettings settings{.setup = 7 | 1, .alsn_delay = 5.0f, .green_speed = 120.0f, .yellow_speed = 60.0f, .ept = true};
+    KlubState state;
+    KlubOutput out;
+    std::vector<KlubSignal> signals{KlubSignal{.distance = 5000.0f, .aspect = {7, 0, 0, 0}, .flags = 1}};
+    const std::vector<SautInputs::Cab> cabs{SautInputs::Cab{.working = true, .on = true}};
+    float speed = 0.0f;
+    float limit = 120.0f * kmh;
+    const auto run = [&](const float seconds) {
+        for (float t = 0.0f; t < seconds - 1e-4f; t += dt) {
+            KlubInputs in;
+            in.dt = dt;
+            in.speed = speed;
+            in.signals = signals;
+            in.cab_signal = signals.front();
+            in.limit = limit;
+            in.saut_in.own = true;
+            in.saut_in.powered = true;
+            in.saut_in.cabs = cabs;
+            in.saut_in.equalising = 5.0f;
+            step_klub(state, settings, in, out);
+        }
+    };
+    speed = 50.0f * kmh;
+    run(3.0f);
+    check(out.saut_service == 0.0f, "САУТ: no braking under its permitted speed");
+    limit = 30.0f * kmh;
+    run(3.0f);
+    check(near(out.saut_service, 0.5f), "САУТ: 0.5 atm over its permitted speed (" + std::to_string(out.saut_service) + ")");
+    run(6.0f);
+    check(near(out.saut_service, 0.8f), "САУТ: 0.3 atm deeper 5 s on (" + std::to_string(out.saut_service) + ")");
+    speed = 20.0f * kmh;
+    run(3.0f);
+    check(out.saut_service == 0.0f, "САУТ: let go well under it");
+    saut_service_braking() = false;
+    speed = 50.0f * kmh;
+    run(3.0f);
+    check(out.saut_service == 0.0f, "САУТ: none with the setting off (as Brakes.dll)");
+    saut_service_braking() = true;
+}
+
 void test_own_limit_clears() {
     // 120 km/h's m/s as a float, times 3.6 in double, stored in a float: the
     // limit kept at a signal (under 5 m) is let go once the train is past.
@@ -342,6 +385,7 @@ int main() {
     test_objects_line();
     test_without_the_ek();
     test_vigilance();
+    test_saut_service_braking();
     test_own_limit_clears();
     test_kzh_then_white_is_red();
     test_rising_limit_waits();

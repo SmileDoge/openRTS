@@ -38,6 +38,13 @@ inline bool& own_precipitation() {
     static bool on = true;
     return on;
 }
+// How far round the eye the particles reach, m (the box's half width for
+// snow; rain's a fifth more): 18 .. 60, more particles the wider (the same
+// density). Read each frame.
+inline float& precipitation_reach() {
+    static float reach = 30.0f;
+    return reach;
+}
 
 // A headlight's or searchlight's beam lighting the falling drops and
 // flakes (ExtraLightCone, its colour as the light's, display 0..1); or a

@@ -59,6 +59,9 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"msaa_samples", text(s.msaa)},
         {"launcher_experimental", text(s.experimental)},
         {"launcher_hdr", text(s.hdr)},
+        {"launcher_hdr_output", text(s.hdr_output)},
+        {"hdr_paper_white", text(s.hdr_paper_white)},
+        {"hdr_peak", text(s.hdr_peak)},
         {"tone_mode", text(s.tone_curve)},
         {"exposure", text(s.exposure)},
         {"night_exposure", text(s.night_exposure)},
@@ -110,6 +113,9 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"native_water", text(s.native_water)},
         {"forest_clearance", text(s.forest_clearance)},
         {"forest_clearance_distance", text(s.forest_clearance_distance)},
+        {"grass", text(s.grass)},
+        {"grass_density", text(s.grass_density)},
+        {"grass_reach", text(s.grass_reach)},
         {"signal_lights_real_size", text(s.signal_lights_real_size)},
         {"night_textures", text(s.night_textures)},
         {"screen_supersampling", text(s.screen_supersampling)},
@@ -130,6 +136,9 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     }
     s.experimental = whole(value_of, "launcher_experimental", 0, 0, 1) != 0;
     s.hdr = whole(value_of, "launcher_hdr", 0, 0, 1) != 0;
+    s.hdr_output = whole(value_of, "launcher_hdr_output", 0, 0, 1) != 0;
+    s.hdr_paper_white = number(value_of, "hdr_paper_white", s.hdr_paper_white, 80.0f, 600.0f);
+    s.hdr_peak = number(value_of, "hdr_peak", s.hdr_peak, 200.0f, 10000.0f);
     s.tone_curve = whole(value_of, "tone_mode", s.tone_curve, 0, 5);
     s.exposure = number(value_of, "exposure", s.exposure, 0.25f, 4.0f);
     s.night_exposure = number(value_of, "night_exposure", s.night_exposure, 0.5f, 6.0f);
@@ -185,6 +194,9 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.native_water = flag_not_zero(value_of, "native_water", s.native_water);
     s.forest_clearance = flag_not_zero(value_of, "forest_clearance", s.forest_clearance);
     s.forest_clearance_distance = number(value_of, "forest_clearance_distance", s.forest_clearance_distance, 0.5f, 20.0f);
+    s.grass = flag_not_zero(value_of, "grass", s.grass);
+    s.grass_density = number(value_of, "grass_density", s.grass_density, 0.25f, 2.0f);
+    s.grass_reach = number(value_of, "grass_reach", s.grass_reach, 20.0f, 120.0f);
     s.signal_lights_real_size = flag_not_zero(value_of, "signal_lights_real_size", s.signal_lights_real_size);
     s.night_textures = flag_not_zero(value_of, "night_textures", s.night_textures);
     s.screen_supersampling = flag_not_zero(value_of, "screen_supersampling", s.screen_supersampling);

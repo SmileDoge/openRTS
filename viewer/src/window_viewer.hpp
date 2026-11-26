@@ -112,6 +112,10 @@ struct WindowOptions {
     // --hdr-encoding linear|gamma: the experimental HDR frame's encoding
     // (renderer::linear_hdr(); linear by default).
     std::optional<bool> hdr_linear;
+    // --hdr-output: to an HDR display (renderer/hdr_output.hpp; with --hdr,
+    // DirectX 12); --hdr-paper-white / --hdr-peak nits.
+    bool hdr_output = false;
+    std::optional<float> hdr_paper_white, hdr_peak;
     // --pbr on|off: the experimental path's physically based light
     // (renderer::pbr_shading(); the remembered choice otherwise).
     std::optional<bool> pbr;

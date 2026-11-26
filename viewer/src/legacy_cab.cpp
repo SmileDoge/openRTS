@@ -524,6 +524,7 @@ void LegacyCab::release_keys() {
 }
 
 void LegacyCab::return_released(const float dt) {
+    clock_ += dt;
     if (!precise_held_.empty() && working()) {
         for (auto it = precise_held_.begin(); it != precise_held_.end();) {
             if (!key_held(it->first, it->second)) {
@@ -547,6 +548,11 @@ void LegacyCab::return_released(const float dt) {
         const auto id = *it;
         if (id >= out->switches.size() || key_held(id, 0)) {
             it = returning_.erase(it);
+            continue;
+        }
+        // Held its least yet (a quick tap): back once it has been.
+        if (const auto at = pressed_at_.find(id); at != pressed_at_.end() && clock_ - at->second < min_hold) {
+            ++it;
             continue;
         }
         const auto& sw = out->switches[id];
@@ -574,6 +580,14 @@ bool LegacyCab::key_held(const std::uint32_t id, const int direction) const {
 void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) {
     if (event.down) keys_down_.insert(event.key);
     else keys_down_.erase(event.key);
+    // The release's switches (pressed_by_key_), taken now: read in the loop below.
+    std::set<std::uint32_t> released;
+    if (!event.down) {
+        if (const auto held = pressed_by_key_.find(event.key); held != pressed_by_key_.end()) {
+            released = std::move(held->second);
+            pressed_by_key_.erase(held);
+        }
+    }
     if (!working() || !keyboard()) return;
     const auto* out = out_of(player());
     for (const auto& b : bindings_) {
@@ -602,12 +616,19 @@ void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) 
         }
         if (!event.down) {
             // RTS 0x414340: a NONFIXED switch returns to its FixedState when
-            // its key is let go (RTS steps there one position per key delay).
-            if (non_fixed && sw.set_state != sw.fixed_state) {
-                operate(b.id, sw.fixed_state);
-                returning_.insert(b.id);
+            // its key is let go (RTS steps there one position per key delay);
+            // only one this key's press moved.
+            const bool moved_by_it = released.contains(b.id);
+            if (non_fixed && moved_by_it && sw.set_state != sw.fixed_state) {
+                const auto at = pressed_at_.find(b.id);
+                if (at == pressed_at_.end() || clock_ - at->second >= min_hold) operate(b.id, sw.fixed_state);
+                returning_.insert(b.id); // a quick tap: return_released lets it go once held min_hold
             }
             continue;
+        }
+        if (non_fixed) {
+            pressed_by_key_[event.key].insert(b.id);
+            pressed_at_[b.id] = clock_;
         }
         if (non_fixed && b.direction == 0) {
             // Held: one step up from a pressed position, else RTS's click step.

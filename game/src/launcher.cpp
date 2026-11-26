@@ -783,13 +783,13 @@ struct Launcher::State {
             if (save >= 0 && save < static_cast<int>(saves.size())) {
                 // A saved game: its scenario, trains, clock and weather are in
                 // the file (the game reads them from it).
-                args.insert(args.end(), {"--load", utf8(saves_folder() / (saves[static_cast<std::size_t>(save)] + ".save"))});
+                args.insert(args.end(), {"--load", utf8(saves_folder() / from_utf8(saves[static_cast<std::size_t>(save)] + ".save"))});
             } else if (const auto* chosen = chosen_activity()) {
                 // The scenario sets the trains, the start, the time, season
                 // and weather (the game reads them from it).
                 args.insert(args.end(), {"--activity", chosen->file});
             } else if (situation >= 0) {
-                args.insert(args.end(), {"--situation", utf8(situation_folder() / (situations[static_cast<std::size_t>(situation)] + ".situation"))});
+                args.insert(args.end(), {"--situation", utf8(situation_folder() / from_utf8(situations[static_cast<std::size_t>(situation)] + ".situation"))});
             } else if (consist_used()) {
                 args.insert(args.end(), {"--consist", consists[static_cast<std::size_t>(consist)]});
                 if (path >= 0) {
@@ -815,6 +815,9 @@ struct Launcher::State {
         if (!vsync) args.push_back("--no-vsync");
         if (graphics.experimental) args.push_back("--experimental");
         if (graphics.hdr) args.push_back("--hdr");
+        if (graphics.hdr && graphics.hdr_output)
+            args.insert(args.end(), {"--hdr-output", "--hdr-paper-white", std::to_string(graphics.hdr_paper_white), "--hdr-peak",
+                                     std::to_string(graphics.hdr_peak)});
 #ifdef OPENRTS_HAS_XR
         if (vr) args.insert(args.end(), {"--vr", "--vr-scale", std::to_string(vr_scale / 100.0f)});
 #endif
@@ -1879,6 +1882,16 @@ void Launcher::State::draw_graphics(const float height) {
                 }
                 group_row(tr("Saturation"), Load::none, Load::none);
                 viewer::slider_with_input("##saturation", &g.saturation, 0.5f, 1.8f, "%.2f", "%.2f");
+                group_row(tr("HDR output"), Load::none, Load::negligible);
+                ImGui::Checkbox("##hdr_output", &g.hdr_output);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("to an HDR monitor: DirectX 12, HDR on in Windows"));
+                if (g.hdr_output) {
+                    group_row(tr("Paper white"), Load::none, Load::none);
+                    viewer::slider_with_input("##hdr_paper_white", &g.hdr_paper_white, 80.0f, 600.0f, tr("%.0f nits"), "%.0f");
+                    group_row(tr("Monitor peak"), Load::none, Load::none);
+                    viewer::slider_with_input("##hdr_peak", &g.hdr_peak, 200.0f, 4000.0f, tr("%.0f nits"), "%.0f", ImGuiSliderFlags_Logarithmic);
+                }
             }
             ImGui::EndTable();
         }

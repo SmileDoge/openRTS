@@ -91,6 +91,25 @@ traffic and rain (the cab by day differs by the light in the cab, added the
 same day). The bindings and the textures of each scene are the same in
 either encoding; the GPU's time did not change beyond its run-to-run spread.
 
+### HDR output (2026-11-26)
+
+To a monitor with HDR on in Windows: the launcher's "HDR output" (with
+HDR, DirectX 12; `--hdr-output`). The swap chain is RGBA16Float, which
+DirectX 12 presents as scRGB (linear Rec.709, 1 = 80 nits). The tone curve
+writes light there instead of an 8-bit picture: an ordinary white (the
+SDR picture's 1) at the **paper white** (200 nits by default), the
+highlights (the sun, lamps, the bloom) rolled off by Khronos PBR Neutral to
+the **monitor's peak** (1000 nits by default) rather than cut at the white;
+AgX and the night as the SDR picture at the paper white. The panels are
+drawn into an 8-bit texture of their own and laid over at the paper white
+(`renderer/hdr_output.hpp`, `UiCompositor`). Both brightnesses in the
+launcher and live in the game's tone settings (`--hdr-paper-white`,
+`--hdr-peak`). The "HDR calibration" button (by them in the game) shows
+two patterns: the peak (a square at the peak set on a field at 10 000
+nits: gone once it is the display's own) and the white (greys at the
+paper white, a bar at the peak). Not on Vulkan or OpenGL (their float swap chain stays SDR),
+in VR or in a capture.
+
 ### Physically based light (2026-11-16, PBR stage 1)
 
 In the linear HDR frame the experimental path lights a surface by a

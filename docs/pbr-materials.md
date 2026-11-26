@@ -161,7 +161,7 @@ Trainz's PBR materials (`m.pbrmetal`, `m.pbrmetalmasked`) keep a `_p` map of
 R metallic, G roughness, B occlusion: `orm: "body_p.png", layout: "mrao"`. Named as
 `roughness_map` and `metallic_map` instead, both take its red (metallic, mostly
 0) and the surface becomes a mirror; a roughness map whose red is 0 all over
-while its other channels are not gets a warning in the log (the console, F2).
+while its other channels are not gets a warning in the log (the console, Ctrl+F2).
 
 Substance Painter's "Unreal Engine 4 (Packed)" preset writes the same
 channels as ORM (R occlusion, G roughness, B metallic) but its normal map is

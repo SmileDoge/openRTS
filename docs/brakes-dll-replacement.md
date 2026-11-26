@@ -314,7 +314,12 @@ scenarios run with Brakes.dll and with openRTS side by side
    (`simulation/src/saut.cpp`), part of the КЛУБ's step, for the КЛУБ's
    screens and the train's DLLs: its keys in the working cab, its modes
    (ГР, УК, КОМ, ПОД, К20, ОТП), its target and distance, its braking (the
-   DLLs cut traction), its displays (`SAUT_DBID`, `SAUT_DFID`), its sounds
+   DLLs cut traction; beyond Brakes.dll, 2026-11-26, on openRTS's brakes:
+   a service application as the real САУТ-ЦМ makes, the УР taken 0.5 atm
+   under the charging pressure at 0.3 atm/s once over its permitted speed,
+   0.3 atm deeper every 5 s it stays over, 1.5 at most, let go 3 km/h
+   under it; the train window's "САУТ: brakes over its speed", off as
+   Brakes.dll), its displays (`SAUT_DBID`, `SAUT_DFID`), its sounds
    (on the locomotive's SMS with `TRANS_SOUND`), its announcements from the
    track items (platforms, crossings and the routes' `%n` sidings:
    Новокузнецк, Чернышевск, Павловск, Кубань and Степи Приазовья have
@@ -664,8 +669,22 @@ Brakes.dll's way above.
   track: the target is that entry (where the entries are not known, one
   train signal or none before the track). Not back in the station it was
   left in (Albashi's `2А` after its track 1 signal).
-- Not yet: the ALSN's frequency from the map, its limits, switches and
-  crossings, К280 / К282, manual tables for stations the database names
+- **Limits by the entered track** (testers 2026-11-26): in the ЭК mode the
+  limits ahead are the map's way's, not the train's: the way to the
+  nearest track of the number entered and 1.5 km on through it
+  (`ElectronicMap::way`), its speed posts, and 40 km/h at each switch it
+  takes off the straight (MainRoute): a facing one onto its other branch,
+  a trailing one from it (off a side track onto the main). The next limit
+  the КЛУБ gets is the most restrictive of them ahead (v² + 2·0.6·d), so
+  a train on track 2 with track 4 entered is brought down to 40 at the
+  switch from 2 to 4. A switch's 40 holds from the head over it; the
+  КЛУБ lifts it once the entered length has run past (0: at the head).
+  The route's data give a switch no speed of its own; it is taken from
+  its shape's side branch (tsection.dat, `switch_speed`): radius under
+  600 m 40, from 600 m 80 (1/18), from 1100 m 120 (1/22); a slip ("Slip"
+  in the shape's file: the parts of English switches) 25.
+  Without such a track ahead the train's own way's limits stand.
+- Not yet: the ALSN's frequency from the map, crossings, К280 / К282, manual tables for stations the database names
   otherwise. The log says each change (`КЛУБ ЭК, track 3: target НМ3 in
   1234 m`, `… без ЭК`).
 - Tests: `tests/electronic_map_test.cpp` (Kuban, content: Albashi's tracks

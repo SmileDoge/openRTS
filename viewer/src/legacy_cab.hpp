@@ -259,6 +259,16 @@ private:
     std::vector<Binding> bindings_;
     std::set<int> keys_down_; // the GLFW keys down, as the cab's key events left them
     std::set<std::uint32_t> returning_; // NONFIXED switches let go, not yet back (return_released)
+    // The NONFIXED switches each key's press moved: its release returns these
+    // alone (testers 2026-11-26: letting go of the whistle's Space returned
+    // the ЭД4М's brake switch on Shift+Space too, its brakes let off).
+    std::map<int, std::set<std::uint32_t>> pressed_by_key_;
+    // When each NONFIXED switch was pressed (clock_): one let go sooner than
+    // min_hold after stays pressed till then, so the DLL's step sees it (a
+    // quick tap of the РБ fell between two steps; testers 2026-11-26).
+    std::map<std::uint32_t, double> pressed_at_;
+    double clock_ = 0.0;
+    static constexpr double min_hold = 0.2;
     std::map<std::uint32_t, int> precise_held_; // PRECISE switches turned by a key held: the way
     std::map<std::uint64_t, std::uint8_t> going_down_; // ping-pong direction per car << 32 | switch id
     std::optional<std::pair<std::size_t, std::uint32_t>> held_; // the button the mouse holds down: car, id

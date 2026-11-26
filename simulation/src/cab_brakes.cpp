@@ -284,11 +284,13 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     // The gauges.
     s.cylinder_needle = needle(s.cylinder_needle, (std::max)(air.cylinder, air.independent), n.cylinder_needle_near,
                                n.cylinder_needle_far, n.cylinder_needle_band, dt);
+    // The needle has its inertia (some 0.12 s) both ways: the pipe's own
+    // steps from one sub-step to the next (I, the distributors taking their
+    // share, the stabiliser taking an overcharge off) jerked it (testers
+    // 2026-11-26, the ВЛ80с, the ЭП1; falling after an overcharge too).
+    const float inertia = (std::min)(dt / 0.12f, 1.0f);
     if (air.pipe >= s.pipe_needle || n.pipe_needle_fall <= 0.0f) {
-        // Rising, a needle has its inertia (some 0.12 s): the pipe's own
-        // steps from one sub-step to the next (I, the distributors taking
-        // their share) jerked it (testers 2026-11-26, the ВЛ80с, the ЭП1).
-        s.pipe_needle = air.pipe >= s.pipe_needle ? s.pipe_needle + (air.pipe - s.pipe_needle) * (std::min)(dt / 0.12f, 1.0f) : air.pipe;
+        s.pipe_needle += (air.pipe - s.pipe_needle) * inertia;
     } else {
         // Brakes.dll's fall by the handle: III .. VI at 1 atm/s, II and
         // the rest faster the more wagons (to 100).
@@ -296,7 +298,9 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
         float fall = n.pipe_needle_fall + n.pipe_needle_per_wagon * wagons;
         if (valve && *valve == ValvePosition::running) fall = n.pipe_needle_fall_running + n.pipe_needle_per_wagon_running * wagons;
         else if (valve && *valve >= ValvePosition::lap) fall = n.pipe_needle_fall_braking;
-        s.pipe_needle = (std::max)(s.pipe_needle - fall * dt, air.pipe);
+        // Eased to the pipe, at Brakes.dll's rate at most (the slower).
+        const float eased = s.pipe_needle + (air.pipe - s.pipe_needle) * inertia;
+        s.pipe_needle = (std::max)(s.pipe_needle - fall * dt, eased);
     }
     out.gauge_cylinder = s.cylinder_needle;
     out.gauge_pipe = s.pipe_needle;

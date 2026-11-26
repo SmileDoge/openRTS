@@ -98,6 +98,18 @@ inline bool& native_water() {
     return on;
 }
 
+// openRTS's grass (docs/grass.md; the experimental path only): how dense
+// (0: none, 1 as made, up to 2) and how far from the eye it grows, m. Read
+// each frame.
+inline float& grass_density() {
+    static float density = 1.0f;
+    return density;
+}
+inline float& grass_reach() {
+    static float reach = 45.0f;
+    return reach;
+}
+
 #ifdef OPENRTS_HAS_WGPU
 // The terrain tiles' vertex and index buffers alive, bytes.
 [[nodiscard]] std::uint64_t terrain_tile_buffer_bytes() noexcept;
@@ -159,6 +171,8 @@ public:
     [[nodiscard]] std::size_t water_surface_draws() const noexcept;
 
     [[nodiscard]] std::size_t loaded_tiles() const noexcept;
+    // The grass blades drawn last (docs/grass.md).
+    [[nodiscard]] std::size_t grass_blades() const noexcept;
     [[nodiscard]] std::size_t pending_jobs() const noexcept;
     // Ground textures asked for (a tile drawn) and not uploaded yet.
     [[nodiscard]] std::size_t pending_textures() const noexcept;

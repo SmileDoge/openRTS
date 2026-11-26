@@ -9,6 +9,7 @@
 #include <openrts/renderer/depth.hpp>
 #include <openrts/renderer/bc7.hpp>
 #include <openrts/renderer/forest_clearance.hpp>
+#include <openrts/renderer/hdr_output.hpp>
 #include <openrts/renderer/glow_sprites.hpp>
 #include <openrts/renderer/native_sky.hpp>
 #include <openrts/renderer/lightning.hpp>
@@ -394,7 +395,18 @@ public:
             // first offered, e.g. Vulkan on NVIDIA) would encode them again
             // and brighten everything.
             WGPUTextureFormat format = capabilities.formats[0];
+            // HDR output: the float swap chain (scRGB under DirectX 12).
+            if (renderer::hdr_output()) {
+                bool offered = false;
+                for (std::size_t i = 0; i < capabilities.formatCount; ++i) offered = offered || capabilities.formats[i] == WGPUTextureFormat_RGBA16Float;
+                if (!offered) {
+                    std::cout << "HDR output: the surface offers no RGBA16Float, SDR output" << std::endl;
+                    renderer::hdr_output() = false;
+                }
+            }
+            if (renderer::hdr_output()) format = WGPUTextureFormat_RGBA16Float;
             for (const auto wanted : {WGPUTextureFormat_BGRA8Unorm, WGPUTextureFormat_RGBA8Unorm}) {
+                if (renderer::hdr_output()) break;
                 bool offered = false;
                 for (std::size_t i = 0; i < capabilities.formatCount; ++i) offered = offered || capabilities.formats[i] == wanted;
                 if (offered) {
@@ -551,6 +563,8 @@ public:
         return renderer::scene_hdr() ? renderer::hdr_format : config_.format;
     }
     // The HDR frame the scene resolves into (null without HDR).
+    [[nodiscard]] std::uint32_t width() const noexcept { return config_.width; }
+    [[nodiscard]] std::uint32_t height() const noexcept { return config_.height; }
     [[nodiscard]] WGPUTextureView hdr_view() const noexcept { return hdr_view_; }
     [[nodiscard]] WGPUTexture hdr_texture() const noexcept { return hdr_; }
 
@@ -792,6 +806,10 @@ struct PanelState {
     // over the whole area): the crown this far from the way's edge, m.
     bool forest_clearance = true;
     float forest_clearance_distance = 3.0f;
+    bool grass = true;
+    float grass_density = 1.0f;
+    float grass_reach = 45.0f;
+    int hdr_calibration = 0; // the HDR calibration's step shown (0: closed)
     bool native_water = true; // the openRTS water instead of the environment's layers
     bool native_sky = true;   // openRTS's own sky (atmosphere, volumetric clouds) instead of RTS's dome
     bool signal_lights_real_size = true; // signal lights at the lens's size however far (not RTS's far angle)
@@ -855,6 +873,9 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.native_water = g.native_water;
     panel.forest_clearance = g.forest_clearance;
     panel.forest_clearance_distance = g.forest_clearance_distance;
+    panel.grass = g.grass;
+    panel.grass_density = g.grass_density;
+    panel.grass_reach = g.grass_reach;
     panel.signal_lights_real_size = g.signal_lights_real_size;
     panel.night_textures = g.night_textures;
     panel.screen_supersampling = g.screen_supersampling;
@@ -889,6 +910,9 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.native_water = panel.native_water;
     g.forest_clearance = panel.forest_clearance;
     g.forest_clearance_distance = panel.forest_clearance_distance;
+    g.grass = panel.grass;
+    g.grass_density = panel.grass_density;
+    g.grass_reach = panel.grass_reach;
     g.signal_lights_real_size = panel.signal_lights_real_size;
     g.night_textures = panel.night_textures;
     g.screen_supersampling = panel.screen_supersampling;
@@ -1120,7 +1144,7 @@ public:
             bool developer = developer_mode();
             if (ImGui::Checkbox(tr("Settings for developers (F12)"), &developer)) set_developer_mode(developer);
             // The console: the game's messages (also F2).
-            if (ImGui::Button(panel.console.open ? tr("Console (F2): close") : tr("Console (F2): the game's messages, warnings, errors")))
+            if (ImGui::Button(panel.console.open ? tr("Console (Ctrl+F2): close") : tr("Console (Ctrl+F2): the game's messages, warnings, errors")))
                 panel.console.open = !panel.console.open;
             {
                 const auto counts = log_counts();
@@ -1376,6 +1400,18 @@ public:
             if (slider_with_input(tr("Trees from the track's or road's edge"), &panel.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m"), "%.1f"))
                 remember("forest_clearance_distance", std::to_string(panel.forest_clearance_distance));
             ImGui::EndDisabled();
+            ImGui::BeginDisabled(!panel.experimental_supported);
+            if (ImGui::Checkbox(tr("openRTS grass near the eye (experimental path, not as in RTS)"), &panel.grass))
+                remember("grass", panel.grass ? "1" : "0");
+            ImGui::BeginDisabled(!panel.grass);
+            ImGui::SetNextItemWidth(220.0f);
+            if (slider_with_input(tr("Grass density"), &panel.grass_density, 0.25f, 2.0f, "%.2f", "%.2f"))
+                remember("grass_density", std::to_string(panel.grass_density));
+            ImGui::SetNextItemWidth(220.0f);
+            if (slider_with_input(tr("Grass reach"), &panel.grass_reach, 20.0f, 120.0f, tr("%.0f m"), "%.0f"))
+                remember("grass_reach", std::to_string(panel.grass_reach));
+            ImGui::EndDisabled();
+            ImGui::EndDisabled();
             if (ImGui::Checkbox(tr("openRTS water: waves, sky reflection, soft shores (not as in RTS)"), &panel.native_water))
                 remember("native_water", panel.native_water ? "1" : "0");
             if (ImGui::Checkbox(tr("Signal lights at the lens's size, far off a dot (not as in RTS)"), &panel.signal_lights_real_size))
@@ -1509,6 +1545,16 @@ public:
                         }
                     }
                     ImGui::Unindent();
+                }
+                if (renderer::hdr_output()) {
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (slider_with_input(tr("Paper white"), &renderer::hdr_paper_white(), 80.0f, 600.0f, tr("%.0f nits"), "%.0f"))
+                        remember("hdr_paper_white", std::to_string(renderer::hdr_paper_white()));
+                    ImGui::SetNextItemWidth(220.0f);
+                    if (slider_with_input(tr("Monitor peak"), &renderer::hdr_peak(), 200.0f, 4000.0f, tr("%.0f nits"), "%.0f", ImGuiSliderFlags_Logarithmic))
+                        remember("hdr_peak", std::to_string(renderer::hdr_peak()));
+                    ImGui::TextDisabled("%s", tr("(HDR output: the paper white is the panels' and an ordinary white's brightness, the peak the brightest highlights)"));
+                    if (ImGui::Button(tr("HDR calibration"))) panel.hdr_calibration = 1;
                 }
                 if (panel.tone_curve == 4 || panel.tone_curve == 5) {
                     ImGui::SetNextItemWidth(220.0f);
@@ -1861,6 +1907,34 @@ public:
         }
 
         ImGui::End();
+
+        // The HDR calibration (its patterns drawn under the panels).
+        if (panel.hdr_calibration > 0 && renderer::hdr_output()) {
+            const auto* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y - 20.0f},
+                                    ImGuiCond_Always, {0.5f, 1.0f});
+            ImGui::SetNextWindowSize({620.0f, 0.0f}, ImGuiCond_Always);
+            bool open = true;
+            if (ImGui::Begin(tr("HDR calibration"), &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
+                if (panel.hdr_calibration == 1) {
+                    ImGui::TextWrapped("%s", tr("Step 1 of 2: the monitor's peak. Move the slider until the square in the middle just disappears into the bright field around it."));
+                    ImGui::SetNextItemWidth(380.0f);
+                    if (slider_with_input(tr("Monitor peak"), &renderer::hdr_peak(), 200.0f, 4000.0f, tr("%.0f nits"), "%.0f", ImGuiSliderFlags_Logarithmic))
+                        remember("hdr_peak", std::to_string(renderer::hdr_peak()));
+                    if (ImGui::Button(tr("Next"))) panel.hdr_calibration = 2;
+                } else {
+                    ImGui::TextWrapped("%s", tr("Step 2 of 2: the white. The top bar is an ordinary white (the panels, a white wall), the bottom the brightest highlights. Choose a white comfortable to look at, so that the greys between are all told apart; 150 .. 250 nits in a lit room."));
+                    ImGui::SetNextItemWidth(380.0f);
+                    if (slider_with_input(tr("Paper white"), &renderer::hdr_paper_white(), 80.0f, 600.0f, tr("%.0f nits"), "%.0f"))
+                        remember("hdr_paper_white", std::to_string(renderer::hdr_paper_white()));
+                    if (ImGui::Button(tr("Back"))) panel.hdr_calibration = 1;
+                    ImGui::SameLine();
+                    if (ImGui::Button(tr("Done"))) panel.hdr_calibration = 0;
+                }
+            }
+            ImGui::End();
+            if (!open) panel.hdr_calibration = 0;
+        }
 
         ImGui::Render();
     }
@@ -3160,7 +3234,31 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::cout << "antialiasing: " << (samples > 1 ? std::to_string(samples) + "x MSAA, alpha-to-coverage" : "off");
     if (samples != options.msaa) std::cout << " (" << options.msaa << "x asked: not offered by this device)";
     std::cout << ", anisotropy " << renderer::max_anisotropy << "x" << std::endl;
+    // HDR output (renderer/hdr_output.hpp): with the HDR frame, on DirectX 12
+    // (scRGB), not in VR, the menu or a capture.
+    renderer::hdr_output() = options.hdr_output && options.hdr && !options.menu && !capture && !options.vr;
+    if (renderer::hdr_output()) {
+        // DirectX 12 alone presents a float swap chain as scRGB.
+        WGPUAdapterInfo info{};
+        wgpuAdapterGetInfo(context.context.adapter(), &info);
+        const bool d3d12 = info.backendType == WGPUBackendType_D3D12;
+        wgpuAdapterInfoFreeMembers(info);
+        if (!d3d12) {
+            std::cout << "HDR output: DirectX 12 only (the graphics API in the launcher), SDR output" << std::endl;
+            renderer::hdr_output() = false;
+        }
+    }
+    if (options.hdr_paper_white) renderer::hdr_paper_white() = std::clamp(*options.hdr_paper_white, 80.0f, 600.0f);
+    if (options.hdr_peak) renderer::hdr_peak() = std::clamp(*options.hdr_peak, 200.0f, 10000.0f);
     PresentationSurface surface(context.context, window.get(), capture);
+    if (renderer::hdr_output())
+        std::cout << "HDR output: scRGB, paper white " << renderer::hdr_paper_white() << " nits, peak " << renderer::hdr_peak() << " nits" << std::endl;
+    std::unique_ptr<renderer::UiCompositor> ui_compositor;
+    std::unique_ptr<renderer::HdrCalibration> hdr_calibration;
+    if (renderer::hdr_output()) {
+        ui_compositor = std::make_unique<renderer::UiCompositor>(device, surface.format());
+        hdr_calibration = std::make_unique<renderer::HdrCalibration>(device, surface.format());
+    }
     if (!surface.ok()) return exit_code::surface_failed;
 #ifdef OPENRTS_HAS_XR
     std::unique_ptr<VrSession> vr;
@@ -3177,7 +3275,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     // The interface language chosen last time (Russian by default).
     set_ui_language(remembered("language").value_or("ru") == "en" ? UiLanguage::english : UiLanguage::russian);
 #ifdef OPENRTS_HAS_IMGUI
-    const DebugOverlay overlay(window.get(), device, surface.format(), options.menu);
+    const DebugOverlay overlay(window.get(), device, renderer::hdr_output() ? renderer::hdr_ui_format : surface.format(), options.menu);
     if (!overlay.ok()) {
         std::cerr << "ImGui initialization failed.\n";
         return exit_code::renderer_failed;
@@ -3201,7 +3299,29 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
         constexpr glm::vec4 dark{22.0f / 255.0f, 24.0f / 255.0f, 29.0f / 255.0f, 1.0f};
         WGPURenderPassEncoder pass = nullptr;
-        if (renderer::scene_hdr()) {
+        if (ui_compositor) {
+            // HDR output: black, the panels into their own target, laid over.
+            const WGPURenderPassColorAttachment clear_colour{
+                .view = view,
+                .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+                .loadOp = WGPULoadOp_Clear,
+                .storeOp = WGPUStoreOp_Store,
+                .clearValue = {.r = 0.0, .g = 0.0, .b = 0.0, .a = 1.0},
+            };
+            const WGPURenderPassDescriptor clear_descriptor{.colorAttachmentCount = 1, .colorAttachments = &clear_colour};
+            const auto clear = wgpuCommandEncoderBeginRenderPass(encoder, &clear_descriptor);
+            wgpuRenderPassEncoderEnd(clear);
+            wgpuRenderPassEncoderRelease(clear);
+            const WGPURenderPassColorAttachment colour{
+                .view = ui_compositor->target(surface.width(), surface.height()),
+                .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
+                .loadOp = WGPULoadOp_Clear,
+                .storeOp = WGPUStoreOp_Store,
+                .clearValue = {.r = dark.r, .g = dark.g, .b = dark.b, .a = 1.0},
+            };
+            const WGPURenderPassDescriptor descriptor{.colorAttachmentCount = 1, .colorAttachments = &colour};
+            pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
+        } else if (renderer::scene_hdr()) {
             // ImGui draws in a pass of its own then: no depth, one sample.
             const WGPURenderPassColorAttachment colour{
                 .view = view,
@@ -3219,6 +3339,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         overlay.render(pass);
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
+        if (ui_compositor) ui_compositor->compose(encoder, view, renderer::hdr_paper_white());
         const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
         const auto queue = wgpuDeviceGetQueue(device);
         wgpuQueueSubmit(queue, 1, &commands);
@@ -3672,6 +3793,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         renderer::lamp_skips_own_model() = panel.lamp_own_model;
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
+        renderer::grass_density() = panel.grass ? panel.grass_density : 0.0f;
+        renderer::grass_reach() = panel.grass_reach;
         auto frame_input = scene_input(window.get(), input);
         if (frame_input.clock) panel.show_clock = !panel.show_clock;
         if (!loading.done) {
@@ -3855,7 +3978,9 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         }
         {
             // Saved games: the panel's requests and F2 (RTS: F2 saves the game).
-            const bool f2 = !imgui_has_keyboard() && glfwGetKey(window.get(), GLFW_KEY_F2) == GLFW_PRESS;
+            // Ctrl+F2 is the console's.
+            const bool ctrl_down = glfwGetKey(window.get(), GLFW_KEY_LEFT_CONTROL) == GLFW_PRESS || glfwGetKey(window.get(), GLFW_KEY_RIGHT_CONTROL) == GLFW_PRESS;
+            const bool f2 = !imgui_has_keyboard() && !ctrl_down && glfwGetKey(window.get(), GLFW_KEY_F2) == GLFW_PRESS;
             if (f2 && !panel.quick_save_key_down && !scene.saves_folder().empty()) panel.save_request = tr("quick save");
             panel.quick_save_key_down = f2;
             // --save-game-after: once, that long after the loading ended.
@@ -4232,6 +4357,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 .night_exposure = panel.night_exposure * panel.exposure,
                 .saturation = panel.saturation,
                 .linear_scene = renderer::frame_linear(),
+                .paper_white = renderer::hdr_output() ? renderer::hdr_paper_white() : 0.0f,
+                .peak = renderer::hdr_peak(),
             };
             // The bloom (the experimental path): the scene's lights drawn once
             // more into its source against the camera's depth pre-pass, then
@@ -4353,16 +4480,21 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 }
             }
             tone->render(encoder, toned, frame_view, settings, bloom_view, shafts_view, exposure_state);
+            if (hdr_calibration && panel.hdr_calibration > 0)
+                hdr_calibration->draw(encoder, frame_view, panel.hdr_calibration, renderer::hdr_peak(), renderer::hdr_paper_white(),
+                                      static_cast<std::uint32_t>(output_width), static_cast<std::uint32_t>(output_height));
             // The window's size again for the panels and the captures.
             width = output_width;
             height = output_height;
 #ifdef OPENRTS_HAS_IMGUI
             if (!vr_frame) {
+            // HDR output: the panels into their own target (cleared), laid over below.
             const WGPURenderPassColorAttachment ui_colour{
-                .view = frame_view,
+                .view = ui_compositor ? ui_compositor->target(static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height)) : frame_view,
                 .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
-                .loadOp = WGPULoadOp_Load,
+                .loadOp = ui_compositor ? WGPULoadOp_Clear : WGPULoadOp_Load,
                 .storeOp = WGPUStoreOp_Store,
+                .clearValue = {.r = 0.0, .g = 0.0, .b = 0.0, .a = 0.0},
             };
             const auto ui_timestamps = renderer::render_pass_timestamps(renderer::GpuPass::overlay);
             const WGPURenderPassDescriptor ui_descriptor{
@@ -4371,6 +4503,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (!capture || options.capture_ui) overlay.render(ui);
             wgpuRenderPassEncoderEnd(ui);
             wgpuRenderPassEncoderRelease(ui);
+            if (ui_compositor) ui_compositor->compose(encoder, frame_view, renderer::hdr_paper_white());
             }
 #endif
         }

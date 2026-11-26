@@ -109,6 +109,41 @@ void ukbm() {
     }
 }
 
+// SL_SETUP 1 (the ВЛ85): the ALSN on at a КЖ standing (a hot start) asks at
+// once; the РБ does not answer it (Brakes.dll's 35 s), the РБС does.
+void alsn_on_at_kzh() {
+    const auto make = [] {
+        Ukbm u;
+        u.k.setup = 1;
+        u.cabs[0].ukbm_power = false;
+        u.k.cabs[0].ukbm_power = -1;
+        u.in.speed = 0.0f;
+        u.in.aspect = 1;
+        u.s.flags = 0;
+        u.cabs[0].epk_key = false;
+        u.run(0.5f); // the ALSN off
+        u.cabs[0].epk_key = true;
+        return u;
+    };
+    const auto step = [](Ukbm& u, const float seconds) {
+        for (float t = 0.0f; t < seconds; t += dt) {
+            u.in.cabs = u.cabs;
+            step_recorder(u.s, u.k, u.in, u.out);
+            recorder_switched(u.s, u.k, u.in, u.out);
+            for (auto& c : u.cabs) c.rb_pressed = c.rbs_pressed = false;
+        }
+    };
+    {
+        auto u = make();
+        step(u, 2.0f);
+        check(u.s.whistle != 0.0f, "ALSN on at КЖ standing: the whistle (" + std::to_string(u.s.periodic) + ")");
+        u.cabs[0].rbs = u.cabs[0].rbs_pressed = true;
+        step(u, dt);
+        check(u.s.whistle == 0.0f, "ALSN on at КЖ standing: the РБС answers (periodic " + std::to_string(u.s.periodic) + ", flags "
+                                       + std::to_string(u.s.flags) + ", whistle_flag " + std::to_string(u.s.whistle_flag) + ")");
+    }
+}
+
 void kpd() {
     RecorderSettings k;
     k.kpd = true;
@@ -198,6 +233,7 @@ void mu() {
 
 int main() {
     ukbm();
+    alsn_on_at_kzh();
     kpd();
     mu();
     if (failures == 0) std::cout << "recorder: all passed" << std::endl;
