@@ -5876,7 +5876,7 @@ std::vector<TrainView::PlaceAhead> TrainView::stations_ahead(const Unit& unit) c
 }
 
 bool TrainView::begin_panel(const char* id, HudPanel& place, const float default_x, const float default_y,
-                            const float bg_alpha) {
+                            const float bg_alpha, const float fixed_width, const float fixed_height) {
 #ifdef OPENRTS_HAS_IMGUI
     const auto display = ImGui::GetIO().DisplaySize;
     if (!place.loaded) {
@@ -5897,10 +5897,12 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
     }
     // Moved by hand (NoMove): dragging anywhere on the panel shifts its
     // anchor, so a right-anchored panel keeps its right edge while its text
-    // gets wider or narrower.
-    constexpr ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove
-        | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav
-        | ImGuiWindowFlags_NoBackground;
+    // gets wider or narrower. A fixed panel takes its size from the caller.
+    const bool fixed_size = fixed_width > 0.0f && fixed_height > 0.0f;
+    const bool fixed_width_only = fixed_width > 0.0f && fixed_height <= 0.0f;
+    ImGuiWindowFlags flags = ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings
+        | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoBackground;
+    flags |= fixed_size ? ImGuiWindowFlags_NoResize : ImGuiWindowFlags_AlwaysAutoResize;
     // The drive panel's plate replaces the stock window background; its
     // opacity is the old bg_alpha, and 0 leaves the plate to the panel.
     place.plate = bg_alpha > 0.0f;
@@ -5908,6 +5910,8 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
     if (place.plate) hud::push_window_style();
     // Kept below the profile strip while it is shown.
     ImGui::SetNextWindowPos(ImVec2(place.x * display.x, (std::max)(place.y * display.y, hud_top_)), ImGuiCond_Always, ImVec2(place.pivot_x, 0.0f));
+    if (fixed_size) ImGui::SetNextWindowSize(ImVec2{fixed_width, fixed_height}, ImGuiCond_Always);
+    else if (fixed_width_only) ImGui::SetNextWindowSizeConstraints(ImVec2{fixed_width, 0.0f}, ImVec2{fixed_width, FLT_MAX});
     ImGui::SetNextWindowBgAlpha(0.0f);
     const bool open = ImGui::Begin(id, nullptr, flags);
     place.font = open;
@@ -5940,6 +5944,8 @@ bool TrainView::begin_panel(const char* id, HudPanel& place, const float default
     (void)default_x;
     (void)default_y;
     (void)bg_alpha;
+    (void)fixed_width;
+    (void)fixed_height;
     return false;
 #endif
 }
@@ -5996,7 +6002,13 @@ void TrainView::draw_hud() {
     const auto limit = limit_of(*unit);
     const auto ordinate = limits_->ordinate(train);
     if (car_info_) {
-        if (begin_panel("##car_info", car_info_place_, margin_x, margin_y)) {
+        // Fixed width: the columns must not resize the panel page by page.
+        // The one exception is the chocks column: it is there only when a
+        // car has them, and only then the panel is 80 px wider.
+        const bool any_chocks = std::any_of(train.cars().begin(), train.cars().end(),
+                                            [](const simulation::CarState& state) { return state.chocks != 0; });
+        const float f5_width = (std::max)(1.0f, (std::min)(display.x - 20.0f, any_chocks ? 1120.0f : 1040.0f));
+        if (begin_panel("##car_info", car_info_place_, margin_x, margin_y, 1.0f, f5_width)) {
             hud::heading(tr("Train"));
             ImGui::Separator();
             if (car_info_overall_) {
@@ -6049,66 +6061,20 @@ void TrainView::draw_hud() {
                 // the table: a table pushes its own ID, so a popup opened in
                 // a cell would not be the one begun after it.
                 bool pick_car = false;
-                if (ImGui::BeginTable("##car_pages", 12, ImGuiTableFlags_SizingFixedFit | ImGuiTableFlags_RowBg)) {
-                    for (const char* title :
-                         {"No.", "Car", "t", "Pipe", "Equalising", "Aux", "Control ch.", "Cyl.", "Force, kN", "Brake, kN", "Coupler, kN (- squeezed)", ""})
-                        ImGui::TableSetupColumn(*title ? tr(title) : "");
+                // The strongest coupler forces: shown below the fixed table.
+                float pull = 0.0f, squeeze = 0.0f;
+                std::size_t pull_at = 0, squeeze_at = 0;
+                const int columns = any_chocks ? 12 : 11;
+                if (ImGui::BeginTable("##car_pages", columns, ImGuiTableFlags_SizingStretchProp | ImGuiTableFlags_RowBg)) {
+                    constexpr const char* titles[] = {"No.", "Car", "t", "Pipe", "Equalising", "Aux", "Control ch.", "Cyl.",
+                                                      "Force, kN", "Brake, kN", "Coupler, kN", "Chocks"};
+                    constexpr float weights[] = {0.45f, 1.75f, 0.55f, 0.6f, 0.8f, 0.55f, 0.8f, 0.6f, 0.75f, 0.75f, 1.4f, 0.55f};
+                    for (int column = 0; column < columns; ++column)
+                        ImGui::TableSetupColumn(tr(titles[column]), ImGuiTableColumnFlags_WidthStretch, weights[column]);
                     ImGui::TableHeadersRow();
                     for (std::size_t i = car_page_; i < last && i < states.size(); ++i) {
                         const auto& car = unit->cars[i];
                         const auto& state = states[i];
-                        // Marks: the handbrake, the chocks (by the car's own
-                        // ends, as the car menu puts them), a derailment.
-                        std::string marks;
-                        if (tape_.recording() && car.key == tape_car_key_) marks += tr(" [TAPE]");
-                        if (state.handbrake > 0.0f) marks += trf(" [HANDBRAKE %d%%]", static_cast<int>(state.handbrake * 100.0f));
-                        if (state.chocks != 0) {
-                            const bool front = (state.chocks & simulation::chock_front) != 0, rear = (state.chocks & simulation::chock_rear) != 0;
-                            marks += front && rear ? tr(" [CHOCKS front and rear]") : front ? tr(" [CHOCK front]") : tr(" [CHOCK rear]");
-                        }
-                        if (state.derailed) marks += tr(" [DERAILED]");
-                        // Wheel slide and the shoes (the realistic air, adhesion.hpp).
-                        if (state.wheelslip != 0) {
-                            std::string slipping;
-                            for (std::uint32_t a = 0; a < 32; ++a)
-                                if (state.wheelslip & (1u << a)) slipping += (slipping.empty() ? "" : ",") + std::to_string(a + 1);
-                            marks += state.wheelslip == 15 && state.axles == 0 ? tr(" [WHEEL SLIP]") : trf(" [WHEEL SLIP: axles %s]", slipping.c_str());
-                        }
-                        // openRTS's limit: each axle's force as a share of its grip (the first of a bogie the most).
-                        if (state.axles > 0 && std::abs(state.force) > 1.0f) {
-                            std::string shares;
-                            for (std::size_t a = 0; a < state.axles; ++a)
-                                shares += (a == 0 ? "" : " ") + std::to_string(static_cast<int>(std::lround(std::abs(state.slip_ratio[a]) * 100.0f)))
-                                          + ((state.wheelslip & (1u << a)) ? "*" : "");
-                            marks += trf(" [grip by axle %s %%]", shares.c_str());
-                        }
-                        if (const float flat = (std::max)(state.flat[0], state.flat[1]); flat >= 0.1f) marks += trf(" [wheel flat %.1f mm]", flat);
-                        if (state.sliding()) marks += tr(" [WHEEL SLIDE]");
-                        else if (state.slid >= 0.5f) marks += trf(" [slid %.0f m]", state.slid);
-                        if ((std::max)(state.shoe_state[0].wet, state.shoe_state[1].wet) >= 0.5f) marks += tr(" [shoes wet]");
-                        // Wooden shoes: alight, smouldering, burnt away.
-                        if (state.shoe_state[0].burning || state.shoe_state[1].burning) {
-                            marks += tr(" [SHOES ON FIRE]");
-                        } else if ((state.shoes[0] == formats::BrakeShoe::wood && state.shoe_state[0].heat >= simulation::wood_smoulders) ||
-                                   (state.shoes[1] == formats::BrakeShoe::wood && state.shoe_state[1].heat >= simulation::wood_smoulders)) {
-                            marks += tr(" [shoes smouldering]");
-                        }
-                        if (state.shoe_state[0].wear >= 1.0f || state.shoe_state[1].wear >= 1.0f) marks += tr(" [shoes burnt away]");
-                        if ((std::max)(state.shoe_state[0].heat, state.shoe_state[1].heat) >= 100.0f) {
-                            marks += trf(" [shoes +%.0f K]", (std::max)(state.shoe_state[0].heat, state.shoe_state[1].heat));
-                        }
-                        // Valves a hand opened (the car menu): they bleed the cylinder
-                        // or vent the pipe, so they are said here.
-                        if (state.valves & simulation::valve_release) marks += tr(" [RELEASE VALVE OPEN]");
-                        if (state.valves & simulation::valve_emergency) marks += tr(" [EMERGENCY VALVE OPEN]");
-                        // A DLL's own brake force (Engine::BrakeForce: the
-                        // dynamic brake, or an EP brake it works by itself):
-                        // the brake column has it, the cylinder does not.
-                        const auto u = static_cast<std::size_t>(unit - units_.data());
-                        if (const auto* out = dll_car(u, i) ? dll_output(u, i) : nullptr;
-                            out && out->has_engine && std::abs(out->engine.brake_force) >= 500.0f) {
-                            marks += trf(" [DLL brake %.0f kN]", out->engine.brake_force / 1000.0f);
-                        }
                         ImGui::TableNextRow();
                         ImGui::TableNextColumn();
                         ImGui::Text("%02zu", i + 1);
@@ -6158,16 +6124,16 @@ void TrainView::draw_hud() {
                         } else {
                             ImGui::TextDisabled("-");
                         }
-                        ImGui::TableNextColumn();
-                        ImGui::TextUnformatted(marks.c_str());
+                        if (any_chocks) {
+                            ImGui::TableNextColumn();
+                            if (state.chocks != 0) ImGui::TextUnformatted("+");
+                        }
                     }
                     // The whole train (every page): the traction and brake
                     // forces summed; the couplers' forces are inner and cancel
                     // in a sum, so the strongest pull and squeeze, the joint's
                     // number counted from the front (as RTS numbers them).
                     double mass = 0.0, force = 0.0, brake = 0.0;
-                    float pull = 0.0f, squeeze = 0.0f;
-                    std::size_t pull_at = 0, squeeze_at = 0;
                     for (std::size_t k = 0; k < states.size(); ++k) {
                         mass += k < unit->cars.size() && unit->cars[k].definition ? unit->cars[k].definition->mass : 0.0f;
                         force += states[k].force;
@@ -6191,12 +6157,13 @@ void TrainView::draw_hud() {
                     ImGui::TableNextColumn();
                     ImGui::Text("%.1f", brake / 1000.0);
                     ImGui::TableNextColumn();
-                    if (pull_at || squeeze_at) {
-                        ImGui::Text(tr("most pulled %.0f (No. %zu), squeezed %.0f (No. %zu)"), pull / 1000.0f, pull_at, squeeze / 1000.0f, squeeze_at);
-                    } else {
-                        ImGui::TextDisabled("-");
-                    }
+                    ImGui::TextDisabled("-");
                     ImGui::EndTable();
+                }
+                // The strongest pull and squeeze, kept out of the fixed
+                // Coupler cell: the line is longer than the column.
+                if (pull_at || squeeze_at) {
+                    ImGui::Text(tr("most pulled %.0f (No. %zu), squeezed %.0f (No. %zu)"), pull / 1000.0f, pull_at, squeeze / 1000.0f, squeeze_at);
                 }
                 // F5's right click: which of the car's bogies or couplings.
                 if (pick_car) ImGui::OpenPopup("##f5_car_pick");

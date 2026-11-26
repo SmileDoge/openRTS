@@ -1369,8 +1369,10 @@ private:
     HudPanel drive_place_{.key = "hud_drive", .pivot_x = 1.0f};
     // Starts a panel window at its place; false when it is not drawn.
     // `bg_alpha` is the plate's opacity, 0: the panel draws its own plate
-    // (the driver's summary).
-    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y, float bg_alpha = 1.0f);
+    // (the driver's summary). A non-zero `fixed_width`/`fixed_height` pins
+    // the window (the car pages: their columns must not resize it).
+    bool begin_panel(const char* id, HudPanel& place, float default_x, float default_y, float bg_alpha = 1.0f,
+                     float fixed_width = 0.0f, float fixed_height = 0.0f);
     void end_panel(HudPanel& place);
     std::shared_ptr<simulation::DriverHandles> driver_;
     // The player's train runs locomotive DLLs (legacy_cab.hpp).
