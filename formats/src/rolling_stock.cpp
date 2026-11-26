@@ -620,10 +620,15 @@ WagonDefinition parse_wagon(const std::string_view bytes) {
     {
         auto stiffness = values(t, "framespringstiffness");
         const auto read = stiffness.atof();
-        wagon.frame_spring_stiffness = rts_find(t, "framespringstiffness") ? read : wagon.mass * 30.0;
+        // Keep an absent field absent: RTS's mass*30 / mass*1.25 defaults
+        // belong to its own one-sine body model (applied there), not to a
+        // physical spring. Taken as a real spring they gave every MSTS car
+        // 0.87 Hz at 0.12 damping, and the body rolled and swayed near
+        // resonance. openRTS's model falls back to its kind's springs.
+        wagon.frame_spring_stiffness = rts_find(t, "framespringstiffness") ? read : 0.0;
         auto damping = values(t, "framespringdamping");
         const auto damped = damping.atof();
-        wagon.frame_spring_damping = rts_find(t, "framespringdamping") ? damped : wagon.mass * 1.25;
+        wagon.frame_spring_damping = rts_find(t, "framespringdamping") ? damped : 0.0;
         if (rts_find(t, "frameosccorrection")) {
             auto correction = values(t, "frameosccorrection");
             for (auto& value : wagon.frame_osc_correction) value = (std::max)(static_cast<float>(correction.atof()), 0.0f);

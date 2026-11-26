@@ -92,25 +92,45 @@ BodyModes body_modes(const formats::WagonDefinition& wagon, const float mass, co
     const double m = (std::max)(static_cast<double>(mass), 1000.0);
     double hz = 1.5;
     double damping = 0.2;
+    // The modes relative to the bounce, and the damping each gets. A body
+    // rolls about a roll centre below its centre of gravity, so roll is a
+    // little below the bounce, not the 0.6 it was (2026-11-26: a locomotive
+    // at 72 km/h rolled 0.26 deg rms, 0.65 deg peak, on the cross level
+    // alone); the anti-roll springs and dampers make it the best damped.
+    double sway_ratio = 0.8;
+    double roll_ratio = 0.85;
+    double roll_damping_ratio = 1.15;
+    double hunting_share = 1.0;
     if (wagon.frame_spring_stiffness > 0.0) {
-        // The author's springs: their bounce frequency and damping.
+        // The author's springs: their bounce frequency and damping. RTS's
+        // default mass*30 / mass*1.25 no longer lands here (an absent field
+        // stays 0, rolling_stock.cpp); a real low value is held to a
+        // suspension's range, not an RTS oscillator's.
         const double k = wagon.frame_spring_stiffness;
         hz = std::clamp(std::sqrt(k / m) / (2.0 * pi), 0.8, 2.6);
-        damping = wagon.frame_spring_damping > 0.0 ? std::clamp(wagon.frame_spring_damping / (2.0 * std::sqrt(k * m)), 0.12, 0.5) : 0.25;
+        damping = wagon.frame_spring_damping > 0.0 ? std::clamp(wagon.frame_spring_damping / (2.0 * std::sqrt(k * m)), 0.2, 0.5) : 0.3;
     } else {
         switch (wagon.kind) {
         case formats::WagonKind::passenger:
             hz = 1.1;
-            damping = 0.25;
+            damping = 0.3;
             break;
         case formats::WagonKind::engine:
+            // A locomotive's secondary suspension is stiffer and better
+            // damped than a passenger car's; its sway sits above the
+            // bogies' hunting rather than on it.
             hz = 1.45;
-            damping = 0.25;
+            damping = 0.4;
+            sway_ratio = 0.95;
+            roll_ratio = 0.9;
+            roll_damping_ratio = 1.25;
+            hunting_share = 0.6;
             break;
         case formats::WagonKind::freight:
             // Stiff, and lower when loaded.
             hz = std::clamp(2.3 * std::sqrt((std::max)(static_cast<double>(wagon.mass), 1000.0) / m), 1.3, 2.6);
-            damping = 0.15;
+            damping = 0.2;
+            roll_ratio = 0.9;
             break;
         default:
             break;
@@ -120,18 +140,18 @@ BodyModes body_modes(const formats::WagonDefinition& wagon, const float mass, co
     BodyModes modes;
     modes.bounce = static_cast<float>(w * spread(0.08));
     modes.pitch = static_cast<float>(w * 1.2 * spread(0.08));
-    modes.sway = static_cast<float>(w * 0.8 * spread(0.1));
+    modes.sway = static_cast<float>(w * sway_ratio * spread(0.1));
     modes.yaw = static_cast<float>(w * 0.9 * spread(0.1));
-    modes.roll = static_cast<float>(w * 0.6 * spread(0.1));
+    modes.roll = static_cast<float>(w * roll_ratio * spread(0.1));
     modes.surge = static_cast<float>(2.0 * pi * 2.0 * spread(0.1));
     modes.vertical_damping = static_cast<float>(damping * spread(0.15));
-    // Twice the damping aside: the smooth sway at half its size (testers,
-    // 2026-11-12: "поменять демпфера"); the junctions throw it instead.
-    modes.lateral_damping = static_cast<float>(damping * 1.8 * spread(0.15));
-    modes.roll_damping = static_cast<float>(damping * 0.8 * spread(0.15));
+    // More damping aside than up and down: the smooth sway is calmer, the
+    // junctions throw it instead (testers, 2026-11-12: "поменять демпфера").
+    modes.lateral_damping = static_cast<float>(damping * 2.4 * spread(0.15));
+    modes.roll_damping = static_cast<float>(damping * roll_damping_ratio * spread(0.15));
     modes.surge_damping = 0.35f;
     modes.hunting_wavelength = static_cast<float>(16.0 + 12.0 * s.unit());
-    modes.hunting_amplitude = static_cast<float>(0.005 * (0.7 + 0.6 * s.unit()));
+    modes.hunting_amplitude = static_cast<float>(0.005 * hunting_share * (0.7 + 0.6 * s.unit()));
     modes.swell_length = static_cast<float>(120.0 + 220.0 * s.unit());
     return modes;
 }

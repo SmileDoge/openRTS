@@ -169,10 +169,13 @@ On the installed content (2026-10):
 
 ## Body on its springs and rail joints (`0x4F5B34`, parser `0x44247C`)
 
-Wagon fields: `FrameSpringStiffness` (+280, double, default mass·30),
-`FrameSpringDamping` (+288, double, default mass·1.25), `FrameOscCorrection`
+Wagon fields: `FrameSpringStiffness` (+280, double, absent read as 0),
+`FrameSpringDamping` (+288, double, absent read as 0), `FrameOscCorrection`
 (+296/+300/+304: lateral amplitude, lateral frequency, vertical amplitude;
-default 1, negative → 0) — CONFIRMED.
+default 1, negative → 0) — CONFIRMED. RTS's body model applies its
+mass·30 / mass·1.25 defaults when the fields are absent; openRTS's uses its
+kind's springs (below). Until 2026-11-26 the parser itself filled them in,
+which put every car without the fields at 0.87 Hz with 0.12 damping.
 
 Per car, three axes (offsets +116/+120/+124, rates +132/+136/+140, hunting
 phase +128), integrated in 0.05 s sub-steps with spring and damper — CONFIRMED:
@@ -243,7 +246,8 @@ what RTS never shows: one sine of the speed, sideways and up and down, and
 cars without their own `FrameSpringStiffness` / `FrameSpringDamping` (the
 ED9M's motor and trailer cars; its head cars have them) all on the same
 default springs, so they swayed in step, near resonance at 55 km/h, while
-the head cars barely moved. openRTS's instead:
+the head cars barely moved. openRTS's instead (since 2026-11-26 an absent
+field stays 0, and each kind gets its own springs):
 - **The track's errors** along each node, from its index (SplitMix64, the
   same at every run): five sines a channel, longer waves larger; the rails'
   level 2.5 mm rms (waves 6 to 40 m), the line 2.5 mm (8 to 50 m), the cross
@@ -270,8 +274,9 @@ the head cars barely moved. openRTS's instead:
   push goes into the slow sway; a joint or a frog knocks that end down by
   its depth times |v| / 15 m/s (at most 1.5) on another (7 Hz, damping 0.5,
   gone in half a second), and 0.4 of the old dip (0.3 at a frog) goes into
-  the slow bounce. The lateral damping is twice what it was (0.9 → 1.8
-  times the bounce's), so the smooth sway is about half.
+  the slow bounce. The lateral damping is 2.4 times the bounce's (0.9 at
+  first, 1.8 from 2026-11-13, 2.4 from 2026-11-26), so the smooth sway is
+  about half.
 - **Since 2026-11-14** (testers: at speed the throw jerked the body like a
   blow; it started with a step in the body's sideways speed, up to 2 g):
   a junction pushes that end of the bogie aside and back smoothly (a
@@ -295,10 +300,13 @@ the head cars barely moved. openRTS's instead:
   through both (4 sub-steps a 0.05 s step); bump stops at 6 cm aside, 5 cm
   up and down, 0.05 rad roll. The bounce frequency and damping are the
   car's `FrameSpringStiffness` / `FrameSpringDamping` when it has them (0.8
-  to 2.6 Hz, damping 0.12 to 0.5), else by its kind (passenger 1.1 Hz,
-  engine 1.45 Hz, freight 2.3 Hz less when loaded); pitch 1.2 times it, sway
-  0.8, yaw 0.9, roll 0.6; each car's frequencies 8 to 10 % and dampings
-  15 % different (a seed of its own), so no two cars move in step.
+  to 2.6 Hz, damping 0.2 to 0.5), else by its kind (passenger 1.1 Hz / 0.3,
+  engine 1.45 Hz / 0.4, freight 2.3 Hz less when loaded / 0.2); pitch 1.2
+  times it, sway 0.8 (engine 0.95), yaw 0.9, roll 0.85 (engine 0.9); the sway
+  is damped 2.4 times the bounce, the roll 1.15 times (engine 1.25), and an
+  engine's hunting is 0.6 of the others'. Each car's frequencies 8 to 10 %
+  and dampings 15 % different (a seed of its own), so no two cars move in
+  step.
 - **Standing** (since 2026-11-15): once its swing has died away (its
   springs' speeds under 1 mm/s and 1 mrad/s), the body rests on the track as
   it lies under the bogies, and sets off from there; after a stop it swings
@@ -315,10 +323,13 @@ the head cars barely moved. openRTS's instead:
   The "Body sway" slider scales it.
 - On a passenger car at 72 km/h on average track (`openrts_body_motion_test`):
   about 2.5 to 3 mm of sway, 0.11 degrees of roll, 2 mm of bounce rms, the
-  roof's side 5 to 6 mm rms; two cars' sway correlates about 0. A 2TE116
-  moving off (`openrts-train-check --dll ... --body`, te116.dll): to
-  13 km/h no sway or yaw, 0.5 to 1 mrad of roll (the rails' levels as they
-  lie), 2 mm of bounce, the pull lifting the front 2 to 3 mrad.
+  roof's side 5 to 6 mm rms; two cars' sway correlates about 0. A 138 t
+  locomotive at 72 km/h on the same track: 1.7 mm of sway rms (5.5 peak),
+  1.3 mrad of roll rms (3.9 peak), 1.9 mm of bounce rms; about the same at
+  100 km/h. A 2TE116 moving off (`openrts-train-check --dll ... --body`,
+  te116.dll): to 13 km/h no sway or yaw, 0.5 to 1 mrad of roll (the rails'
+  levels as they lie), 2 mm of bounce, the pull lifting the front 2 to
+  3 mrad.
 
 ## The exterior in the cab (`0x438D50`, parser `0x44247C`)
 

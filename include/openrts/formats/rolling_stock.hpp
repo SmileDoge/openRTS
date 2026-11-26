@@ -386,9 +386,11 @@ struct WagonDefinition {
     float derail_rail_height{};
     float derail_rail_force = 240000.0f;
     float derail_buffer_force{};
-    // Body on its springs (RTS 0x44247C, used by 0x4F5B34).
-    double frame_spring_stiffness{}; // FrameSpringStiffness, default mass * 30
-    double frame_spring_damping{};   // FrameSpringDamping, default mass * 1.25
+    // Body on its springs (RTS 0x44247C, used by 0x4F5B34). 0: the file has
+    // none; RTS's model then uses mass * 30 / mass * 1.25, openRTS's its
+    // kind's springs (body_modes).
+    double frame_spring_stiffness{}; // FrameSpringStiffness
+    double frame_spring_damping{};   // FrameSpringDamping
     // FrameOscCorrection: lateral amplitude, lateral frequency, vertical
     // amplitude factors (default 1, negative read as 0).
     float frame_osc_correction[3]{1.0f, 1.0f, 1.0f};
