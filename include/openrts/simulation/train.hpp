@@ -287,10 +287,11 @@ inline constexpr std::uint8_t pipe_cock_rear = 0x80;
 inline constexpr std::uint8_t valve_emergency = 0x10;
 inline constexpr std::uint8_t valve_release = 0x80;
 // Brake shoes (drags) under a car's bogie towards the train front / rear
-// (RTS +31 bits 1, 2): each adds 10 kN of static brake force.
+// (RTS +31 bits 1, 2): a shoe holds with its friction over the average load
+// on the car's axle, F = f q0 (one axle is a wheelset).
 inline constexpr std::uint8_t chock_front = 0x01;
 inline constexpr std::uint8_t chock_rear = 0x02;
-inline constexpr float chock_force = 10000.0f;
+inline constexpr float chock_friction = 0.17f;
 // Coupler ends kept open after uncoupling, so the cars do not couple again
 // on contact (RTS car +14 bits).
 inline constexpr std::uint8_t coupler_open_front = 0x01;

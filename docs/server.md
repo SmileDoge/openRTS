@@ -386,7 +386,8 @@ cars dragged and turned, then put; "Башмаки"). The server removes it and
 places it anew with its number, names, notes, kind, state and cars (a new
 id: RTS's clients see a train go and one come); refused where it does not
 fit (then it is put back where it stood) and for a train a player has.
-The chocks hold it on the server too (10 kN each, as RTS's PlaceDrag).
+The chocks hold it on the server too (as RTS's PlaceDrag; a shoe's force is
+`F = f q0`, 0.17 of the average load on the car's axle).
 
 **The drivers' trains kept** (2026-11-21): a placement keeps whose each
 train is (`owner <nick>`) and its own state (`state`: what its owner's

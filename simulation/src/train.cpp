@@ -186,6 +186,13 @@ using formats::WagonDefinition;
     return (std::min)(wheels / 2, std::size_t{4});
 }
 
+// The axles the car's weight stands on (one axle is a wheelset): half of
+// NumWheels, a car without the number taken as a four-axle one.
+[[nodiscard]] std::size_t axle_load_count(const WagonDefinition& wagon) {
+    const auto wheels = static_cast<std::size_t>(wagon.wheels);
+    return wheels >= 2 ? wheels / 2 : 4;
+}
+
 // The ПТР's basic resistance (TrainSettings::resistance): w0 = b0 + (b1 + b2 V
 // + b3 V^2) / q kgf per tonne, V in km/h and q the tonnes on an axle. The car's
 // force is that over the whole mass, m w0 g / 1000.
@@ -1649,9 +1656,11 @@ void Train::step() {
             if (car.sliding()) car.slid += std::abs(car.velocity) * dt;
             car.brake_force = force;
         }
-        // Brake shoes under its bogies (RTS: 10 kN each).
-        if (car.chocks & chock_front) car.brake_force += chock_force;
-        if (car.chocks & chock_rear) car.brake_force += chock_force;
+        // Brake shoes under its bogies: a shoe holds with its friction over
+        // the average load on the car's axle (F = f q0).
+        const float chock = chock_friction * mass_of(car) * gravity / static_cast<float>(axle_load_count(*car.definition));
+        if (car.chocks & chock_front) car.brake_force += chock;
+        if (car.chocks & chock_rear) car.brake_force += chock;
     }
     for (std::size_t i = 0; i < n; ++i) cars_[i].brake_force += impl.demands[i].brake_force;
     // The realistic air slides by bogie (adhesion.hpp, shoe_state): a locked
