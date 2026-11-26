@@ -509,6 +509,27 @@ struct OtherPlayer {
 // (the server's answer; its login says rain, all RTS knows). Older readers
 // stop after the u16.
 constexpr std::uint16_t openrts_features = 1;
+// The server's answer with this feature (2026-11-26, the server's setting
+// "fast positions", on by default): its openRTS players send their trains'
+// motion (openrts_train_motion) 10 times a second, and draw the others'
+// from it a fifth of a second behind instead of the RTS position's 1.75 s.
+constexpr std::uint16_t openrts_feature_fast_positions = 2;
+
+// openrts_train_motion (0x45EE, openRTS's own): u32 train, u32 the sender's
+// clock (ms, wrapping), u32 TDB vector node, f32 offset, u8 direction (as
+// 0x4603: the rear end), f32 speed, f32 acceleration (m/s, m/s²: along the
+// train). Sent while it moves and once when it stops; the server relays it
+// to the other openRTS players.
+struct OpenrtsMotion {
+    std::uint32_t train{};
+    std::uint32_t sent_ms{};
+    std::uint32_t node{};
+    float offset{};
+    std::uint8_t direction{};
+    float speed{}, acceleration{};
+};
+[[nodiscard]] Bytes encode_openrts_motion(const OpenrtsMotion& motion);
+[[nodiscard]] std::optional<OpenrtsMotion> decode_openrts_motion(ByteView body);
 // The server's answer since 2026-11-21 then, when its game may be joined
 // from Discord: u8 1, the address for the others (text_u16; empty: the one
 // the player connected to), u16 the players in it, u16 its places (0: no

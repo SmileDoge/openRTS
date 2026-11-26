@@ -199,6 +199,42 @@ void motion() {
     const auto before = jump.at(*net, 0.5 + jump.delay());
     const auto after = jump.at(*net, 1.6 + jump.delay());
     check(before && before->node == 1 && after && after->node == 3, "a jump waits, then puts the train there");
+
+    // Timed positions (openrts_train_motion, 10 a second): drawn the delay
+    // given behind, at the train's speed all along, every frame further on.
+    net::RemoteMotion timed;
+    timed.add(*net, 0.0, {1, 5.0, true}, 10.0f); // an RTS one first: started anew
+    for (int k = 0; k <= 30; ++k) timed.add_timed(*net, 1.0 + 0.1 * k, {1, 10.0 + k * 1.0, true}, 10.0f, 0.0f);
+    timed.set_timed_delay(0.2);
+    check(timed.timed() && near(timed.delay(), 0.2), "timed positions: drawn 0.2 s behind");
+    float timed_slowest = 100.0f, timed_fastest = 0.0f;
+    double last_offset = -1.0;
+    bool onwards = true;
+    for (double t = 1.25; t < 4.0; t += 1.0 / 60.0) {
+        timed.tick(t);
+        const auto p = timed.at(*net, t);
+        if (!p || p->offset < last_offset) onwards = false;
+        if (p) last_offset = p->offset;
+        const float v = timed.speed_at(t);
+        timed_slowest = (std::min)(timed_slowest, v);
+        timed_fastest = (std::max)(timed_fastest, v);
+    }
+    check(onwards, "timed positions: every frame further on");
+    check(timed_slowest > 9.9f && timed_fastest < 10.1f, "timed positions: at the train's speed (" + std::to_string(timed_slowest) + ".." +
+                                                          std::to_string(timed_fastest) + ")");
+    const auto now_at = timed.at(*net, 3.5 + 0.2);
+    check(now_at && near(now_at->offset, 35.0), "timed positions: where it was 0.2 s ago");
+    // Past the last one: on for half a second at most, slowing as it did,
+    // never turned back.
+    net::RemoteMotion braking;
+    braking.add_timed(*net, 0.0, {1, 10.0, true}, 2.0f, -4.0f);
+    braking.add_timed(*net, 0.1, {1, 10.2, true}, 1.6f, -4.0f);
+    braking.set_timed_delay(0.2);
+    const auto run_on = braking.at(*net, 0.1 + 0.2 + 2.0);
+    check(run_on && run_on->offset >= 10.2 && run_on->offset < 10.2 + 1.6 * 0.5, "timed positions: run on slowing, not turned back");
+    // An RTS position after them: the samples start anew, untimed.
+    braking.add(*net, 5.0, {1, 12.0, true}, 0.0f);
+    check(!braking.timed() && near(braking.delay(), 1.5 + net::RemoteMotion::margin), "an RTS position after them: untimed again");
 }
 
 // Our own train the other way: where it stands in RTS's terms, and back.

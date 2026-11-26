@@ -585,6 +585,10 @@ public:
     // get in by the door as into any cab of his. An error, or empty.
     [[nodiscard]] std::string board(std::uint64_t id, std::size_t car = SIZE_MAX, bool seat = true);
     [[nodiscard]] simulation::Train* find_train(std::uint64_t id);
+    // The time of the trains' last step: steps x simulation::train_step since
+    // the view began (the network's fast positions are timed by it: exactly
+    // as far apart as the steps that moved the train).
+    [[nodiscard]] double step_time() const noexcept { return static_cast<double>(steps_) * simulation::train_step; }
     bool remove_train(std::uint64_t id);
     // A remote train's look as its owner sends it (car_light, car_state):
     // RTS draws another player's train only by these, its own lights'
@@ -1684,6 +1688,7 @@ private:
     // On a car's outside (Engineer::Mode::on_car): that car, by its key.
     std::optional<std::uint32_t> outside_car_;
     double accumulator_{};
+    std::uint64_t steps_{}; // steps taken (step_time)
     bool follow_ = true;
     bool free_after_look_ = false; // look_once_then_free
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;

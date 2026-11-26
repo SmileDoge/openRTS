@@ -759,6 +759,69 @@ void game() {
     static_cast<void>(quit);
 }
 
+// Fast positions (2026-11-26): the hello's answer says so; a PLAYER
+// train's motion (0x45EE) goes to the other openRTS players; switched off,
+// the players are told and it goes nowhere.
+void fast_positions() {
+    auto network = switch_track();
+    const auto car = car_definition();
+    Recorder rec;
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.description = server::game_description("TestRoute", 1);
+    server::GameServer game(rec, options, *network, nullptr);
+    std::string error;
+    double now = 0.0;
+    game.tick(now);
+    const auto hello = net::encode_openrts_hello();
+    const auto features_of = [&](const server::ConnectionId c) -> std::optional<std::uint16_t> {
+        std::optional<std::uint16_t> out;
+        for (const auto& g : take(rec, c))
+            if (g.id == P(Package::openrts_hello)) out = net::decode_openrts_hello(g.body);
+        return out;
+    };
+    game.connected(1, "127.0.0.1:1");
+    game.received(1, P(Package::login), login(u"Alice"));
+    take_reply(rec, 1);
+    game.received(1, P(Package::openrts_hello), hello);
+    const auto alice_features = features_of(1);
+    check(alice_features && (*alice_features & net::openrts_feature_fast_positions) != 0, "fast positions: on by default, in the hello's answer");
+    check(game.add_train(new_train(car, 1, 45.0, 101), error) == 1u, "fast positions: train 1: " + error);
+    check(game.assign(1, "Alice", error), "fast positions: train 1 to Alice: " + error);
+    game.received(1, P(Package::snapshot), {});
+    rec.out[1].clear();
+    game.connected(2, "127.0.0.1:2");
+    game.received(2, P(Package::login), login(u"Bob"));
+    take_reply(rec, 2);
+    game.received(2, P(Package::openrts_hello), hello);
+    game.received(2, P(Package::snapshot), {});
+    rec.out[2].clear();
+    net::OpenrtsMotion m{.train = 1, .sent_ms = 1234, .node = 1, .offset = 50.0f, .direction = 0, .speed = 12.5f, .acceleration = 0.3f};
+    const auto body = net::encode_openrts_motion(m);
+    const auto back = net::decode_openrts_motion(body);
+    check(back && back->train == 1 && back->sent_ms == 1234 && back->node == 1 && back->offset == 50.0f && back->speed == 12.5f &&
+              back->acceleration == 0.3f && body.size() == 25,
+          "fast positions: the motion's 25 bytes read back");
+    check(!net::decode_openrts_motion(net::Bytes(body.begin(), body.begin() + 20)), "fast positions: a short motion is refused");
+    game.received(1, P(Package::openrts_train_motion), body);
+    check(ids(take(rec, 2)) == std::vector<std::uint16_t>{P(Package::openrts_train_motion)} && take(rec, 1).empty(),
+          "fast positions: Alice's train's motion reaches Bob, not her");
+    m.train = 99;
+    game.received(1, P(Package::openrts_train_motion), net::encode_openrts_motion(m));
+    check(take(rec, 2).empty(), "fast positions: a train the server does not have goes nowhere");
+    // Off: both told at once; a motion goes nowhere.
+    game.set_fast_positions(false);
+    const auto alice_off = features_of(1);
+    const auto bob_off = features_of(2);
+    check(alice_off && bob_off && (*alice_off & net::openrts_feature_fast_positions) == 0 && (*bob_off & net::openrts_feature_fast_positions) == 0,
+          "fast positions off: the players are told");
+    game.received(1, P(Package::openrts_train_motion), body);
+    check(take(rec, 2).empty(), "fast positions off: the motion is dropped");
+    game.set_fast_positions(true);
+    const auto bob_on = features_of(2);
+    check(bob_on && (*bob_on & net::openrts_feature_fast_positions) != 0, "fast positions on again: told");
+}
+
 // RTS's hand route from a console (0x4619): laid along the junctions as they
 // stand, its junction held, the distance sent to everyone; -1 cancels.
 // Helpers (помощник машиниста) and openRTS players (docs/server.md, "Helpers").
@@ -2048,6 +2111,7 @@ int main(int argc, char** argv) {
     placement_format();
     game();
     helpers();
+    fast_positions();
     car_identity();
     station_segments();
     hand_route();

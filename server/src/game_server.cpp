@@ -669,6 +669,19 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         return;
     }
 
+    // A train's motion 10 times a second (0x45EE, the fast positions): to
+    // the other openRTS players, for a PLAYER train the server knows; off,
+    // dropped (the players are told not to send it).
+    if (id == P(Package::openrts_train_motion)) {
+        if (!options_.fast_positions) return;
+        const auto m = net::decode_openrts_motion(body);
+        const auto* t = m ? impl.train(m->train) : nullptr;
+        if (!t || t->record.kind != kind_player) return;
+        const auto bytes = framed(id, body);
+        for (auto& [uid, other] : impl.users)
+            if (uid != user->id && other.playing && other.connection && other.openrts) transport_.send(other.connection, bytes);
+        return;
+    }
     // A car menu item done (0x45FE): to the other openRTS players.
     if (id == P(Package::openrts_car_action)) {
         const auto bytes = framed(id, body);
@@ -2790,7 +2803,18 @@ net::Bytes GameServer::hello_answer() const {
                                       .players = static_cast<std::uint16_t>((std::min)(players_connected(), 65535u)),
                                       .places = static_cast<std::uint16_t>((std::min)(options_.max_players, 65535u))};
     }
-    return framed(P(Package::openrts_hello), net::encode_openrts_hello(net::openrts_features, options_.storm, discord));
+    const auto features = static_cast<std::uint16_t>(net::openrts_features | (options_.fast_positions ? net::openrts_feature_fast_positions : 0));
+    return framed(P(Package::openrts_hello), net::encode_openrts_hello(features, options_.storm, discord));
+}
+
+void GameServer::set_fast_positions(const bool on) {
+    if (options_.fast_positions == on) return;
+    options_.fast_positions = on;
+    impl_->note(on ? "fast positions on: openRTS players send their trains' motion 10 times a second"
+                   : "fast positions off: positions as RTS's, every 1.5 s");
+    const auto answer = hello_answer();
+    for (auto& [_, user] : impl_->users)
+        if (user.openrts && user.connection && !user.console) transport_.send(user.connection, answer);
 }
 
 net::ConsoleNext GameServer::next_routes(const std::uint32_t train, const bool back) const {

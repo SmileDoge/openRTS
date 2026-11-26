@@ -171,12 +171,36 @@ private:
         // player's place, which is the camera's).
         bool far = false;
         double next_relay = 0.0; // laid again from its head now and then (move_trains)
+        // Its owner's motion 10 times a second (openrts_train_motion): the
+        // sender's clock put on ours. `least`: ours minus theirs at the
+        // earliest arrival seen (let rise 0.1 ms a second: the clocks
+        // drift); `base`: what the samples are put at, eased towards it at
+        // 2 ms a second, so their spacing stays the sender's (a jump of a
+        // frame's 33 ms made a steady 12 m/s drawn 11.8..12.2); `late`: how
+        // late they came lately. While they come, its RTS positions only
+        // keep the record.
+        struct FastClock {
+            bool set = false;
+            std::uint32_t last_ms = 0;
+            double sent = 0.0;
+            double least = 0.0;
+            double base = 0.0;
+            double late = 0.0;
+        } fast;
+        double fast_heard = -1e9; // when the last one came
     };
 
     void apply(const net::ReceivedPackage& package, simulation::TrackNetwork& network, simulation::SignalSystem* signals,
                TrainView& trains, double now);
+    // `timed`: from openrts_train_motion, at that time (our clock) and
+    // acceleration; else an RTS position, which moves the train only while
+    // no timed ones come.
+    struct Timed {
+        double time{};
+        float acceleration{};
+    };
     void position(Remote& remote, const net::TrainPos& pos, simulation::TrackNetwork& network, TrainView& trains,
-                  double now);
+                  double now, const Timed* timed = nullptr);
     void move_trains(simulation::TrackNetwork& network, TrainView& trains, double now);
     // The trains the server gave us (docs/net.md, "Own trains"): simulated
     // here, one of them driven, all sent out.
@@ -188,6 +212,7 @@ private:
         bool announced = false;     // stood still once since it was placed here
         bool waiting = false;       // a part cut off: no server id yet (0x4610 brings it)
         double next_position = 0.0; // train_pos due while it moves
+        double next_motion = 0.0;   // openrts_train_motion due while it moves (the server's fast positions)
         double next_look = 0.0;     // car_state at most every 250 ms
         double next_sound = 0.0;    // sound_values at most every 200 ms
         std::vector<std::array<float, 9>> sound_sent;          // by car: Var1..8, travelled
@@ -293,6 +318,9 @@ private:
     bool hello_sent_ = false;
     bool openrts_server_ = false;
     bool server_storm_ = false;
+    // The server's hello says its players send their trains' motion 10
+    // times a second (net::openrts_feature_fast_positions).
+    bool fast_positions_ = false;
     std::optional<DiscordJoin> discord_join_;
     std::map<std::uint32_t, Player> players_;
     // Each player's places of the last seconds (heard time, place): one in

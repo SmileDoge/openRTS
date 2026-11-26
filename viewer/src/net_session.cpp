@@ -9,6 +9,7 @@
 #include <fstream>
 #include <sstream>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
@@ -468,7 +469,7 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
 }
 
 void NetSession::position(Remote& remote, const net::TrainPos& pos, simulation::TrackNetwork& network, TrainView& trains,
-                          const double now) {
+                          const double now, const Timed* timed) {
     if (pos.cars.size() != remote.record.cars.size()) {
         // RTS drops it too (the car count must match, 0x4C3DE0): a coupling
         // or a split the observer does not repeat yet.
@@ -505,6 +506,14 @@ void NetSession::position(Remote& remote, const net::TrainPos& pos, simulation::
             connection_->send(net::id(net::Package::state_request), net::encode_state_request(2, remote.record.id));
         }
     }
+    if (timed) {
+        remote.motion.add_timed(network, timed->time, *front, pos.speed, timed->acceleration);
+        // A package interval (0.1 s, up to a third more at the sender's
+        // frame rate), how late they come lately, a frame or two.
+        remote.motion.set_timed_delay(std::clamp(0.15 + remote.fast.late + 0.03, 0.15, 1.0));
+        return;
+    }
+    if (now - remote.fast_heard < 2.0) return; // the timed ones move it
     remote.motion.add(network, now, *front, pos.speed);
 }
 
@@ -575,6 +584,42 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
         if (const auto update = net::decode_train_pos(body)) {
             const auto it = remotes_.find(update->train);
             if (it != remotes_.end()) position(it->second, update->pos, network, trains, now);
+        }
+        return;
+    case P(net::Package::openrts_train_motion):
+        if (const auto m = net::decode_openrts_motion(body); m && !owned_.contains(m->train)) {
+            const auto it = remotes_.find(m->train);
+            if (it == remotes_.end() || it->second.record.cars.empty()) return;
+            auto& remote = it->second;
+            // The sender's clock on ours: its time unwrapped, our time at its
+            // earliest arrival (the network's least delay), how late this one is.
+            auto& c = remote.fast;
+            const auto step = static_cast<std::int32_t>(m->sent_ms - c.last_ms);
+            if (!c.set || step < -2000 || step > 60000 || now - remote.fast_heard > 10.0) {
+                c = {};
+                c.set = true;
+                c.sent = m->sent_ms / 1000.0;
+                c.least = c.base = now - c.sent;
+            } else {
+                const double gap = (std::max)(step / 1000.0, 0.0);
+                c.sent += step / 1000.0;
+                c.least = (std::min)(c.least + 0.0001 * gap, now - c.sent);
+                c.base += std::clamp(c.least - c.base, -0.002 * gap, 0.002 * gap);
+                // Up at once, down slowly (halved in some 14 s): the delay
+                // drawn behind moves seldom.
+                c.late = (std::max)(c.late * 0.995, now - c.sent - c.base);
+            }
+            c.last_ms = m->sent_ms;
+            remote.fast_heard = now;
+            net::TrainPos pos = remote.record.pos ? *remote.record.pos : net::TrainPos{};
+            if (pos.cars.size() != remote.record.cars.size()) pos.cars.resize(remote.record.cars.size());
+            pos.node = m->node;
+            pos.offset = m->offset;
+            pos.direction = m->direction;
+            pos.speed = m->speed;
+            pos.acceleration = m->acceleration;
+            const Timed timed{.time = c.sent + c.base, .acceleration = m->acceleration};
+            position(remote, pos, network, trains, now, &timed);
         }
         return;
     case P(net::Package::train_stands):
@@ -906,6 +951,21 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
     case P(net::Package::openrts_hello):
         if (!openrts_server_) std::cout << "net: the server is openRTS's: players and helpers" << std::endl;
         openrts_server_ = true;
+        if (const auto features = net::decode_openrts_hello(body)) {
+            const bool fast = (*features & net::openrts_feature_fast_positions) != 0;
+            if (fast != fast_positions_)
+                std::cout << (fast ? "net: fast positions: our trains' motion 10 times a second" : "net: fast positions off: as RTS, every 1.5 s")
+                          << std::endl;
+            // Off: the others' trains go by their RTS positions at once,
+            // eased back to their delay (else they stood till those came).
+            if (fast_positions_ && !fast) {
+                for (auto& [_, remote] : remotes_) {
+                    remote.motion.untimed();
+                    remote.fast_heard = -1e9;
+                }
+            }
+            fast_positions_ = fast;
+        }
         if (net::openrts_hello_storm(body) && !server_storm_) std::cout << "net: the server's weather is a thunderstorm" << std::endl;
         server_storm_ = net::openrts_hello_storm(body);
         if (const auto discord = net::openrts_hello_discord(body)) {
@@ -1810,6 +1870,30 @@ void NetSession::assigned(const net::TrainAssignUpdate& a, simulation::TrackNetw
 
 void NetSession::send_own(TrainView& trains, const double now) {
     if (!connection_) return;
+    // OPENRTS_NET_DRIVE=<m/s>:<from s>:<to s> (automated runs of the network
+    // game): our first train sped up at 0.5 m/s² to that speed from that
+    // time, slowed at 1 m/s² to a stop after the other.
+    if (static const char* drive = std::getenv("OPENRTS_NET_DRIVE"); drive) {
+        static double started = -1.0, last = 0.0;
+        float speed = 10.0f;
+        double from = 5.0, to = 60.0;
+        std::sscanf(drive, "%f:%lf:%lf", &speed, &from, &to);
+        for (auto& [id, own] : owned_) {
+            auto* train = own.train != 0 ? trains.find_train(own.train) : nullptr;
+            if (!train || !train->placed()) continue;
+            if (started < 0.0) started = last = now;
+            const double clock = now - started;
+            const auto dt = static_cast<float>(now - last);
+            last = now;
+            const float v = train->cars().front().velocity;
+            if (clock >= to) {
+                train->add_velocity((v > 0.0f ? (std::max)(0.0f, v - dt) : (std::min)(0.0f, v + dt)) - v);
+            } else if (clock >= from) {
+                train->add_velocity((std::min)(speed, v + 0.5f * dt) - v);
+            }
+            break;
+        }
+    }
     for (auto& [id, own] : owned_) {
         if (own.train == 0 || own.waiting) continue;
         const auto* train = trains.find_train(own.train);
@@ -1835,6 +1919,30 @@ void NetSession::send_own(TrainView& trains, const double now) {
                 connection_->send(net::id(net::Package::train_pos), net::encode_train_pos(id, *pos));
                 own.next_position = now + 1.5;
                 position_sent = moving;
+            }
+        }
+        // Its motion 10 times a second while it moves, and once when it
+        // stops (the server's fast positions; docs/net.md).
+        if (fast_positions_ && ((moving && now >= own.next_motion) || stopped)) {
+            if (const auto pos = net::position_of(*train)) {
+                net::OpenrtsMotion m;
+                m.train = id;
+                // When the train was there: its last step by the steps' own
+                // clock, not this frame's (the steps are 0.05 s; a frame's
+                // clock and the steps' drift apart: the samples' spacing
+                // would not be the way the train went, ±3 %).
+                const double at = trains.step_time();
+                m.sent_ms = static_cast<std::uint32_t>(static_cast<std::uint64_t>((std::max)(at, 0.0) * 1000.0) & 0xFFFFFFFFull);
+                m.node = pos->node;
+                m.offset = pos->offset;
+                m.direction = pos->direction;
+                m.speed = moving ? pos->speed : 0.0f;
+                m.acceleration = moving ? pos->acceleration : 0.0f;
+                connection_->send(net::id(net::Package::openrts_train_motion), net::encode_openrts_motion(m));
+                if (static const bool trace = std::getenv("OPENRTS_NET_TRACE") != nullptr; trace)
+                    std::cout << "net trace sent: " << at << " train " << id << " node " << m.node << " offset " << m.offset << " speed "
+                              << m.speed << " acceleration " << m.acceleration << std::endl;
+                own.next_motion = std::max(own.next_motion + 0.1, now + 0.05);
             }
         }
         // Derailed cars (0x4636, as rts1.exe): when a car comes off, and with
@@ -2005,6 +2113,12 @@ void NetSession::move_trains(simulation::TrackNetwork& network, TrainView& train
         }
         const float speed = remote.motion.speed_at(now);
         if (std::abs(train->speed() - speed) > 1e-3) train->add_velocity(speed - static_cast<float>(train->speed()));
+        // OPENRTS_NET_TRACE=1 (automated runs): each frame, how the train
+        // moved since the last and how far behind it is drawn.
+        if (static const bool trace = std::getenv("OPENRTS_NET_TRACE") != nullptr; trace) {
+            std::cout << "net trace: " << now << " train " << id << " moved " << (d ? *d : 0.0) << " speed " << speed << " delay "
+                      << remote.motion.delay() << (remote.motion.timed() ? " timed" : " rts") << std::endl;
+        }
     }
 }
 

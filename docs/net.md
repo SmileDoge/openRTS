@@ -500,6 +500,60 @@ what it had; at most twice a second per car while one pours. A body that
 is not openRTS's (RTS's own) is left alone. A train placed later (another
 player's not yet on the screen) gets the bodies kept with its record.
 
+## Fast positions (openRTS's own, 2026-11-26)
+
+RTS sends a moving train's position every 1.5 s, so the others draw it
+1.75 s behind: at 60 km/h 30 m from where it is. openRTS's server, with
+its setting "Fast train positions" on (by default; `--no-fast-positions`,
+the console's `fastpos on|off` at any time), says so in its hello's
+answer (feature `2`, `net::openrts_feature_fast_positions`). Its openRTS
+players then send each own train's motion 10 times a second while it
+moves, and once when it stops:
+
+- `0x45EE openrts_train_motion` (`net::OpenrtsMotion`, 25 bytes): `u32`
+  train, `u32` the sender's clock in ms (wrapping), `u32` TDB vector node,
+  `f32` offset, `u8` direction (the rear end, as `0x4603`), `f32` speed,
+  `f32` acceleration. The clock is the steps' own (`TrainView::step_time`,
+  steps × 0.05 s): the samples lie exactly as far apart as the steps that
+  moved the train. A frame's clock drifted from the steps by ±3 %, and the
+  train drawn at a steady 12 m/s went 11.6..12.4.
+- The server relays it to its other openRTS players, for a PLAYER train it
+  knows; switched off, it drops it and tells the players at once (the hello
+  again).
+- `0x4603` still goes every 1.5 s: the server keeps the train's place and
+  cars by it, and a player without fast positions draws by it.
+
+The receiver (`NetSession`, `net::RemoteMotion::add_timed`) puts the
+sender's clock on its own:
+- `least`: its own time minus the sender's at the earliest arrival seen,
+  let rise 0.1 ms a second for the clocks' drift;
+- the samples' times: the sender's plus a `base` eased towards `least` at
+  2 ms a second, so their spacing stays the sender's (a jump of a frame's
+  33 ms waved a steady speed by 2 %);
+- the delay drawn behind: 0.15 s (a package interval, up to a third more
+  at the sender's frame rate), how late they came lately (up at once,
+  halved in some 14 s), 0.03 s for the frames: about 0.2 s on a LAN;
+- the drawing clock eases towards it at most 2 % off, its pace changing
+  over half a second;
+- past the last sample the train runs on half a second at most, at its
+  acceleration, never turning back;
+- while they come (2 s), the train's RTS positions only keep its record.
+  Switching between the two (the setting changed, or a train set off
+  after standing) keeps the samples and eases the clock 10 % faster or
+  slower to the new delay (1.55 s: some 15 s) instead of jumping.
+
+Checked 2026-11-26 with the server and two players on one computer
+(30 frames a second, a railcar sped up to 12 m/s and stopped): drawn 0.18
+to 0.25 s behind instead of 1.75 to 2.6 s, every frame's way within 0.07
+m/s of the speed drawn, no frame back. The hooks for such runs:
+`OPENRTS_NET_DRIVE=<m/s>:<from s>:<to s>` speeds the player's first train
+up at 0.5 m/s² and stops it at 1 m/s²; `OPENRTS_NET_TRACE=1` prints each
+remote train's way, speed and delay each frame and each motion sent.
+
+Since the same day an RTS position after the train stood measures no
+interval (a train that stood a minute is not sent every minute: the delay
+grew to 2.6 s, 3 s at most).
+
 ## Tests
 
 - `openrts.net`: fields and strings both ways, nested packages, broken
@@ -512,7 +566,9 @@ player's not yet on the screen) gets the bodies kept with its record.
   and name.
 - `openrts.net_world`: on a synthetic switch, distances along the track,
   junctions set the server's way, a train's front from its rear end, a
-  remote train interpolated, run on, stopped and put across a jump.
+  remote train interpolated, run on, stopped and put across a jump; timed
+  positions (the fast ones) drawn at the delay given, at the train's speed,
+  every frame further on, run on slowing, untimed again after an RTS one.
 - `openrts.content.net_multdata` (with `OPENRTS_TEST_ROOT`): `RTS/multdata`
   reads without a problem and writes back byte for byte. It is skipped when
   the file is not there. The file stays in the game folder: it holds the

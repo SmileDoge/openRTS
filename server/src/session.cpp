@@ -47,6 +47,7 @@ std::unique_ptr<ServerSession> ServerSession::start(SessionSettings settings, st
     options.discord_join = settings.discord_join;
     options.public_address = settings.public_address;
     options.max_players = settings.max_players;
+    options.fast_positions = settings.fast_positions;
     s.game_ = std::make_unique<GameServer>(*s.tcp_, options, route.network(), route.signals());
     auto& game = *s.game_;
     // A console's commands are the server's own, but "quit".

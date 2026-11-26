@@ -935,6 +935,32 @@ Bytes encode_train_id(const std::uint32_t train) {
     return w.take();
 }
 
+Bytes encode_openrts_motion(const OpenrtsMotion& m) {
+    WireWriter w;
+    w.u32(m.train);
+    w.u32(m.sent_ms);
+    w.u32(m.node);
+    w.f32(m.offset);
+    w.u8(m.direction);
+    w.f32(m.speed);
+    w.f32(m.acceleration);
+    return w.take();
+}
+
+std::optional<OpenrtsMotion> decode_openrts_motion(const ByteView body) {
+    WireReader r(body);
+    OpenrtsMotion m;
+    m.train = r.u32();
+    m.sent_ms = r.u32();
+    m.node = r.u32();
+    m.offset = r.f32();
+    m.direction = r.u8();
+    m.speed = r.f32();
+    m.acceleration = r.f32();
+    if (!r.ok() || !std::isfinite(m.offset) || !std::isfinite(m.speed) || !std::isfinite(m.acceleration)) return std::nullopt;
+    return m;
+}
+
 Bytes encode_openrts_car_action(const OpenrtsCarAction& action) {
     WireWriter w;
     w.u32(action.train);

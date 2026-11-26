@@ -6808,6 +6808,7 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     accumulator_ += (std::min)(elapsed, 0.25f);
     while (accumulator_ >= simulation::train_step) {
         accumulator_ -= simulation::train_step;
+        ++steps_;
         // The cab as it stands before the step, to draw between (CabView::Blend).
         cab_before_car_ = SIZE_MAX;
         if (const auto* before = cab_car_ != SIZE_MAX ? cab_state(cab_car_) : nullptr) {
