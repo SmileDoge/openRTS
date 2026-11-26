@@ -154,10 +154,10 @@ BrakeSettings load_brake_settings() {
     s.stability = remembered_int("distributor_stability", 1) != 0;
     s.condition = std::clamp(remembered_int("brake_condition", s.realistic ? 6 : 0), 0, 10);
     s.pressing = std::clamp(remembered_int("brake_pressing", 100), 50, 150);
-    s.own_brakes = std::clamp(remembered_int("own_brakes", 1), 0, 1);
+    s.own_brakes = std::clamp(remembered_int("own_brakes", 0), 0, 1);
     s.brake_numbers = std::clamp(remembered_int("brake_numbers", 0), 0, 1);
-    s.own_klub = std::clamp(remembered_int("own_klub", 1), 0, 1);
-    s.no_brakes_dll = remembered_int("no_brakes_dll", 1) != 0;
+    s.own_klub = std::clamp(remembered_int("own_klub", 0), 0, 1);
+    s.no_brakes_dll = remembered_int("no_brakes_dll", 0) != 0;
     s.klub_objects = remembered_int("klub_objects", 0) != 0;
     s.klub_map = remembered_int("klub_map", 1) != 0;
     return s;

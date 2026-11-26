@@ -426,7 +426,7 @@ struct SceneContent {
     bool realistic_air = false;
     // Route scenes: the start menu's brakes' preset (brake_settings_ui.hpp),
     // applied before the first train is made.
-    BrakeSettings brakes;
+    std::optional<BrakeSettings> brakes;
     // Route scenes: save the situation under this name once the train
     // stands on the track (--save-situation).
     std::string save_situation;
