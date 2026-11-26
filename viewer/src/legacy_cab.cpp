@@ -590,6 +590,42 @@ void LegacyCab::release_keys() {
     take_log();
 }
 
+void LegacyCab::return_released(const float dt) {
+    if (!precise_held_.empty() && working()) {
+        for (auto it = precise_held_.begin(); it != precise_held_.end();) {
+            if (!key_held(it->first, it->second)) {
+                apply_drag(player(), it->first, 0.0f, true);
+                it = precise_held_.erase(it);
+                continue;
+            }
+            // Some 1.5 positions a second.
+            apply_drag(player(), it->first, static_cast<float>(it->second) * 1.5f * dt, false);
+            ++it;
+        }
+    }
+    if (returning_.empty()) return;
+    if (!working()) {
+        returning_.clear();
+        return;
+    }
+    const auto* out = out_of(player());
+    if (!out) return;
+    for (auto it = returning_.begin(); it != returning_.end();) {
+        const auto id = *it;
+        if (id >= out->switches.size() || key_held(id, 0)) {
+            it = returning_.erase(it);
+            continue;
+        }
+        const auto& sw = out->switches[id];
+        if (sw.set_state == sw.fixed_state) {
+            it = returning_.erase(it);
+            continue;
+        }
+        operate(id, sw.fixed_state);
+        ++it;
+    }
+}
+
 bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec3>& eye) {
     if (!eye || (control.flags & formats::cab_check_distance) == 0 || control.radius <= 0.0f) return true;
     const glm::vec3 at{control.position[0], control.position[1], control.position[2]};
@@ -620,10 +656,24 @@ void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) 
         // A press works only the switches within reach (a release lets go
         // of what a press took, wherever he is).
         if (event.down && !key_reaches(*spec, eye)) continue;
+        // A PRECISE switch (the handbrake's wheel, CONTROLLERX PRECISE): its
+        // keys turn it as the mouse does while held (testers 2026-11-26: "<"
+        // and ">" did nothing to any handbrake; RTS turns it by them).
+        if (spec->flags & formats::cab_precise) {
+            if (event.down) {
+                precise_held_[b.id] = b.direction != 0 ? b.direction : 1;
+            } else if (precise_held_.erase(b.id) > 0) {
+                apply_drag(player(), b.id, 0.0f, true);
+            }
+            continue;
+        }
         if (!event.down) {
             // RTS 0x414340: a NONFIXED switch returns to its FixedState when
             // its key is let go (RTS steps there one position per key delay).
-            if (non_fixed && sw.set_state != sw.fixed_state) operate(b.id, sw.fixed_state);
+            if (non_fixed && sw.set_state != sw.fixed_state) {
+                operate(b.id, sw.fixed_state);
+                returning_.insert(b.id);
+            }
             continue;
         }
         if (non_fixed && b.direction == 0) {

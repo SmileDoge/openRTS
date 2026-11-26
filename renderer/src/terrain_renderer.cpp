@@ -276,6 +276,7 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 #include <utility>
 
 #include <openrts/formats/ace_file.hpp>
+#include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 
 #include <openrts/renderer/frustum.hpp>
@@ -323,6 +324,13 @@ struct FrameUniform {
     // roughness, metallic, a dielectric's F0, its specular factor. Last:
     // the water's and the depth passes' Frame end before it.
     float surface[4];
+};
+
+// A ground texture's material (TerrainMaterial in terrain.wgsl): its
+// numbers, which maps it has.
+struct GroundMaterialUniform {
+    float factors[4]{1.0f, 0.0f, 0.04f, 0.0f}; // roughness, metallic, a dielectric's F0, specular
+    float extra[4]{};                          // normal strength, occlusion strength, 1 normal map, 1 a material file
 };
 
 [[nodiscard]] WGPUStringView wgsl_name(const char* name) {
@@ -480,6 +488,19 @@ struct TerrainRenderer::Impl {
     };
 
     WGPUDevice device = nullptr;
+    // The ground textures' materials (load_terrain_material), by the texture's path.
+    struct GroundMaterial {
+        std::future<TerrainMaterialAsset> loading;
+        WgpuTextureUploadResult normal, orm;
+        WGPUTextureView normal_view = nullptr, orm_view = nullptr;
+        WGPUBuffer uniform = nullptr;
+        bool ready = false;
+    };
+    std::map<std::string, GroundMaterial> ground_materials;
+    WgpuTextureUploadResult flat;  // no normal map: straight up
+    WgpuTextureUploadResult white; // no ORM map: the factors alone
+    WGPUTextureView flat_view = nullptr, white_view = nullptr;
+    WGPUBuffer plain_material = nullptr; // no material file
     WGPUBindGroupLayout material_layout = nullptr;
     WGPUBindGroupLayout frame_layout = nullptr;
     WGPURenderPipeline pipeline = nullptr;
@@ -551,6 +572,15 @@ struct TerrainRenderer::Impl {
             if (texture.decoding.valid()) texture.decoding.wait();
         }
         release_materials();
+        for (auto& [_, ground] : ground_materials) {
+            if (ground.loading.valid()) ground.loading.wait();
+            if (ground.normal_view) wgpuTextureViewRelease(ground.normal_view);
+            if (ground.orm_view) wgpuTextureViewRelease(ground.orm_view);
+            if (ground.uniform) wgpuBufferRelease(ground.uniform);
+        }
+        if (flat_view) wgpuTextureViewRelease(flat_view);
+        if (white_view) wgpuTextureViewRelease(white_view);
+        if (plain_material) wgpuBufferRelease(plain_material);
         for (auto& [_, tile] : tiles) release_tile(tile);
         for (auto& [_, texture] : textures) {
             if (texture.view) wgpuTextureViewRelease(texture.view);
@@ -646,19 +676,66 @@ struct TerrainRenderer::Impl {
         return std::nullopt;
     }
 
+    // A ground texture's material once loaded (nullptr while it loads; one
+    // with nothing for a texture that is not found or has no file).
+    [[nodiscard]] const GroundMaterial* ground_material(const std::string& name) {
+        static const GroundMaterial none{.ready = true};
+        if (name.empty()) return &none;
+        const auto path = resolve_terrain_texture(*vfs, route, name, season, weather);
+        if (!path) return &none;
+        auto [it, inserted] = ground_materials.try_emplace(path->key());
+        auto& ground = it->second;
+        if (inserted) ground.loading = std::async(std::launch::async, [vfs = vfs, path = *path] { return load_terrain_material(*vfs, path); });
+        if (ground.ready) return &ground;
+        if (!is_ready(ground.loading)) return nullptr;
+        const auto asset = ground.loading.get();
+        ground.ready = true;
+        if (!asset.found) return &ground;
+        const auto upload = [&](const std::shared_ptr<const formats::AceDecodeResult>& image, WgpuTextureUploadResult& texture,
+                                WGPUTextureView& view, const char* what) {
+            if (!image || !image->ok()) return;
+            texture = upload_rgba8_texture(device,
+                                           {.width = image->image->width, .height = image->image->height, .pixels = &image->image->pixels,
+                                            .mips = &image->image->mips},
+                                           std::string(path->filename()) + what);
+            if (texture.ok()) view = wgpuTextureCreateView(texture.texture.get(), nullptr);
+        };
+        upload(asset.normal, ground.normal, ground.normal_view, " normal");
+        upload(asset.orm, ground.orm, ground.orm_view, " orm");
+        const auto& m = asset.material;
+        GroundMaterialUniform u;
+        u.factors[0] = m.roughness;
+        u.factors[1] = m.metallic;
+        u.factors[2] = m.reflectance;
+        u.factors[3] = m.specular;
+        u.extra[0] = m.normal_strength;
+        u.extra[1] = m.ao_strength;
+        u.extra[2] = ground.normal_view ? 1.0f : 0.0f;
+        u.extra[3] = 1.0f;
+        ground.uniform = create_buffer(device, WGPUBufferUsage_Uniform, sizeof(u), &u);
+        return &ground;
+    }
+
     // A water layer's material: its texture and the neutral grey detail.
     [[nodiscard]] WGPUBindGroup water_material(const WaterLayer& layer) {
         const auto key = std::pair{std::string("water:") + (layer.texture ? layer.texture->key() : std::string()), std::string()};
         if (const auto it = materials.find(key); it != materials.end()) return it->second;
         const auto base = texture_view_at(layer.texture, black_view);
         if (!base) return nullptr;
-        std::array<WGPUBindGroupEntry, 3> entries{};
+        std::array<WGPUBindGroupEntry, 6> entries{};
         entries[0].binding = 0;
         entries[0].textureView = *base;
         entries[1].binding = 1;
         entries[1].textureView = grey_view;
         entries[2].binding = 2;
         entries[2].sampler = sampler;
+        entries[3].binding = 3;
+        entries[3].textureView = flat_view;
+        entries[4].binding = 4;
+        entries[4].textureView = white_view;
+        entries[5].binding = 5;
+        entries[5].buffer = plain_material;
+        entries[5].size = sizeof(GroundMaterialUniform);
         const WGPUBindGroupDescriptor descriptor{.layout = material_layout, .entryCount = entries.size(), .entries = entries.data()};
         const auto binding = wgpuDeviceCreateBindGroup(device, &descriptor);
         materials.emplace(key, binding);
@@ -672,14 +749,23 @@ struct TerrainRenderer::Impl {
         const auto base = texture_view(patch.texture, black_view);
         const auto micro = texture_view(patch.microtexture, grey_view);
         if (!base || !micro) return nullptr; // still decoding
+        const auto* ground = ground_material(patch.texture);
+        if (!ground) return nullptr; // its material still loading
 
-        std::array<WGPUBindGroupEntry, 3> entries{};
+        std::array<WGPUBindGroupEntry, 6> entries{};
         entries[0].binding = 0;
         entries[0].textureView = *base;
         entries[1].binding = 1;
         entries[1].textureView = *micro;
         entries[2].binding = 2;
         entries[2].sampler = sampler;
+        entries[3].binding = 3;
+        entries[3].textureView = ground->normal_view ? ground->normal_view : flat_view;
+        entries[4].binding = 4;
+        entries[4].textureView = ground->orm_view ? ground->orm_view : white_view;
+        entries[5].binding = 5;
+        entries[5].buffer = ground->uniform ? ground->uniform : plain_material;
+        entries[5].size = sizeof(GroundMaterialUniform);
         const WGPUBindGroupDescriptor descriptor{
             .layout = material_layout,
             .entryCount = entries.size(),
@@ -787,8 +873,8 @@ struct TerrainRenderer::Impl {
 namespace {
 
 [[nodiscard]] WGPUBindGroupLayout create_material_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 3> entries{};
-    for (std::uint32_t i = 0; i < 2; ++i) {
+    std::array<WGPUBindGroupLayoutEntry, 6> entries{};
+    for (std::uint32_t i : {0u, 1u, 3u, 4u}) {
         entries[i].binding = i;
         entries[i].visibility = WGPUShaderStage_Fragment;
         entries[i].texture.sampleType = WGPUTextureSampleType_Float;
@@ -797,6 +883,11 @@ namespace {
     entries[2].binding = 2;
     entries[2].visibility = WGPUShaderStage_Fragment;
     entries[2].sampler.type = WGPUSamplerBindingType_Filtering;
+    // The ground's material (normal map 3, ORM 4, its numbers 5).
+    entries[5].binding = 5;
+    entries[5].visibility = WGPUShaderStage_Fragment;
+    entries[5].buffer.type = WGPUBufferBindingType_Uniform;
+    entries[5].buffer.minBindingSize = sizeof(GroundMaterialUniform);
     const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
     return wgpuDeviceCreateBindGroupLayout(device, &descriptor);
 }
@@ -1085,6 +1176,16 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     impl_->grey = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &grey_pixel}, "terrain-grey");
     if (impl_->black.ok()) impl_->black_view = wgpuTextureCreateView(impl_->black.texture.get(), nullptr);
     if (impl_->grey.ok()) impl_->grey_view = wgpuTextureCreateView(impl_->grey.texture.get(), nullptr);
+    static const std::vector<std::uint8_t> flat_pixel{128, 128, 255, 255};
+    static const std::vector<std::uint8_t> white_pixel{255, 255, 255, 255};
+    impl_->flat = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &flat_pixel}, "terrain-flat");
+    impl_->white = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &white_pixel}, "terrain-white");
+    if (impl_->flat.ok()) impl_->flat_view = wgpuTextureCreateView(impl_->flat.texture.get(), nullptr);
+    if (impl_->white.ok()) impl_->white_view = wgpuTextureCreateView(impl_->white.texture.get(), nullptr);
+    {
+        const GroundMaterialUniform plain;
+        impl_->plain_material = create_buffer(device, WGPUBufferUsage_Uniform, sizeof(plain), &plain);
+    }
 
     // One module for both paths (the `experimental` override): both read
     // the effects (group 2), so both layouts have it.

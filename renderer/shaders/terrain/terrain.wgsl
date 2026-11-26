@@ -28,6 +28,16 @@ override hdr_output: bool = false;
 @group(0) @binding(0) var base_texture: texture_2d<f32>;
 @group(0) @binding(1) var micro_texture: texture_2d<f32>;
 @group(0) @binding(2) var terrain_sampler: sampler;
+// The ground texture's material (openRTS, docs/pbr-materials.md): its
+// normal map, ORM map and numbers; a flat map, a white one and no file
+// without one.
+struct TerrainMaterial {
+    factors: vec4<f32>, // roughness, metallic, a dielectric's F0, specular
+    extra: vec4<f32>,   // normal strength, occlusion strength, 1 a normal map, 1 a material file
+};
+@group(0) @binding(3) var normal_texture: texture_2d<f32>;
+@group(0) @binding(4) var orm_texture: texture_2d<f32>;
+@group(0) @binding(5) var<uniform> ground: TerrainMaterial;
 @group(1) @binding(0) var<uniform> draw: Draw;
 @group(1) @binding(1) var<uniform> frame: Frame;
 
@@ -141,7 +151,8 @@ fn shoulder(c: vec3<f32>) -> vec3<f32> {
 // the further lights added, all in linear light (each light's falloff taken
 // in display space, as RTS's).
 fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
-    if (physical) {
+    // A photometric lamp (ambient.w, photometric.hpp) is physical always.
+    if (physical || light.ambient.w > 0.5) {
         let strength = physical_light(light, world, n);
         if (strength > 0.0 && light.ambient.w > 0.5) {
             return light.ambient.xyz * strength; // photometric: linear already
@@ -158,25 +169,58 @@ fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> v
     return vec3<f32>(0.0);
 }
 
-fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
+// The ground's normal bent by its map: the frame from the screen's
+// derivatives of the place and the texture coordinates (the terrain has no
+// tangents); the map's green up the image (v down in RTS's coordinates).
+fn ground_normal(normal: vec3<f32>, world: vec3<f32>, uv: vec2<f32>, mapped: vec3<f32>) -> vec3<f32> {
+    let n = normalize(normal);
+    let dp1 = dpdx(world);
+    let dp2 = dpdy(world);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    if (ground.extra.z < 0.5) {
+        return n;
+    }
+    let dp2perp = cross(dp2, n);
+    let dp1perp = cross(n, dp1);
+    let t = dp2perp * duv1.x + dp1perp * duv2.x;
+    let b = dp2perp * duv1.y + dp1perp * duv2.y;
+    let scale = max(dot(t, t), dot(b, b));
+    if (scale <= 1e-20) {
+        return n;
+    }
+    let inverse = inverseSqrt(scale);
+    var m = mapped * 2.0 - vec3<f32>(1.0);
+    m = vec3<f32>(m.xy * ground.extra.x, m.z);
+    return normalize(t * inverse * m.x - b * inverse * m.y + n * max(m.z, 0.0));
+}
+
+fn shade_experimental(input: VertexOut, texel: vec4<f32>, bent: vec3<f32>, orm: vec3<f32>) -> vec4<f32> {
     let base = to_linear(texel.xyz);
     let sun_colour = to_linear(frame.light_diffuse.xyz);
     let sky_colour = to_linear(frame.light_ambient.xyz);
-    let n = normalize(input.normal);
+    let n = bent;
+    // The material's own surface, else the ground's (frame.surface).
+    var surface_material = frame.surface;
+    if (ground.extra.w > 0.5) {
+        surface_material = vec4<f32>(clamp(ground.factors.x * orm.y, 0.03, 1.0), clamp(ground.factors.y * orm.z, 0.0, 1.0),
+                                     ground.factors.z, ground.factors.w);
+    }
+    let occluded = mix(1.0, orm.x, ground.extra.y);
     let to_sun = -normalize(frame.light_direction.xyz);
     let facing = max(dot(n, to_sun), 0.0);
     let sun_strength = clamp(dot(sun_colour, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
     // The sun's shadow and the ambient occlusion (SceneEffects).
     let shadow = effects_shadow(input.world.xyz, n, input.clip);
     let ambient = sky_colour * (1.0 - 0.65 * sun_strength) * mix(0.55, 1.0, n.y * 0.5 + 0.5)
-        * mix(1.0, frame.shading.x, 1.0 - sun_strength) * effects_ao(input.clip);
+        * mix(1.0, frame.shading.x, 1.0 - sun_strength) * effects_ao(input.clip) * occluded;
     // Physically based light (frame.shading.w, frame_pbr(); PBR stage 1):
     // the sun and the lamps by the BRDF (shaders/common/pbr.wgsl), the ground as
     // frame.surface makes it (terrain_surface_material: as yet Lambert
     // alone); the sky light Lambert on the albedo.
     let pbr = frame.shading.w > 0.5;
-    let surface = pbr_surface(base, n, normalize(effects.eye.xyz - input.world.xyz), frame.surface);
-    let reflects = frame.surface.w > 0.0;
+    let surface = pbr_surface(base, n, normalize(effects.eye.xyz - input.world.xyz), surface_material);
+    let reflects = surface_material.w > 0.0;
     // The sky's own light (PBR stage 2, as the models'): Lambert by the
     // sky's SH9, at least the environment's at night, near the eye as open
     // as the sky round it; the reflection by the split sum.
@@ -197,7 +241,10 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
                 let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
                 lamps = lamps + lit;
                 if (pbr) {
-                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                    let way = pbr_lamp_way(scene_lights[index], input.world);
+                    let rts_shape = !physical && scene_lights[index].ambient.w <= 0.5;
+                    lamps_out = lamps_out
+                        + pbr_lit_share(surface, way, lit, pbr_lamp_share(scene_lights[index], n, way, rts_shape), reflects);
                 }
             }
         }
@@ -210,7 +257,9 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
                 let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
                 lamps = lamps + lit;
                 if (pbr) {
-                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                    let way = pbr_lamp_way(ring_light, input.world);
+                    let rts_shape = !physical && ring_light.ambient.w <= 0.5;
+                    lamps_out = lamps_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(ring_light, n, way, rts_shape), reflects);
                 }
             }
         }
@@ -222,7 +271,7 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
         var sky_ambient = ambient;
         var sky = PbrSkyReflection(vec3<f32>(0.0), vec3<f32>(0.0));
         if (sky_light) {
-            let occlusion = effects_ao(input.clip);
+            let occlusion = effects_ao(input.clip) * occluded;
             sky_ambient = max(effects_sky_light(n), night_light * mix(0.55, 1.0, n.y * 0.5 + 0.5)) * openness * occlusion;
             if (reflects) {
                 sky = pbr_sky_reflection(surface, occlusion, night_light);
@@ -259,11 +308,15 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSample(base_texture, terrain_sampler, input.uv)
         * textureSample(micro_texture, terrain_sampler, input.uv * 16.0) * 2.0;
+    // The material's maps (sampled here, in uniform control flow).
+    let mapped = textureSample(normal_texture, terrain_sampler, input.uv).xyz;
+    let orm = textureSample(orm_texture, terrain_sampler, input.uv).xyz;
+    let bent = ground_normal(input.normal, input.world.xyz, input.uv, mapped);
     if (experimental) {
         if (texel.w <= 0.0) {
             return vec4<f32>(0.0);
         }
-        return shade_experimental(input, texel);
+        return shade_experimental(input, texel, bent, orm);
     }
     var color = vec4<f32>(0.0);
     if (texel.w > 0.0) {

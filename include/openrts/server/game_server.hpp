@@ -75,6 +75,11 @@ struct ServerOptions {
     // when new players are not taken; one coming back under his nick is not.
     // 0: no limit.
     std::uint32_t max_players = 0;
+    // Fast positions (openRTS's, 2026-11-26): the hello's answer tells
+    // openRTS players to send their trains' motion 10 times a second
+    // (openrts_train_motion), relayed to the others, who draw them a fifth
+    // of a second behind instead of 1.75 s. Off: positions as RTS's alone.
+    bool fast_positions = true;
 };
 
 // A train the dispatcher puts on the track.
@@ -326,6 +331,10 @@ public:
     // console_next answered.
     [[nodiscard]] net::ConsoleNext next_routes(std::uint32_t train, bool back) const;
     void set_admit(bool admit) noexcept { options_.admit = admit; }
+    // Fast positions on or off (ServerOptions::fast_positions): the openRTS
+    // players are told at once.
+    void set_fast_positions(bool on);
+    [[nodiscard]] bool fast_positions() const noexcept { return options_.fast_positions; }
     [[nodiscard]] bool admits() const noexcept { return options_.admit; }
     // What a console's command line (console_command) runs: the server's
     // console commands; its answer goes back as console_reply.

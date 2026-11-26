@@ -647,6 +647,8 @@ void apply_engine_output(const EngineOutput& out, simulation::EngineDemands& dem
     demands.engine_forces = out.engine_forces;
     // RTS 0x503CE4: the line current comes from ElectricEngine::PowerConsuming.
     demands.power = out.power_consuming;
+    // RTS 0x424488: a diesel's FuelAmount -= FuelConsuming * dt.
+    demands.fuel_rate = out.fuel_consuming > 0.0f ? out.fuel_consuming : 0.0f;
 }
 
 namespace {
@@ -1105,6 +1107,8 @@ std::vector<CarInput> LegacyConsist::inputs(const std::vector<const simulation::
         in.charging_pipe = c.charging_pipe;
         in.handbrake = c.handbrake;
         in.main_reservoir = c.main_reservoir;
+        in.sand_left = c.sand_left;
+        in.fuel_left = c.fuel_left;
         in.wheelslip = c.wheelslip;
         // openRTS's 395 over Brakes.dll (own_valve; its demands of the last
         // step): the DLL's own valve gets its УР, which it keeps in
@@ -1263,6 +1267,7 @@ bool enter_new_train(LegacyConsist& consist, const std::size_t car, simulation::
 }
 
 bool LegacyConsist::step(double dt, const std::vector<const simulation::Train*>& trains, const LegacyWorld& world) {
+    for (const auto& [car, id] : std::exchange(start_switches_, {})) (void)operate(car, id, 1);
     if (!host_ || !host_->alive()) {
         outputs_->valid = false;
         return false;
@@ -2466,6 +2471,18 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             car.held_values.clear();
             car.held_states.clear();
             car.state.distance = static_cast<float>(var_at(224, 0.0f) - std::abs(static_cast<double>(speed)) * request.dt);
+            // Started on or on the move (a pantograph up, a diesel running):
+            // the КПД-3 and the УКБМ powered as Brakes.dll left them (testers
+            // 2026-11-25: the ВЛ60ПК's КПД-3 dark, no vigilance, until its
+            // switch was turned).
+            if (has_power(outputs_->cars)) {
+                for (const auto& c : p.settings.cabs) {
+                    for (const auto id : {c.kpd_power, c.ukbm_power}) {
+                        if (id >= 0 && static_cast<std::size_t>(id) < out.switches.size() && out.switches[static_cast<std::size_t>(id)].state == 0)
+                            start_switches_.emplace_back(i, static_cast<std::uint32_t>(id));
+                    }
+                }
+            }
             car.last_var4 = var_bits(4);
             car.last_ep = var_at(40, 0.0f);
             car.switches = out.switches;
@@ -2533,7 +2550,13 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             else car.previous_aspect = aspect;
             ri.aspect = aspect;
         }
-        ri.powered = (var_bits(32) & 4u) != 0;
+        // Its safety devices' power: Brakes.dll's bit, which openRTS's КЛУБ
+        // writes for a car with a КЛУБ; a car without one (the ВЛ85's АЛСН,
+        // SL_SETUP 1: no KLUB_PIT, Brakes.dll's power list empty) is
+        // powered. Until 2026-11-26 the bit stayed 0 there, the ЭПК key on
+        // read "the ALSN not powered": the whistle at once and the trip 7 s
+        // on, at every hot start (testers).
+        ri.powered = (var_bits(32) & 4u) != 0 || klub_car(i) == nullptr;
         ri.tskbm_on = (car.last_var4 & 8u) != 0;
         ri.bypass = (car.last_var4 & 0x200u) != 0;
         ri.ep_pressure = car.last_ep;
@@ -2553,6 +2576,20 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             ri.date_weekday = local.tm_wday;
         }
         simulation::step_recorder(car.state, p.settings, ri, car.out);
+        if (static const bool trace = std::getenv("OPENRTS_RECORDER_TRACE") != nullptr; trace) {
+            static double clock = 0.0;
+            clock += request.dt;
+            static double next = 0.0;
+            if (clock >= next) {
+                next = clock + 1.0;
+                bool key = false;
+                for (const auto& c : ri.cabs) key = key || c.epk_key;
+                std::fprintf(stdout, "recorder trace %.1f car %zu: powered %d key %d alsn_on %d periodic %.2f whistle %.2f flags 0x%X aspect %u setup %u\n", clock, i,
+                             ri.powered ? 1 : 0, key ? 1 : 0, car.state.alsn_on ? 1 : 0, car.state.periodic, car.state.whistle, car.state.flags, ri.aspect,
+                             p.settings.setup, p.settings.klub_setup, ri.saut_powered ? 1 : 0);
+                std::fflush(stdout);
+            }
+        }
         simulation::recorder_switched(car.state, p.settings, ri, car.out);
         // Brakes.dll's odometer goes on in its Run all the same: the same.
         car.last_var4 = var_bits(4);

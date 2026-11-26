@@ -58,7 +58,8 @@ fn to_display(c: vec3<f32>) -> vec3<f32> {
 // One further light's linear contribution: physical falloff, or RTS's shape
 // factor taken in display space.
 fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
-    if (physical) {
+    // A photometric lamp (ambient.w, photometric.hpp) is physical always.
+    if (physical || light.ambient.w > 0.5) {
         let strength = physical_light(light, world, n);
         if (strength > 0.0 && light.ambient.w > 0.5) {
             return light.ambient.xyz * strength; // photometric: linear already
@@ -151,6 +152,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
+    // An upscaler's texture LOD bias (ModelRenderer::set_texture_lod_bias).
+    draw.lod_bias = draw.lod_bias + frame.temporal.z;
     let uv_in = keep_inside(input.uv);
     // The texture as RTS reads it (its LOD bias); the material's maps with
     // these gradients (in any branch).
@@ -192,6 +195,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             if (coverage <= 0.0) {
                 discard;
             }
+        } else if (frame.temporal.x > 0.5) {
+            if (!stochastic_keep(coverage_alpha(texel.w, 0.5, alpha_width, alpha_mip), input.clip.xy)) {
+                discard;
+            }
+            coverage = 1.0;
         } else if (texel.w < 0.5) {
             discard;
         }
@@ -199,9 +207,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
 
     let shader = draw.named_shader;
     let material = draw.light_material;
-    // FullBright is unlit unless the panel lights it (frame.shading.y, light_fullbright()).
-    // A night texture (-16) is self-lit whatever the panel says.
-    let unlit = shader == 1 || shader == 3 || shader == 6 || (material == -8 && frame.shading.y < 0.5) || material == -16;
+    // FullBright is unlit (the inspector makes one ordinary per shape), and
+    // so is a night texture (-16).
+    let unlit = shader == 1 || shader == 3 || shader == 6 || material == -8 || material == -16;
     let base = to_linear(texel.xyz) * draw.base_color.xyz;
     var colour = base;
     if (effects.views.x > 0.5 && effects.views.x < 1.5) {
@@ -354,7 +362,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                     let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
                     lamps = lamps + lit;
                     if (pbr) {
-                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                        let way = pbr_lamp_way(scene_lights[index], input.world);
+                        let rts_shape = !physical && scene_lights[index].ambient.w <= 0.5;
+                        lamps_out = lamps_out
+                            + pbr_lit_share(surface, way, lit, pbr_lamp_share(scene_lights[index], n, way, rts_shape), reflects);
                     }
                 }
             }
@@ -368,7 +379,9 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                     let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
                     lamps = lamps + lit;
                     if (pbr) {
-                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                        let way = pbr_lamp_way(ring_light, input.world);
+                        let rts_shape = !physical && ring_light.ambient.w <= 0.5;
+                        lamps_out = lamps_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(ring_light, n, way, rts_shape), reflects);
                     }
                 }
             }
@@ -390,7 +403,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                 let lit = to_linear(frame.interior[i].diffuse.xyz * factor);
                 cab_lamps = cab_lamps + lit;
                 if (pbr) {
-                    cab_out = cab_out + pbr_lit(surface, pbr_lamp_way(frame.interior[i], input.world), lit, reflects);
+                    let way = pbr_lamp_way(frame.interior[i], input.world);
+                    cab_out = cab_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(frame.interior[i], n, way, true), reflects);
                 }
             }
         }

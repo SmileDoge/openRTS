@@ -1387,6 +1387,8 @@ void Host::write_inputs(const std::vector<CarInput>& inputs) {
         w->train_pipe_rate = in.train_pipe;
         w->ept_value = -1.0f;
         if (car.is_loco()) car.loco()->main_res_pressure = in.main_reservoir;
+        if (car.is_loco()) car.loco()->sand_left = in.sand_left;
+        if (car.spec.kind == car_diesel && in.fuel_left >= 0.0f) car.diesel()->fuel_amount = in.fuel_left;
         if (car.is_loco() && car.initialised && in.clear_engine_flags) car.eng()->engine_flags &= ~in.clear_engine_flags;
         // The slip the game found after the last step: the DLL reads it in Run.
         if (car.is_loco() && car.initialised) car.eng()->wheelslip = in.wheelslip;

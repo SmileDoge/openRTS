@@ -317,6 +317,10 @@ struct CabDescription {
     std::vector<CabSeat> seats; // a salon's (InteriorSeats)
     std::vector<CabArea> areas;
     std::vector<CabPlane> planes;
+    // InteriorLedges ( n InteriorLedge ( Trajectory ( .. ) ) ): ways he walks
+    // where no plane is (rts1.exe 0x434C58: within 0.3 m of them, at their
+    // height; the ЧС2's engine room, ledges along both sides).
+    std::vector<std::vector<TrajectoryPoint>> ledges;
     std::vector<CabDoor> doors;
     std::vector<CabWindow> windows;
     std::vector<std::string> exterior_nodes;

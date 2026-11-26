@@ -968,6 +968,9 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                         if (o.text_set && k < screen.texts.size() && (!def || (def->char_width[1] > 0.0f && def->max_length > 0))) {
                             auto ours = o.text;
                             if (def && ours.size() > def->max_length) ours.resize(def->max_length);
+                            // The acceleration's sign is openRTS's (2026-11-26; Brakes.dll
+                            // showed it without): not a difference.
+                            if (std::string_view(what) == "bil" && k == 18 && !ours.empty() && ours[0] == u'-') ours.erase(0, 1);
                             if (ours != screen.texts[k] && !own_entry) {
                                 if (shadow_printed < 30) {
                                     std::printf("%6.2f КЛУБ %s: Brakes.dll '%s', openRTS '%s'\n", now, name("text").c_str(),

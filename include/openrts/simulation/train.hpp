@@ -101,6 +101,7 @@ struct EngineDemands {
     float train_pipe_rate{};   // >0: pipe fed from the main reservoir; <0: vented, atm/s
     float independent_brake = -1.0f; // atm target, <0: unchanged (IndependentBrakeValue)
     float main_reservoir_rate{}; // atm/s (MainResRate)
+    float fuel_rate{};         // l/s a diesel burns (DieselEngine::FuelConsuming)
     float charging_rate{};       // second pipe (ChargingRate)
     float ep_value = -1.0f;      // EP brake target, <0: none (EPTvalue)
     EpCommand ep_command = EpCommand::target; // the 395's ЭПТ command (realistic air), driver_valve.hpp
@@ -476,6 +477,10 @@ struct CarState {
     // after the sanding stopped.
     bool sanding = false;
     float sand_left = -1.0f;
+    // A diesel's fuel, l (DieselLocomotive::FuelAmount, rts1.exe car +504):
+    // its MaxDieselLevel full, used at the DLL's FuelConsuming (0x424488);
+    // < 0 not a diesel.
+    float fuel_left = -1.0f;
     float sand_travel = -1.0f;  // m since the sanding stopped, < 0: no effect left
     // Under the realistic air: each bogie's shoes and treads (wet, warm,
     // sliding: adhesion.hpp) and the distance the car slid (юз), m.
@@ -550,6 +555,10 @@ public:
     void ease_shown_derail(float elapsed, float rate);
     // Car `car`'s handbrake, 0..1.
     void set_handbrake(std::size_t car, float value);
+    // A pickup's fuel and sand (cargo.hpp): added to a car's, at most its
+    // MaxDieselLevel / MaxSandingTime; returns what went in.
+    float add_fuel(std::size_t car, float litres);
+    float add_sand(std::size_t car, float seconds);
     // Car `car`'s distributor switches (the realistic air model reads them).
     void set_distributor_modes(std::size_t car, const DistributorModes& modes);
     // Every train fills its cylinders by the ЭПТ at a pace of its own, so a
@@ -757,12 +766,18 @@ struct ContactResult {
     bool absorbed_ahead = false; // coupled: its cars went in front
     bool absorbed_turned = false; // coupled: its car order was reversed
     double force{};              // N, the impact measure RTS compares
+    // buffers: couplers that could lock, met slower than this (their
+    // coupling Velocity, m/s); 0 for other buffers.
+    float lock_speed{};
 };
 
 // Finds trains whose ends will meet within the next step and resolves each
 // meeting once: couples them when both couplers are automatic and not left
-// open and the impact is at most both cars' DerailBufferForce (the earlier
-// train in `trains` survives), otherwise exchanges momentum inelastically.
+// open, they close at the couplers' Velocity and the impact is at most both
+// cars' DerailBufferForce (the earlier train in `trains` survives); such
+// couplers met slower only push the overlap apart (the speeds stay, RTS),
+// others exchange momentum inelastically. The ends meet at the couplers'
+// slack (r0 / 2 of each end, r0 of a rigid one).
 // `passive` (by train, optional): trains another program moves (the
 // network's remote trains); two of them never meet here.
 std::vector<ContactResult> resolve_contacts(std::span<Train* const> trains, std::span<const std::uint8_t> passive = {});

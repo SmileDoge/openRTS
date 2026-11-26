@@ -16,6 +16,7 @@ if(TARGET openrts_viewer_core)
         target_link_libraries(openrts_game PRIVATE windowscodecs ole32 shell32)
     endif()
     openrts_copy_wgpu_runtime(openrts_game)
+    openrts_copy_streamline(openrts_game)
     # The 32-bit host is embedded (openrts_embed_dllhost): no separate file.
     # The menu's faces and pictures beside the program, so a build folder
     # starts as is.

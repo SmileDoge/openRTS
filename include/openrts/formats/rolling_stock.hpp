@@ -253,6 +253,7 @@ struct EngineDefinition {
     float max_current{};
     float sanding_speed{};
     float max_sanding_time = -1.0f; // MaxSandingTime, s of sand (-1: unlimited)
+    float max_diesel_level = -1.0f; // MaxDieselLevel, l of fuel (-1: not given; RTS's DLL host starts it at 5000)
     float main_reservoir_volume{};
     // AirBrakesMainMaxAirPressure and AirBrakesCompressorRestartPressure: the
     // compressor governor's cut-out and cut-in, atm (psi unless the file gives

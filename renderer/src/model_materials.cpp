@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <initializer_list>
 #include <iostream>
 #include <map>
 #include <mutex>
@@ -243,9 +244,24 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
         }
         return decode_map(vfs, *file, error);
     };
+    // An ACE of blocks (openRTS's: openrts-ace to-ace --format bc7 / bc5 /
+    // bc4) of a format the map can be sampled from as it is goes to the GPU
+    // as it is: neither decoded nor compressed again at each start (since
+    // 2026-11-26 every map that needs no change; the snow's before).
+    const auto prebuilt = [&](const formats::MaterialMap& map,
+                              const std::initializer_list<formats::BlockFormat> allowed) -> std::shared_ptr<const formats::AceDecodeResult> {
+        const auto file = map_path(map);
+        if (!file || core::fold_case(file->extension()) != ".ace") return nullptr;
+        auto ace = formats::decode_ace_rgba(vfs, *file);
+        if (!ace.ok() || ace.image->blocks.empty()) return nullptr;
+        if (allowed.size() > 0 && std::find(allowed.begin(), allowed.end(), ace.image->block_format) == allowed.end()) return nullptr;
+        return std::make_shared<formats::AceDecodeResult>(std::move(ace));
+    };
+    using formats::BlockFormat;
     switch (kind) {
     case MaterialMapKind::base_color:
     case MaterialMapKind::emissive: {
+        if (auto ready = prebuilt(kind == MaterialMapKind::base_color ? *m.base_color : *m.emissive, {})) return ready;
         auto image = one(kind == MaterialMapKind::base_color ? *m.base_color : *m.emissive);
         if (!image) return failed(error);
         return finished(std::move(*image));
@@ -254,15 +270,16 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
         // As painted: the snow's colour and where it lies (alpha). An ACE of
         // blocks (an openRTS BC7 one: openrts-ace to-ace --format bc7) goes
         // to the GPU as it is, not compressed again at each start.
-        if (const auto file = map_path(*m.snow); file && core::fold_case(file->extension()) == ".ace") {
-            auto ace = formats::decode_ace_rgba(vfs, *file);
-            if (ace.ok() && !ace.image->blocks.empty()) return std::make_shared<formats::AceDecodeResult>(std::move(ace));
-        }
+        if (auto ready = prebuilt(*m.snow, {})) return ready;
         auto image = one(*m.snow);
         if (!image) return failed(error);
         return finished(std::move(*image));
     }
     case MaterialMapKind::normal: {
+        // Its x and y (the shader makes z): BC5's red and green, or BC7's.
+        if (m.normal_y == formats::NormalY::up) {
+            if (auto ready = prebuilt(*m.normal, {BlockFormat::bc5, BlockFormat::bc7})) return ready;
+        }
         auto image = one(*m.normal);
         if (!image) return failed(error);
         for (std::size_t i = 0; i < image->pixels.size(); i += 4) {
@@ -272,7 +289,9 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
         return finished(std::move(*image));
     }
     case MaterialMapKind::height: {
-        // Its red (a grey image's level) in every channel.
+        // Its red (a grey image's level) in every channel; the shader reads
+        // the red alone, so any blocks will do (BC4 the least).
+        if (auto ready = prebuilt(*m.height, {})) return ready;
         auto image = one(*m.height);
         if (!image) return failed(error);
         for (std::size_t i = 0; i < image->pixels.size(); i += 4) {
@@ -282,6 +301,10 @@ std::shared_ptr<const formats::AceDecodeResult> build_map(const core::Vfs& vfs, 
         return finished(std::move(*image));
     }
     case MaterialMapKind::orm: {
+        // One packed map in ORM's order, nothing else: as it is.
+        if (m.orm && !m.ao_map && !m.roughness_map && !m.metallic_map && m.layout == formats::OrmLayout::orm) {
+            if (auto ready = prebuilt(*m.orm, {BlockFormat::bc7, BlockFormat::bc3, BlockFormat::bc2})) return ready;
+        }
         std::optional<Rgba> packed, ao, roughness, metallic;
         if (m.orm && !(packed = one(*m.orm))) return failed(error);
         if (m.ao_map && !(ao = one(*m.ao_map))) return failed(error);
@@ -532,8 +555,11 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
         const auto name = formats::texture_material_name(source.filename());
         const auto base_folder = variant ? folder.parent() : folder;
         // MATERIALS by the texture's name (its train folder: the one in
-        // TRAINS/TRAINSET, else its own), under the one beside it.
-        {
+        // TRAINS/TRAINSET, else its own), under the one beside it. Not for
+        // a season's own image (WINTER\, SNOW\...: the snow on it), which
+        // keeps its look: until 2026-11-26 the PBR rails (openrts-rails)
+        // put the summer's rails over the winter's snow.
+        if (!variant || folder_name == "night") {
             std::string train = std::string(base_folder.filename());
             for (auto up = base_folder; !up.str().empty(); up = up.parent()) {
                 if (core::fold_case(up.parent().filename()) == "trainset") {
@@ -660,6 +686,50 @@ void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, Textu
                                asset.material_files.end());
     asset.material_messages = messages;
     tell(messages);
+}
+
+TerrainMaterialAsset load_terrain_material(const core::Vfs& vfs, const core::VirtualPath& texture) {
+    TerrainMaterialAsset out;
+    std::vector<std::string> messages;
+    const auto name = formats::texture_material_name(texture.filename());
+    // The texture's own folder, and TERRTEX when it is a season's folder in it.
+    std::vector<core::VirtualPath> files = named_materials(vfs, name, std::string());
+    const auto folder = texture.parent();
+    if (core::fold_case(folder.filename()) != "terrtex" && core::fold_case(folder.parent().filename()) == "terrtex")
+        if (auto file = folder.parent().resolve(name)) files.push_back(*file);
+    if (auto file = folder.resolve(name)) files.push_back(*file);
+    std::vector<formats::MaterialPatch> patches;
+    for (const auto& file : files) {
+        if (auto patch = read_texture_material(vfs, file, messages)) patches.push_back(std::move(*patch));
+    }
+    formats::Material ground;
+    ground.roughness = terrain_surface_material.roughness;
+    ground.metallic = terrain_surface_material.metallic;
+    ground.reflectance = terrain_surface_material.reflectance;
+    ground.specular = terrain_surface_material.specular;
+    out.material = formats::resolve_material(ground, patches);
+    out.found = !patches.empty();
+    // The ground's own is Lambert alone (specular 0); a file that does not
+    // say otherwise wants its surface to reflect as its numbers make it.
+    if (out.found && std::none_of(patches.begin(), patches.end(), [](const auto& p) { return p.specular.has_value(); }))
+        out.material.specular = 1.0f;
+    if (out.found) {
+        const auto& m = out.material;
+        const auto map = [&](const MaterialMapKind kind) -> std::shared_ptr<const formats::AceDecodeResult> {
+            std::string note;
+            auto image = build_map(vfs, kind, m, note);
+            if (!note.empty()) messages.push_back(note);
+            if (!image->ok()) {
+                messages.push_back(image->error);
+                return nullptr;
+            }
+            return image;
+        };
+        if (m.normal) out.normal = map(MaterialMapKind::normal);
+        if (m.packed_maps()) out.orm = map(MaterialMapKind::orm);
+    }
+    tell(messages);
+    return out;
 }
 
 } // namespace openrts::renderer

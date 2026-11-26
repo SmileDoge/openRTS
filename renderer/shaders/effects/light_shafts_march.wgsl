@@ -62,12 +62,25 @@ fn beam_light(p: vec3<f32>) -> vec3<f32> {
         let apex = shafts.beams[k * 3u];
         let axis = shafts.beams[k * 3u + 1u];
         let v = p - apex.xyz;
+        if (axis.w < 0.0) {
+            // A lamp shining every way (a platform's): a glowing ball of air
+            // round it, brighter towards it.
+            let d = length(v);
+            if (d >= apex.w) { continue; }
+            let near = 1.0 - d / apex.w;
+            light = light + shafts.beams[k * 3u + 2u].xyz * near * near * 2.0;
+            continue;
+        }
         let along = dot(v, axis.xyz);
         if (along <= 0.0 || along >= apex.w) { continue; }
         let off = length(v - axis.xyz * along) / max(along * axis.w, 1e-3);
-        let edge = 1.0 - smoothstep(0.5, 1.0, off);
+        // The cone's core, softly out to its edge, and the light the snow
+        // scatters again round it (2026-11-24: from the cab the cone's side
+        // stood as a hard line): a faint halo falling off past the edge.
+        let core = 1.0 - smoothstep(0.3, 1.0, off);
+        let halo = 0.22 * exp(-max(off - 0.7, 0.0) * 1.6);
         let reach = 1.0 - along / apex.w;
-        light = light + shafts.beams[k * 3u + 2u].xyz * edge * reach * reach * (6.0 / (1.0 + along * 0.12));
+        light = light + shafts.beams[k * 3u + 2u].xyz * max(core, halo) * reach * reach * (6.0 / (1.0 + along * 0.12));
     }
     return light;
 }

@@ -865,7 +865,14 @@ void SignalSystem::update(const std::span<const Train* const> trains, const doub
         }
         // Objects whose first head is EXCL are left out (0x508520).
         std::erase_if(chain, [&](const ChainNode& c) { return static_cast<int>(heads_[c.heads.front()].mode) == 3; });
-        const bool count_reached = normal_count >= needed;
+        // A signal the train passes this step (within `passing`) does not
+        // count: with it the farthest one ran disabled and showed stop for
+        // that step, and ALSN dropped to КЖ for 100-200 ms at every block
+        // signal (testers 2026-11-26: САВПЭ "впереди красный").
+        std::uint32_t passed_normals = 0;
+        for (const auto& c : chain)
+            if (c.min_function == 1 && c.distance <= passing) ++passed_normals;
+        const bool count_reached = normal_count - (std::min)(passed_normals, normal_count) >= needed;
         // The train's mode flags (0x508520): SHUNT or NORMAL for every object
         // and head of its chain, FAILED heads excepted.
         for (auto& chain_node : chain) {

@@ -522,6 +522,9 @@ private:
     std::vector<dllhost::CarAir> entered_air_;
     std::vector<std::uint32_t> train_types_;
     std::vector<std::int16_t> train_starts_;
+    // Switches to turn on before the next step (car, id): a recorder's
+    // power switches when the train starts already on (Brakes.dll's start).
+    std::vector<std::pair<std::size_t, std::uint32_t>> start_switches_;
     std::size_t restored_ = 0;
     std::string messages_;
 public:

@@ -1,4 +1,4 @@
-#include <openrts/formats/shape_description.hpp>
+﻿#include <openrts/formats/shape_description.hpp>
 
 #include <algorithm>
 #include <cctype>
@@ -8,6 +8,7 @@
 #include <iterator>
 #include <utility>
 
+#include "cargo_internal.hpp"
 #include "shape_lights.hpp"
 #include "text_tree.hpp"
 
@@ -184,10 +185,11 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
         pickup.animation = {value(animation, 0), value(animation, 1)};
         pickup.crane_type = static_cast<std::uint32_t>(value(node->child("pickupcranetype"), 0));
         pickup.crane_oriented = value(node->child("pickupcraneoriented"), 0) != 0.0f;
-        description.pickup = std::move(pickup);
+        description.pickup_object = std::move(pickup);
     }
     const auto* lights_owner = find_node(root, "esd_lightsources");
     if (lights_owner) description.lights = detail::read_light_sources(*lights_owner);
+    if (const auto* pickup = find_node(root, "esd_pickup_object")) description.pickup = detail::read_pickup_description(*pickup);
 }
 
 } // namespace

@@ -591,6 +591,10 @@ Train::Train(std::vector<CarSetup> cars, const TrainSettings settings)
             // Charged to the governor's cut-out (a cold start empties it).
             car.main_reservoir = compressor_range(&*setup.definition->engine).off;
             car.sand_left = setup.definition->engine->max_sanding_time;
+            if (setup.definition->engine->kind == formats::EngineKind::diesel) {
+                const float tank = setup.definition->engine->max_diesel_level;
+                car.fuel_left = tank > 0.0f ? tank : 5000.0f;
+            }
         }
         cars_.push_back(car);
     }
@@ -733,6 +737,27 @@ void Train::set_handbrake(const std::size_t car, const float value) {
     if (car >= cars_.size()) return;
     cars_[car].handbrake = std::clamp(value, 0.0f, 1.0f);
     asleep_ = false;
+}
+
+float Train::add_fuel(const std::size_t car, const float litres) {
+    if (car >= cars_.size() || cars_[car].fuel_left < 0.0f || litres <= 0.0f) return 0.0f;
+    auto& c = cars_[car];
+    const float tank = c.definition && c.definition->engine && c.definition->engine->max_diesel_level > 0.0f
+                           ? c.definition->engine->max_diesel_level
+                           : 5000.0f;
+    const float added = std::clamp(tank - c.fuel_left, 0.0f, litres);
+    c.fuel_left += added;
+    return added;
+}
+
+float Train::add_sand(const std::size_t car, const float seconds) {
+    if (car >= cars_.size() || seconds <= 0.0f) return 0.0f;
+    auto& c = cars_[car];
+    // Unlimited sand (no MaxSandingTime) takes none.
+    if (!c.definition || !c.definition->engine || c.definition->engine->max_sanding_time <= 0.0f || c.sand_left < 0.0f) return 0.0f;
+    const float added = std::clamp(c.definition->engine->max_sanding_time - c.sand_left, 0.0f, seconds);
+    c.sand_left += added;
+    return added;
 }
 
 void Train::scatter_ep_fill(const std::uint32_t seed) {
@@ -1303,6 +1328,7 @@ void Train::save_state(StateWriter& out) const {
         out.put(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
                 c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
         out.put(p + "sand", c.sand_left, c.sand_travel);
+        out.put(p + "fuel", c.fuel_left);
         out.put(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
     }
     impl.air.save(out);
@@ -1347,6 +1373,7 @@ void Train::restore_state(const StateReader& in) {
         in.get(p + "shoes", c.shoe_state[0].wet, c.shoe_state[0].heat, c.shoe_state[0].wear, c.shoe_state[0].burning,
                c.shoe_state[1].wet, c.shoe_state[1].heat, c.shoe_state[1].wear, c.shoe_state[1].burning, c.slid);
         in.get(p + "sand", c.sand_left, c.sand_travel);
+        in.get(p + "fuel", c.fuel_left);
         in.get(p + "wear", c.wear.pipe_leak, c.wear.reservoir_leak, c.wear.cylinder_leak, c.wear.pace, c.wear.sensitivity, c.wear.rigging);
         c.acceleration = 0.0f;
         c.body[0] = c.body[1] = c.body[2] = 0.0f;
@@ -1496,6 +1523,9 @@ void Train::step() {
         // Sanding (RTS 0x424488): the sand runs out over MaxSandingTime; the
         // sanded rail lasts the engine's length of travel after it stops.
         // Adhesion x the .eng's sanding factor (Adheasion's third value).
+        // A diesel burns its fuel as its DLL says (RTS 0x424488: FuelAmount
+        // -= FuelConsuming * dt).
+        if (car.fuel_left > 0.0f && demands.fuel_rate > 0.0f) car.fuel_left = (std::max)(car.fuel_left - demands.fuel_rate * dt, 0.0f);
         if (demands.sanding && car.sand_left != 0.0f) {
             if (car.sand_left > 0.0f) car.sand_left = (std::max)(car.sand_left - dt, 0.0f);
             car.sanding = true;
@@ -2536,23 +2566,33 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
             const double towards_a = side_a * end_a.velocity;
             const double towards_b = -side_b * end_b.velocity;
             const double closing = towards_a - towards_b;
-            const double overlap = closing * train_step - meeting->gap;
-            if (overlap <= 0.0) continue;
-            // The impact RTS compares with DerailBufferForce.
-            const double force = overlap / train_step * (car_mass(end_a) + car_mass(end_b));
             const auto& coupler_a = front ? (end_a.flipped ? end_a.definition->couplings[0] : end_a.definition->couplings[1])
                                           : (end_a.flipped ? end_a.definition->couplings[1] : end_a.definition->couplings[0]);
             const auto& coupler_b = meeting->other_front
                 ? (end_b.flipped ? end_b.definition->couplings[0] : end_b.definition->couplings[1])
                 : (end_b.flipped ? end_b.definition->couplings[1] : end_b.definition->couplings[0]);
+            // The ends meet at the couplers' slack, r0 / 2 of each end (r0
+            // of a rigid one), as RTS (0x424488: the trains' gap less them),
+            // the spacing of a coupled joint at rest. Until 2026-11-26 they
+            // met body to body and coupled with the joint pressed by r0
+            // (10 cm), whose spring threw the cars apart at up to some 600 kN
+            // (testers: the ЧС7 jerked at coupling "как будто въехал на
+            // 10 км/ч").
+            const auto slack_of = [](const formats::Coupling& c) { return static_cast<double>(c.r0_tension) * (c.rigid ? 1.0 : 0.5); };
+            const double room = meeting->gap - slack_of(coupler_a) - slack_of(coupler_b);
+            const double overlap = closing * train_step - room;
+            if (overlap <= 0.0) continue;
+            // The impact RTS compares with DerailBufferForce.
+            const double force = overlap / train_step * ((std::max)(end_a.definition->mass, 1.0f) + (std::max)(end_b.definition->mass, 1.0f));
             // Held open or broken: it only pushes (RTS +14 0x11 / 0x22).
             constexpr std::uint8_t front_end = coupler_open_front | coupler_broken_front;
             constexpr std::uint8_t rear_end = coupler_open_rear | coupler_broken_rear;
             const bool open_a = (end_a.coupler_open & (front ? front_end : rear_end)) != 0;
             const bool open_b = (end_b.coupler_open & (meeting->other_front ? front_end : rear_end)) != 0;
             const bool too_hard = force > end_a.definition->derail_buffer_force || force > end_b.definition->derail_buffer_force;
-            const bool can_couple = coupler_a.type == 0 && coupler_b.type == 0 && !open_a && !open_b && !too_hard
-                && closing >= (std::max)(coupler_a.velocity, coupler_b.velocity) && !train->derailed() && !other->derailed();
+            const bool couplable = coupler_a.type == 0 && coupler_b.type == 0 && !open_a && !open_b && !too_hard
+                && !train->derailed() && !other->derailed();
+            const bool can_couple = couplable && closing >= (std::max)(coupler_a.velocity, coupler_b.velocity);
             if (can_couple) {
                 // The earlier train in the list survives.
                 const bool keep_a = a < b;
@@ -2570,6 +2610,24 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
                     gone[keep_a ? b : a] = true;
                     continue;
                 }
+            } else if (couplable) {
+                // Too slow for the locks to catch (below the coupling
+                // Velocity): RTS (0x4FB8CC) only pushes the overlap apart by
+                // the masses, the speeds stay, and an engine pushing on
+                // couples once it closes at Velocity. Until 2026-11-26 the
+                // trains took a common speed here, so after a gentle touch
+                // they could never close fast enough to couple (testers: the
+                // ЧС7 "при плавном подъезде не сцепляется").
+                results.push_back({.outcome = ContactOutcome::buffers,
+                                   .survivor = train,
+                                   .absorbed = other,
+                                   .force = force,
+                                   .lock_speed = (std::max)(coupler_a.velocity, coupler_b.velocity)});
+                const double mass_a = train->mass();
+                const double mass_b = other->mass();
+                train->shift(-side_a * overlap * mass_b / (mass_a + mass_b));
+                other->shift(-side_b * overlap * mass_a / (mass_a + mass_b));
+                continue;
             }
             // Inelastic: both trains continue with the common speed along
             // the line (masses of the whole trains); an overlap is pushed
@@ -2606,8 +2664,8 @@ std::vector<ContactResult> resolve_contacts(const std::span<Train* const> trains
             train->hit(front ? 0 : train->cars().size() - 1, static_cast<float>(force), push_a, static_cast<float>(train_step));
             other->hit(meeting->other_front ? 0 : other->cars().size() - 1, static_cast<float>(force), push_b,
                        static_cast<float>(train_step));
-            if (meeting->gap < 0.0) {
-                const double push = -meeting->gap;
+            if (room < 0.0) {
+                const double push = -room;
                 train->shift(-side_a * push * mass_b / (mass_a + mass_b));
                 other->shift(-side_b * push * mass_a / (mass_a + mass_b));
             }

@@ -1,4 +1,4 @@
-#include "realistic_air.hpp"
+﻿#include "realistic_air.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -47,6 +47,21 @@ constexpr float emergency_rate = -2.5f;    // atm/s: only a pipe vented right th
 constexpr float relay_gain = 0.40f;        // m³/(s·atm)
 constexpr float relay_feed = 0.150f;       // m³·atm/s
 constexpr float relay_vent = 0.080f;
+// I: the 395's wide channel from the main reservoir straight into the pipe,
+// past the relay (Крылов, «Автоматические тормоза подвижного состава»,
+// 1983, the 395 in I): the pipe at the engine runs ahead of the УР, the
+// faster the less pipe there is to fill (testers 2026-11-19: on the ЭП1 and
+// the ЭД4М the pipe rose with the УР, the relay holding it there).
+// v0.28.1 gave it 600 l/(s·atm) and 500 l·atm/s: the pipe at the engine
+// leapt to the main reservoir's pressure even with 60 cars behind (testers:
+// the longer the train, the slower the pipe reaches it). At 80 / 80 a lone
+// engine's pipe is at the main reservoir in about a second, 10 cars' runs
+// 0.3 .. 0.8 atm ahead of the УР, 60 cars' 0.2 .. 0.45 and slower
+// (train_test, "I by the train's length").
+// 2026-11-26, twice that (testers: with the ЭП1 and 7 cars, the ЭД2Т's 8,
+// the pipe rose in I as a freight train's of 50-60 cars).
+constexpr float direct_gain = 0.16f;       // m³/(s·atm)
+constexpr float direct_feed = 0.16f;       // m³·atm/s
 constexpr float emergency_valve = 0.050f;  // VI: m³/(s·atm) to the atmosphere
 
 float car_length(const CarState& car) {

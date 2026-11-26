@@ -90,6 +90,8 @@ private:
     // Each triangle once in the cells the segment a-b passes over (x, z).
     template <class F> void visit_segment(const glm::vec3& a, const glm::vec3& b, F&& f) const;
     std::vector<Triangle> triangles_;
+    // node -> its triangles (node_points every frame for the wipers).
+    std::vector<std::uint32_t> node_start_, node_items_;
     glm::vec3 lower_{}, upper_{};
     glm::vec2 origin_{};
     int columns_ = 0, rows_ = 0;

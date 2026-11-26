@@ -85,6 +85,13 @@ public:
     // The keys no longer reach the cab (the engineer left the car): the
     // buttons a key holds (NONFIXED) go back to their FixedState, as if let go.
     void release_keys();
+    // Each frame: a NONFIXED switch whose key was let go is asked back to its
+    // FixedState again until it is there (RTS 0x414340 steps it back once per
+    // key delay; the DLL may refuse while another is held: the whistle and
+    // the horn pressed together stuck on, testers 2026-11-26).
+    // `dt`: the frame's s; a PRECISE switch's key held turns it as a drag
+    // (the handbrake's wheel: its State is not what the DLL reads).
+    void return_released(float dt = 0.0f);
     // A key of the player's cab bound to switch `id` the way `direction`
     // (+1 up, -1 down; 0 either) is down now (Brakes.dll's springs, as its
     // GetAsyncKeyState on the switch's AssignKey).
@@ -255,6 +262,8 @@ private:
     std::unique_ptr<trainplugin::LegacyConsist> consist_;
     std::vector<Binding> bindings_;
     std::set<int> keys_down_; // the GLFW keys down, as the cab's key events left them
+    std::set<std::uint32_t> returning_; // NONFIXED switches let go, not yet back (return_released)
+    std::map<std::uint32_t, int> precise_held_; // PRECISE switches turned by a key held: the way
     std::map<std::uint64_t, std::uint8_t> going_down_; // ping-pong direction per car << 32 | switch id
     std::optional<std::pair<std::size_t, std::uint32_t>> held_; // the button the mouse holds down: car, id
     struct Drag {

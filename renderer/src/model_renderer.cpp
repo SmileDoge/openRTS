@@ -71,8 +71,8 @@ struct GpuVertex {
 // shape matrix (rest pose) and material. One 256-byte slot per primitive in
 // the model's material buffer.
 // The light material of a draw RTS draws unlit at night (its shape has the
-// night bit, rts1.exe 0x4B042C): unlit in both paths, whatever
-// light_fullbright() says (it is not an MSTS index).
+// night bit, rts1.exe 0x4B042C): unlit in both paths (it is not an MSTS
+// index).
 constexpr std::int32_t night_texture_material = -16;
 
 struct MaterialUniform {
@@ -161,7 +161,7 @@ struct FrameUniform {
     float fog_distance[4]; // x: start, y: end (<= 0 disables), z: interior lamps
     glm::mat4 view_projection;
     float eye[4]; // camera position (experimental path: view vector)
-    float shading[4]; // x: night_ambient_scale(), y: light_fullbright(), z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
+    float shading[4]; // x: night_ambient_scale(), y: unused, z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
     float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
     // ModelPortal: centre, (across, half), (up, half), (eye) as columns.
@@ -178,6 +178,8 @@ struct FrameUniform {
     float rain_front[4];
     float rain_side[4]; // xy the side drops' run (m), zw their way now
     float snow_cover[4]; // x how much of the snow maps' snow lies (0..1); y the snow's run up the front glass, zw along the side windows (m)
+    // x 1: an alpha test's edge by noise (set_stochastic_alpha); y the frame's number for the noise.
+    float temporal[4];
     float rain_wiped[rain_grid_columns * rain_grid_rows];
 };
 // WebGPU's least maxUniformBufferBindingSize.
@@ -268,7 +270,6 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     result.fog_distance[1] = lighting.fog_end;
     result.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
     result.shading[0] = night_ambient_scale();
-    result.shading[1] = light_fullbright() ? 1.0f : 0.0f;
     result.shading[2] = frame_linear() ? 1.0f : 0.0f;
     result.shading[3] = frame_pbr() ? 1.0f : 0.0f;
     fill_fog_ring(result, lighting.fog_ring, eye);
@@ -1038,14 +1039,12 @@ struct RenderModel::Impl {
     std::vector<std::string> dependencies;
     std::uint32_t alternative_texture{};
     std::vector<std::string> texture_folders;
-    bool fullbright_images = false;
     std::vector<std::string> texture_key;
     // At night a shape with the night bit (ESD_Alternative_Texture 0x100) is
-    // drawn unlit, all of it (rts1.exe 0x4B042C); FullBright draws keep their
-    // material when they are lit as ordinary ones (fullbright-day).
+    // drawn unlit, all of it (rts1.exe 0x4B042C).
     bool night_unlit = false;
-    bool fullbright_day = false;
     std::vector<formats::ShapeLight> lights;
+    std::optional<formats::PickupDescription> pickup;
     std::vector<ModelPrimitive> primitives;
     std::vector<std::string> material_messages; // what was wrong with its material files
     // Matrices, hierarchy and animations, kept when the shape is animated so
@@ -1118,7 +1117,6 @@ const formats::ShapeModel* RenderModel::rig() const noexcept {
 
 std::uint32_t RenderModel::alternative_texture() const noexcept { return impl_ ? impl_->alternative_texture : 0u; }
 
-bool RenderModel::fullbright_images() const noexcept { return impl_ && impl_->fullbright_images; }
 
 const std::vector<ModelPrimitive>& RenderModel::primitives() const noexcept {
     static const std::vector<ModelPrimitive> none;
@@ -1148,6 +1146,11 @@ const std::vector<std::string>& RenderModel::texture_folders() const noexcept {
 const std::vector<formats::ShapeLight>& RenderModel::lights() const noexcept {
     static const std::vector<formats::ShapeLight> none;
     return impl_ ? impl_->lights : none;
+}
+
+const std::optional<formats::PickupDescription>& RenderModel::pickup() const noexcept {
+    static const std::optional<formats::PickupDescription> none;
+    return impl_ ? impl_->pickup : none;
 }
 
 void RenderModel::set_lights(std::vector<formats::ShapeLight> lights) {
@@ -1182,6 +1185,7 @@ struct ModelRenderer::Impl {
         std::uint32_t owner = 0; // set_owner
         std::int32_t portal = 0; // set_portal
         bool moving = false;     // set_moving
+        bool train = false;      // set_train
         // First of this instance's animated local matrices in
         // `frame_locals`, or -1 for the model's rest pose; how many.
         std::ptrdiff_t matrices = -1;
@@ -1254,6 +1258,7 @@ struct ModelRenderer::Impl {
         bool alpha_test = false;
         bool shadow_only = false; // a caster out of view: shadow passes only
         bool moving = false;      // its instances move (set_moving)
+        bool train = false;       // they are trains' (set_train)
         // Its instances: depth_instances[first, first + count), culled per
         // depth pass (render_depth).
         std::uint32_t first = 0;
@@ -1279,6 +1284,10 @@ struct ModelRenderer::Impl {
     // Depth-only passes: a view-projection per slot (dynamic offset).
     static constexpr std::uint32_t depth_slots = ModelRenderer::depth_slots;
     bool submit_moving = false; // set_moving
+    bool submit_train = false;  // set_train
+    bool stochastic_alpha = false; // set_stochastic_alpha
+    float texture_lod_bias = 0.0f;  // set_texture_lod_bias
+    std::uint32_t stochastic_frame = 0;
     std::uint64_t moving_signature = 0;
     std::uint64_t moving_signature_outside = 0; // without the cab (RTS pass 3)
     static constexpr std::uint64_t depth_stride = 256;
@@ -1384,7 +1393,13 @@ struct ModelRenderer::Impl {
             .emissive = {draw.emissive.x, draw.emissive.y, draw.emissive.z, draw.emissive.w},
             .maps = {draw.maps.x, draw.maps.y, draw.maps.z, draw.maps.w},
             .height = {draw.height.x, draw.height.y, draw.height.z, draw.height.w},
-            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, draw.label ? 1.0f : 0.0f, 0.0f},
+            // w 1: blended (BlendATexDiff without its alpha test): the depth
+            // passes cut it out at a nearly opaque alpha (depth.wgsl).
+            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, draw.label ? 1.0f : 0.0f,
+                       (draw.material.shader == rts::NamedShader::blend_a_tex || draw.material.shader == rts::NamedShader::blend_a_tex_diff)
+                               && !draw.material.alpha_test_mode
+                           ? 1.0f
+                           : 0.0f},
         };
     }
 
@@ -2018,9 +2033,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
         const auto& draw = gpu.draws[i];
         // At night a shape with the night bit is drawn unlit (RTS 0x4B042C:
         // NamedShader 3): the Rostov backdrop's lit city, lit windows.
-        const auto uniform = material_uniform(draw, gpu.night_unlit && !(gpu.fullbright_day && draw.material.light_material == -8)
-                                                        ? night_texture_material
-                                                        : draw.material.light_material);
+        const auto uniform = material_uniform(draw, gpu.night_unlit ? night_texture_material : draw.material.light_material);
         std::memcpy(materials.data() + i * material_stride, &uniform, sizeof(uniform));
     }
     gpu.slot_count = static_cast<std::uint32_t>(gpu.draws.size());
@@ -2222,9 +2235,9 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     gpu->source = asset.source_path;
     gpu->alternative_texture = asset.alternative_texture;
     gpu->texture_folders = asset.texture_folders;
-    gpu->fullbright_images = asset.fullbright_images;
     gpu->texture_key = asset.texture_key;
     gpu->lights = asset.lights;
+    gpu->pickup = asset.pickup;
     gpu->dependencies = asset.dependency_keys();
     gpu->material_messages = asset.material_messages;
     gpu->primitives.reserve(model.primitive_states.size());
@@ -2312,7 +2325,6 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
         return std::find(list.begin(), list.end(), item) != list.end();
     };
     gpu->night_unlit = (asset.alternative_texture & 0x100u) != 0 && has(asset.texture_folders, "NIGHT");
-    gpu->fullbright_day = has(asset.texture_key, "fullbright-day");
 
     impl_->create_draws(*gpu, asset);
     if (gpu->draws.empty()) return result;
@@ -2339,6 +2351,17 @@ void ModelRenderer::forget_texture(const core::VirtualPath& path) {
     if (!impl_) return;
     const std::lock_guard lock(impl_->shared_mutex);
     impl_->texture_cache.erase(path.key());
+}
+
+void ModelRenderer::forget_material_maps(const std::unordered_set<std::string>& files) {
+    if (!impl_ || files.empty()) return;
+    const std::lock_guard lock(impl_->shared_mutex);
+    // A map's key (model_materials.cpp's map_key): "material <kind> ..." with
+    // the keys of the files it is made of.
+    std::erase_if(impl_->texture_cache, [&](const auto& entry) {
+        if (!entry.first.starts_with("material ")) return false;
+        return std::any_of(files.begin(), files.end(), [&](const std::string& file) { return entry.first.find(file) != std::string::npos; });
+    });
 }
 
 void ModelRenderer::replace(RenderModel& slot, RenderModel&& next) {
@@ -2530,6 +2553,21 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
     }
     impl_->queue.push_back({.model = model.impl_.get(), .transform = transform, .level = level});
     impl_->queue.back().moving = impl_->submit_moving;
+    impl_->queue.back().train = impl_->submit_train;
+}
+
+void ModelRenderer::set_stochastic_alpha(const bool on, const std::uint32_t frame) noexcept {
+    if (!impl_) return;
+    impl_->stochastic_alpha = on;
+    impl_->stochastic_frame = frame;
+}
+
+void ModelRenderer::set_texture_lod_bias(const float bias) noexcept {
+    if (impl_) impl_->texture_lod_bias = bias;
+}
+
+void ModelRenderer::set_train(const bool train) noexcept {
+    if (impl_) impl_->submit_train = train;
 }
 
 void ModelRenderer::set_room(const std::optional<ModelRoom>& room) noexcept {
@@ -2742,13 +2780,18 @@ void ModelRenderer::prepare() {
                 if (impl_->hides(queued, draw)) continue;
                 const auto& material = draw.material;
                 const bool blend_shader = material.shader == rts::NamedShader::blend_a_tex || material.shader == rts::NamedShader::blend_a_tex_diff;
-                if ((blend_shader && !material.alpha_test_mode) || !material.depth_write) continue;
-                const bool alpha_test = blend_shader && material.alpha_test_mode;
+                if (!material.depth_write) continue;
+                // A blended primitive too, cut out where it is nearly opaque: a
+                // body drawn blended (the ВЛ60ПК's) hid what was behind it from
+                // the light shafts, the occlusion and the shadows (testers
+                // 2026-11-25: the footbridge's shafts showed on its side);
+                // glass stays out by its alpha.
+                const bool alpha_test = blend_shader;
                 const auto binding = draw.binding;
                 // By primitive, binding, alpha test and whether only the shadows take it.
                 const auto fresh = static_cast<std::uint32_t>(batches.size());
                 const auto group = scratch.table.find_or_add(
-                    &draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u) | (queued.moving ? 4u : 0u), fresh);
+                    &draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u) | (queued.moving ? 4u : 0u) | (queued.train ? 8u : 0u), fresh);
                 if (group == fresh) {
                     Impl::DepthBatch head;
                     head.draw = &draw;
@@ -2757,6 +2800,7 @@ void ModelRenderer::prepare() {
                     head.alpha_test = alpha_test;
                     head.shadow_only = queued.shadow_only;
                     head.moving = queued.moving;
+                    head.train = queued.train;
                     batches.push_back(head);
                 }
                 ++batches[group].count;
@@ -3094,7 +3138,10 @@ void ModelRenderer::prepare() {
     if (!impl_->frame_binding) return;
     impl_->uploaded = true;
 
-    const auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
+    auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
+    lighting.temporal[0] = impl_->stochastic_alpha ? 1.0f : 0.0f;
+    lighting.temporal[1] = static_cast<float>(impl_->stochastic_frame % 1024u);
+    lighting.temporal[2] = impl_->texture_lod_bias;
     const auto queue = wgpuDeviceGetQueue(impl_->device);
     wgpuQueueWriteBuffer(queue, impl_->frame_buffer, 0, &lighting, sizeof(lighting));
     if (!instances.empty()) wgpuQueueWriteBuffer(queue, impl_->instance_buffer, 0, instances.data(), instances.size() * sizeof(GpuInstance));
@@ -3259,7 +3306,9 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     ids.reserve(impl.depth_id_total);
     for (const auto& batch : impl.depth_batches) {
         if (batch.shadow_only && !shadow) continue;
-        if ((casters == DepthCasters::still && batch.moving) || (casters == DepthCasters::moving && !batch.moving)) continue;
+        if ((casters == DepthCasters::still && batch.moving) || (casters == DepthCasters::moving && !batch.moving)
+            || (casters == DepthCasters::trains && !batch.train))
+            continue;
         // The camera's pass: the instances without a portal, then those with one.
         for (int with_portal = 0; with_portal < (shadow ? 1 : 2); ++with_portal) {
             const auto first = ids.size();

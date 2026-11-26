@@ -8,7 +8,7 @@ struct Frame {
     fog_distance: vec4<f32>,
     view_projection: mat4x4<f32>,
     eye: vec4<f32>,
-    shading: vec4<f32>, // x: the experimental path's night ambient factor, y: FullBright lit, z: 1 the frame is linear, w: 1 PBR
+    shading: vec4<f32>, // x: the experimental path's night ambient factor, y: unused, z: 1 the frame is linear, w: 1 PBR
     fog_sun: vec4<f32>,             // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     fog_ring: array<vec4<f32>, 12>, // the horizon's colour at each fog_ring_angle (fog_ring.hpp)
     portals: array<mat4x4<f32>, 2>, // centre, (across, half), (up, half), eye
@@ -21,6 +21,7 @@ struct Frame {
     rain_front: vec4<f32>,  // x the front's sign, y 1 a grid
     rain_side: vec4<f32>,   // xy the side drops' run (m, z y), zw their way now
     snow_cover: vec4<f32>,  // x how much of the snow maps' snow lies (0..1)
+    temporal: vec4<f32>,    // x 1: an alpha test's edge by noise; y the frame's number; z the textures' LOD bias (an upscaler's)
     rain_wiped: array<vec4<f32>, 2048>, // each cell's last wipe (128 x 64, four a vec4)
 };
 
@@ -370,6 +371,15 @@ override blended: bool = false;
 // Alpha Test"): the edge spread over one pixel (`width`: fwidth of the
 // alpha) and the alpha raised in the far mips (`mip`) so foliage and fences
 // do not thin out with distance. Zero coverage drops the fragment.
+// An alpha test's edge by noise (ModelRenderer::set_stochastic_alpha): the
+// texel kept as often as its coverage says, the noise (interleaved gradient
+// noise) moved every frame; the temporal AA or the upscaler averages it.
+fn stochastic_keep(coverage: f32, pixel: vec2<f32>) -> bool {
+    let p = pixel + vec2<f32>(5.588238 * frame.temporal.y);
+    let noise = fract(52.9829189 * fract(dot(p, vec2<f32>(0.06711056, 0.00583715))));
+    return coverage > noise;
+}
+
 fn coverage_alpha(alpha: f32, cutoff: f32, width: f32, mip: f32) -> f32 {
     let kept = alpha * (1.0 + max(mip, 0.0) * 0.25);
     return clamp((kept - cutoff) / max(width, 0.0001) + 0.5, 0.0, 1.0);
@@ -394,7 +404,10 @@ fn with_snow(texel: vec4<f32>, uv: vec2<f32>, uv_dx: vec2<f32>, uv_dy: vec2<f32>
     let snow = textureSampleGrad(snow_texture, source_sampler, uv, uv_dx, uv_dy);
     let cover = select(0.0, frame.snow_cover.x, draw.extent.y > 0.5);
     // The cover grows from where the snow is thickest (its alpha highest).
-    let lies = clamp((snow.w - (1.0 - cover)) / max(cover, 0.001), 0.0, 1.0) * select(0.0, 1.0, cover > 0.0);
+    // Not on what shows through (glass, a fake shadow under a car: the
+    // ВЛ60ПК's SDW plane turned a white veil over its body).
+    let solid = smoothstep(0.85, 0.98, texel.w);
+    let lies = clamp((snow.w - (1.0 - cover)) / max(cover, 0.001), 0.0, 1.0) * select(0.0, 1.0, cover > 0.0) * solid;
     return vec4<f32>(mix(texel.xyz, snow.xyz, lies), texel.w);
 }
 @group(1) @binding(0) var<uniform> frame: Frame;

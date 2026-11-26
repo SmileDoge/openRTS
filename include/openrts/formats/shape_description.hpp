@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/cargo.hpp>
 
 namespace openrts::formats {
 
@@ -83,7 +84,8 @@ struct ShapeDescription {
     std::uint32_t alternative_texture{}; // ESD_Alternative_Texture bits
     std::vector<ShapeLight> lights;      // ESD_LightSources
     std::vector<WalkBox> boxes;          // ESD_Complex, else ESD_Bounding_Box
-    std::optional<PickupObject> pickup;  // ESD_Pickup_Object
+    std::optional<PickupObject> pickup_object; // our cargo_system's
+    std::optional<PickupDescription> pickup;   // cargo_view.hpp: the shape is a pickup
 };
 
 struct ShapeDescriptionResult {

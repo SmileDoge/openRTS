@@ -342,6 +342,9 @@ sprites) draws its own (`renderer::WeatherParticleRenderer`):
   stayed dark) the lamps shining every way (spheres: platforms' lamps, a
   pantograph's arc) light them too, within their radius (at most 40 m),
   brighter towards the lamp; eight lamps and beams at most, the nearest.
+  The air in the beams has a soft edge and a faint halo past it (the snow
+  scattering the light again; from the cab the cone's side had stood as a
+  hard line), and round a lamp shining every way a ball of lit air.
 - Both lit by the scene's light, fading in near the eye and out at the
   box's edge, hidden by the cab's walls and a tunnel's roof (depth-tested);
   none fall inside the cab the eye is in. They stay in the world when the

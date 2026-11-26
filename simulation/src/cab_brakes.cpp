@@ -285,7 +285,10 @@ CabBrakeOutput step_cab_brakes(CabBrakeState& s, const CabBrakeControls& c, cons
     s.cylinder_needle = needle(s.cylinder_needle, (std::max)(air.cylinder, air.independent), n.cylinder_needle_near,
                                n.cylinder_needle_far, n.cylinder_needle_band, dt);
     if (air.pipe >= s.pipe_needle || n.pipe_needle_fall <= 0.0f) {
-        s.pipe_needle = air.pipe;
+        // Rising, a needle has its inertia (some 0.12 s): the pipe's own
+        // steps from one sub-step to the next (I, the distributors taking
+        // their share) jerked it (testers 2026-11-26, the ВЛ80с, the ЭП1).
+        s.pipe_needle = air.pipe >= s.pipe_needle ? s.pipe_needle + (air.pipe - s.pipe_needle) * (std::min)(dt / 0.12f, 1.0f) : air.pipe;
     } else {
         // Brakes.dll's fall by the handle: III .. VI at 1 atm/s, II and
         // the rest faster the more wagons (to 100).

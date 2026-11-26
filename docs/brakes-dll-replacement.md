@@ -395,7 +395,11 @@ scenarios run with Brakes.dll and with openRTS side by side
      - САУТ or ТСКБМ alone (the ВЛ85's `PB_SETUP` 1, the 2ТЭ116's 4) run in
        openRTS's КЛУБ's step without the КЛУБ;
      - `BR_AUTO` (the ДТ116's) only keeps Brakes.dll from the slave
-       sections: openRTS's devices work each car's air anyway.
+       sections: openRTS's devices work each car's air anyway;
+     - a cab not driven (another section's, `LocoFlags` without 1) shows its
+       car's pipe, main reservoir and cylinder on its gauges, its УР at 0,
+       as Brakes.dll's there (2026-11-26; before, every needle stood at 0:
+       testers, the ВЛ10's second cab "воздух по нулям").
 
      Every one of the installation's 3187 cars with Brakes.dll can run
      without it ("Brakes.dll не загружать", from the next train). Tests:

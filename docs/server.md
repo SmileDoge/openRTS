@@ -9,12 +9,17 @@ original `rts1.exe` and openRTS clients log in to it as they log in to
 
 Not yet:
 - the openRTS protocol (Legacy off) and its settings for everyone;
-- helpers (stage 4);
 - trains the server drives itself (TRAFFIC, step 7);
 - `rts_server_DSP.exe` consoles: they would get the player's login reply,
   not the `0x4501`.. they expect (not read yet).
 
 ## Running it
+
+To update openRTS on the server's computer without the game:
+`openrts-updater.exe` beside it (a window, no graphics card needed), or
+`openrts-updater.exe --yes` from a script; then start the server again
+and put the placement `autosave-previous` back (INSTALL_EN.md,
+"Without the game").
 
 ```
 openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summer --weather clear --time 10:00
@@ -28,11 +33,23 @@ openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summ
 | `--season`, `--weather` | `spring`..`winter` or 0..3; `clear`, `snow`, `rain` or 0..2, `storm` or 3: openRTS's thunderstorm (rain to RTS players, docs/weather.md) |
 | `--time HH:MM` | the time of day at the start (12:00) |
 | `--no-admit` | take no new players |
+| `--max-players <n>` | places: a new player beyond so many connected is refused (`0x4702`, as with `--no-admit`); one coming back under his nick and the dispatcher's consoles are not counted against it; 0 (the default): no limit |
+| `--autosave <minutes>` | every train on the track saved as the placement `autosave` so often and at the stop (2 by default, 0 never); at the start the last run's kept as `autosave-previous` (Placements) |
+| `--discord-join`, `--public-address <host:port>` | openRTS players' Discord profiles get "Join" with that address (none given: the one each player connected to); net.md, "Joining from Discord" |
+| `--no-fast-positions` | the players send their trains' positions as RTS, every 1.5 s, not 10 times a second (net.md, "Fast positions"; the window's "Fast train positions", the console's `fastpos on\|off` at any time) |
+| `--dispatcher-password <text>` | the dispatcher's console from another computer logs in with it (none: only from this one; "The dispatcher's console (in the game)" below) |
 | `--data <folder>` | where the server keeps its files (the route database it saves); openRTS's user data folder by default (`%LOCALAPPDATA%\openRTS`, or next to the program with a `portable.txt`), never the RTS installation |
 | `--command "<line>"` | a console line run at the start (repeatable) |
 | `--run <s>` | stop after so many seconds (tests); runs at the console |
 | `--no-window` | run at the console, without the window (`--route` needed) |
 | `--capture <file.ppm>`, `--capture-at <s>` | the window's picture `s` seconds after the server started (3 by default), then it closes (a check) |
+
+The start menu starts it too ("Сетевая игра", "Свой сервер": "Открыть
+окно запуска сервера") with the RTS folder, its window (the port is set
+there) and its log (`openrts-server.log` beside the settings) of its own;
+"Подключиться к своему серверу" then joins 127.0.0.1 at the port its
+window was last started with (`server_window.ini`), with the nick and the
+role given in the menu.
 
 It loads the route in about a second (Kuban: 1653 track nodes, 1951 signal
 heads, 0.9 s) and then listens. Players connect with the start menu's
@@ -43,13 +60,23 @@ Russian path names and messages work.
 ## The window
 
 Without `--no-window` (or `--run`) the server opens its window, as
-`rts_server.exe` does:
+`rts_server.exe` does. The game steps on a thread of its own, every 20 ms
+as without the window; the window reads and changes it under a lock, its
+drawing outside it (2026-11-21: until then the game stepped once a frame,
+and a computer without a video card, drawing the window in software, sent
+the players' world seconds apart). On such a computer `--no-window` is
+lighter still.
 
 - **The start form:** the RTS folder (with "Обновить" to list its
   routes again), the route, season, weather, time, port (0: any free
-  one), whether new players are taken, and the server's folder. The
-  arguments fill it in. Started without `--route`, it is as it was last
-  started (`server_window.ini` in the server's folder).
+  one), whether new players are taken, the places ("Мест в игре", 16 at
+  first, 0 no limit), the dispatcher password (with it
+  the dispatcher's console may join from another computer), "Вход через
+  Discord" with the address for the players (net.md, "Joining from
+  Discord"), and the server's folder. The arguments fill it in. Started without `--route`, it
+  is as it was last started (`server_window.ini` in the server's folder,
+  the password too), but for the folder, port and password the command
+  line gives.
 - **Then the console on the route's map** (the same map as the viewer's
   Track control, `trackmap/`): the track, junctions, signals with their
   names, platforms, sidings, stations, the trains in the colour of their
@@ -109,7 +136,9 @@ Without `--no-window` (or `--run`) the server opens its window, as
   сезон и погоду задаёт сервер" (until then a time set there went back
   at the next sync, testers).
 - **The bar on top:** the route and port, the server's time and setting
-  it, pause, taking new players, how many play, stopping the server.
+  it, pause, taking new players, how many play (of how many places), where the dispatcher may
+  join from ("только с этого компьютера" or "откуда угодно, по паролю"),
+  stopping the server.
   Under it what was last done, for 5 s (an error 10 s).
 
 The log also goes to the console behind the window. Not in the window yet:
@@ -129,6 +158,10 @@ before step 7, TRAFFIC).
 | `assign <train> <nick>` | the player drives it (`0x4601`; the others get `0x4605` PLAYER) |
 | `unassign <train>` | taken back: it stands as STATIC |
 | `remove <train>` | deleted (`0x4602` 1); its owner is told first |
+| `weather [clear\|snow\|rain\|storm\|dynamic [seed]]` | the weather while the game runs, to openRTS players and consoles (`0x45FA`, docs/weather.md); also the window's top bar ("Динамическая погода", "Другая": another seed) |
+| `number <train> <number>` | its train number (`0x4605` to everyone, as `rts_server.exe` sends it when the console changes it: RTS numbers its cars by it); not one another train has |
+| `move <train> <node> <offset> <0\|1>`, `chocks <train> none\|head\|tail\|both` | a standing train put again: elsewhere, or with chocks under its ends (Placements) |
+| `name <train> [text]`, `notes <train> [text]` | its name (the console's map shows it after the number) and its notes, one line here (the console's train form takes several); `0x461A` to everyone and in the snapshot; no text: cleared |
 | `say <nick\|*> <text>` | a message (`0x4611`) |
 | `pause`, `resume` | `0x4616`; nothing goes out while paused, as RTS |
 | `time [HH:MM[:SS]]` | shown or set (`0x460D` to everyone) |
@@ -158,18 +191,28 @@ before step 7, TRAFFIC).
 | `helper <nick> <train\|off>` | the player is the helper (помощник машиниста) on the train's cab, or no more (openRTS players: "Helpers" below) |
 | `kick <nick>`, `admit on\|off`, `quit` | |
 
-## The dispatcher's console (in the game) — hidden for now
+## The dispatcher's console (in the game)
 
-**Hidden until the server is done** (the user's call, 2026-11-09): the
-server comes first, Legacy and as `rts_server.exe`, with its own console;
-remote consoles (`0x4500`: `rts_server_DSP.exe`, this one) after it. The
-start menu no longer offers "Войти как: Диспетчер", and the server refuses
-`0x4500` with `0x4702` (`ServerOptions::consoles`, off). The code stays and
-the tests run it; what is below is how it works.
+The remote dispatcher (from 2026-11-21; hidden from 2026-11-09 until the
+server was done, the user's call): the start menu's "Сетевая игра", "Войти
+как: Диспетчер (пульт)", with the server's dispatcher password.
 
 openRTS itself is the console (the user's choice, 2026-11-09):
-`openrts_viewer --mp-connect host --mp-nick <nick> --mp-console`.
-- It logs in with `0x4500` and gets the world at once, no train needed.
+`openrts_viewer --mp-connect host --mp-nick <nick> --mp-console
+[--mp-password <text>]` (the start menu passes the password in
+`OPENRTS_MP_PASSWORD`, off the command line and the log).
+- **Who is let in** (`ServerOptions::consoles`, on; `dispatcher_password`):
+  from the server's own computer (127.0.0.1) any nick, no password; from
+  another one only with the dispatcher password set at the server (its
+  window's start form or `--dispatcher-password`): a wrong or missing one
+  gets `0x4707` (openRTS's own code), a server without a password `0x4702`.
+  Until 2026-11-21 a nick given with `--dispatcher` let a console in from
+  anywhere without a password; such nicks now only narrow who may (when
+  given, the nick must be one of them as well). The password goes in
+  plain text, as the whole protocol does.
+- It logs in with `0x4500` (openRTS's own: the password, `u16` length and
+  UTF-16 units with a zero, after the nick's zero; such a login may be 256
+  bytes, a player's 64) and gets the world at once, no train needed.
 - Track control is its map, open at the start. A junction thrown there or
   a signal's aspect chosen ("Показание …" in the signal's menu, or "by the
   script") goes to the server as a command. "Put a consist here" (dragged
@@ -189,14 +232,60 @@ openRTS itself is the console (the user's choice, 2026-11-09):
   distance left (`0x4619`) to everyone, players too, every 0.5 s while it
   changes; `-1` when the train has run through it, or when the console
   cancels it (`0x4619` -1). The map draws the route green from the train's
-  head. RTS's other way, the station routes assembled from the route
-  database (`0x450B`), is not there yet.
+  head. RTS's other way, the station routes of the route database, is the
+  window's "Станционные маршруты" below.
+- **RTS's own hand route** (2026-11-21): the picked train shows its line
+  from the head (and, fainter, from the rear) along the junctions as they
+  stand; the dispatcher throws them till the line runs where the train
+  should go, then right-clicks it: "Конец маршрута здесь" sends that
+  length (`0x4619`) and nothing else, as RTS's console. "Маршрут для
+  выбранного поезда сюда" (the shortest way, with points to pass) stays.
+- **Switches as RTS sets them** (2026-11-21): a switch stays where it was
+  set. A player's train that runs through one (trailing, from the other
+  branch) or leaves one behind (back to `MainRoute`, or the next train's
+  reservation) sets it on its owner's computer, which sends `0x460A`; the
+  server takes it as sent (not a junction the dispatcher locked, as
+  `rts_server.exe` `0x40C52C`) and tells everyone else. The server sets
+  those of its own trains (no player's) itself. A hand switch on foot is
+  asked (`0x4642`) and refused when locked, reserved or occupied.
 - The window "Пульт ДСП":
   - the time, the pause, setting the time;
   - the trains (number, kind, driver, speed, route): picking one centres
     the map on it; give it to a player, take it back, remove it, set or
     cancel its route to a signal (литера);
-  - a new train: a consist (filtered) and a path, put on the track;
+  - "Станционные маршруты", as the server window's: the picked train, its
+    queue with each segment's state and cancel, the routes it can take next
+    (asked from the server every 3 s and when its queue changes: from the
+    end of its last segment, else its head; "Направление" turns that way),
+    main tracks first in green, onto a wrong track last in lilac, "[П]" and
+    the track's length, how far; "держать следующий", the priority, "Задать"
+    or a double click queues it (the `segment` line); every train's queue.
+    The picked route is not drawn on the map yet;
+  - "Сигналы": every signal of a type (the route's types, read here) to
+    manual / open / automatic block, shown as a train signal or not, back
+    to the defaults, set as the defaults, the route database saved (on the
+    server, into its folder): the `signal` lines;
+  - the train picked: its number ("Задать номер"), its name and notes
+    (several lines; "Сохранить название и заметки"), as RTS's console's
+    train form: `0x461A` to the server, which sends them to everyone; the
+    map shows "№ name" on the train and the notes when it is picked. A
+    form being edited keeps what is typed; another dispatcher's change
+    comes in where it is not (2026-11-21, the testers);
+  - a new train: a consist (filtered) and a path, put on the track, with
+    its number (empty: the lowest free), name, kind (STATIC, PLAYER,
+    LOOSE, TRAFFIC) and state (Холодный, Включен, На ходу), STATIC and
+    Холодный by default (2026-11-21, the organiser); the same on the map's
+    "Put a consist here", and in the server window's "Новый поезд" and its
+    map. `0x45F3` carries the name, kind and state after the cars (an older
+    console's place has none: STATIC, cold). A TRAFFIC train stands: the
+    server drives none yet;
+  - a train's menu on the map (the console's and the server window's):
+    "Номер и название", changed in place;
+  - Track control in the console: the camera does not follow the trains
+    put on the track (with none of its own it followed the first one, so
+    each train put took the dispatcher to it), no car view (F3); "К себе"
+    centres the map on the camera, Ctrl+T teleports to the cursor (the
+    menu's "Телепорт сюда" stays);
   - the players (dispatcher, away, in the menu, playing; their trains):
     messages to one or everyone, dropping a player, taking new players or
     not;
@@ -211,7 +300,10 @@ openRTS itself is the console (the user's choice, 2026-11-09):
     handbrake), its MaxVelocity, an optional number, and where: a path's
     start or the front of its first car at a node, an offset and a way.
     The consist is the dispatcher's own file; the server needs only the
-    cars' files and makes them its train. RTS's console does the same in
+    cars' files and makes them its train. A .con from anywhere on the
+    dispatcher's computer too (the map's "Browse..."): read there, by its
+    path (2026-11-21: until then "consist not found" for those, the game's
+    folders only, the testers' freight consists among them). RTS's console does the same in
     its own packages (live capture 2026-11-05): `0x4607` with the cars'
     records, the server's id back in `0x4507`, then `0x4603` / `0x4606` to
     place it; the server will take that sequence too when
@@ -220,11 +312,110 @@ openRTS itself is the console (the user's choice, 2026-11-09):
     whether new players are taken, the users (id, nick, connected, playing,
     console, the camera's place, their trains) and the trains (id, number,
     kind, subtype, state, owner, the junctions their route holds, speed,
-    standing, cars, the first car).
+    standing, cars, the first car); since 2026-11-21 then the station
+    routes' segments (id, train, the route's ID, station and name, from its
+    end / holds the next / rear first, priority, state, junctions thrown of
+    how many), which a reader without them stops before;
+  - `0x45F8` console → server: what a train can take next (`u32` train,
+    `u8` 1 the other way); `0x45F9` the answer (`net::ConsoleNext`): the
+    train, the way, whether it is on the server's track, rear first, the
+    segment it follows (id, name), then the routes (ID, from its end, main
+    track, onto a wrong track, a platform, the track's length, how far,
+    station, name), as `GameServer::next_routes` ranks them.
 - A hand switch a player throws on foot (`track.md`) goes to the server
   as `0x4642`, as `rts1.exe` sends it; the server's answer is what
   stands. A player has no other way to throw a junction in a network
   game, as in RTS.
+- A junction a player's train sets (a run-through, back to MainRoute
+  behind its tail, `0x460A`) is not set, by the client nor by the server,
+  under another train or in front of it as far as that train runs in 4 s
+  (5 m standing, 150 m at most): the server sends the sender its state
+  back. Positions name a train's rear, and every computer lays the rest
+  of it along its own junctions: a switch set back under another train
+  ran it down the wrong track everywhere but on its owner's computer.
+- Every junction is told again, 40 every 0.25 s round and round (3000 in
+  under 20 s): a client that missed one has it back within seconds. A
+  client lays another player's train again from its head when its tail
+  is not where the junctions lead (not while it is derailed).
+
+## Placements
+
+Every train on the server's track, saved under a name and put back
+(2026-11-21, the organiser): its cars (file, flipped, cold, handbrake,
+chocks), the front of its first car (TDB node, offset, the way it faces),
+its number, name, notes, kind (STATIC, PLAYER, TRAFFIC, LOOSE; a PLAYER
+train comes back nobody's) and state. The file is the one the single
+player and the dispatcher's console write too (docs/placements.md, "The
+file"), in `<data>/server/<route>/placements/<name>.placement` on the
+server and `placements/<route>/` in the user data folder of the
+dispatcher's openRTS (the single player's placements of the route among
+them: one a player sends is put there, or on the server, as it is). A
+placement includes others (`include` lines): they are put with it.
+
+- The server: `placement save <name>`, `placement load <name> [add]` (the
+  trains on the track removed first, unless `add`; the included
+  placements' trains with them), `placement list`, `placement get [name]`
+  (its includes and every train, the included ones marked `from`; no
+  name: the trains now), `placement include|exclude <name> <other>`,
+  `placement delete <name>`, `placement clear` (every train removed),
+  `placement upload <name> <part> <parts> <text>` (a console's file in
+  parts: a console command's package holds 0x3C00 bytes; written whole when
+  the last comes). The window's "Поезда" tab, "Расстановки": save every
+  train, put (the trains now removed), add, delete; "Открыть: вложения,
+  поезда" lists its includes (taken out, another added) and its trains
+  with theirs (number, name, kind and state, cars and chocks, which
+  placement), the picked put or saved as another placement (one train's
+  out of a station's).
+- The dispatcher's console, "Расстановки": save every train on the server
+  or here; the server's placements listed, shown or kept here (as one of
+  its own: the included trains in it, no includes); the ones kept here
+  shown (with their includes' trains), saved on the server (uploaded, the
+  trains on its track left as they are) or deleted; a placement shown
+  lists its includes (taken out, another added: on the server by
+  `placement include|exclude`) and its trains (number, name, kind and
+  state, cars and chocks, which placement; the notes on hover), the ones
+  picked put on the track (`console_place` each: its number, name, notes,
+  kind, state, chocks, the place), every train on the track removed first
+  if ticked, or saved as another placement here or on the server.
+
+**A standing train put again** (2026-11-21): `move <train> <node>
+<offset> <0|1>` (its front there, facing along the node with 1) and
+`chocks <train> none|head|tail|both`; the window's train menu and the
+dispatcher's Track control ("Переставить (на карте)": the preview of its
+cars dragged and turned, then put; "Башмаки"). The server removes it and
+places it anew with its number, names, notes, kind, state and cars (a new
+id: RTS's clients see a train go and one come); refused where it does not
+fit (then it is put back where it stood) and for a train a player has.
+The chocks hold it on the server too (10 kN each, as RTS's PlaceDrag).
+
+**The drivers' trains kept** (2026-11-21): a placement keeps whose each
+train is (`owner <nick>`) and its own state (`state`: what its owner's
+openRTS sends every 30 s as `0x45FB` `openrts_train_state`, the cars' air,
+switches and flags and its DLLs' saved states, compressed, in parts).
+Put back, a train with an owner waits for him: logging in under that
+nick, he gets it at once (no dispatcher), and his openRTS puts its state
+back into it (its DLLs' once they run). A player coming back while the
+server runs gets his train and its state the same way.
+
+**The autosave**: every train on the track saved as the placement
+`autosave` every 2 minutes (`--autosave <minutes>`, 0 never) and when the
+server stops; none on the track, the last one is kept. At the start the
+last run's is kept as `autosave-previous`: after a crash or a restart
+"Put" it (or `--command "placement load autosave-previous"`) and the
+trains stand as they stood. Written whole, then put in place of the old
+file: a crash while saving leaves the last one.
+
+Checked: `openrts.content.server_kuban` saves Kuban's train named and
+numbered, clears the track, puts it back (number, name, notes, kind,
+state, cars, its place within 0.5 m) and reads the file as a console
+does; puts it again with chocks under both ends (in its records, 0x100
+and 0x200) and 60 m further (its number, notes and chocks kept), refuses
+a place off the track (the train kept); a placement including it (and
+not itself) puts it, `placement get` marks it `from`; an upload of 41
+trains in several parts written as sent; the autosave and the last run's
+kept. `openrts.server` reads the single player's older file, writes and
+reads the new fields, resolves includes (a loop, a missing one) and the
+upload's lines back to the text.
 
 ## What it does
 
@@ -325,7 +516,7 @@ draw it.
 - `0x460C`'s field `+96` is the head's `enabled`, so it carries the unit's
   mode (0 manual, 1 open, 2 automatic block), as the RTS server sends it.
 - **Consoles** (Legacy, `0x4500`; taken when `ServerOptions::consoles` is
-  on): after the world a console gets every unit's `0x4618` (unit index,
+  on, as the session has it since 2026-11-21): after the world a console gets every unit's `0x4618` (unit index,
   aspect, mode, the dispatcher's flag), then each unit whose aspect, mode
   or flag changes. A console's `0x4618` sets the unit: mode 1 or 2 that
   mode, mode 0 manual at the aspect given (the dispatcher's when its flag
@@ -407,8 +598,10 @@ and when the dispatcher sets it.
 ## Helpers
 
 - **openRTS players** say `0x45F4` after their login; the server answers.
-  Such a player gets the world without a train (an `rts1.exe` without one
-  still waits in the menu, `0x4703`).
+  Such a player may get the world without a train (an `rts1.exe` without one
+  still waits in the menu, `0x4703`): only when he asks (the menu's "Войти
+  без поезда", `--mp-no-train`); otherwise he waits for the dispatcher's
+  train as in RTS (since 2026-11-21).
 - **Asking** (`0x45F5`): a player asks to help on a train. The server asks
   its owner (an openRTS player in play) and tells the helper "waiting"; the
   owner takes him or refuses. Not possible: no such train, nobody drives

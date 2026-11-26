@@ -137,15 +137,36 @@ float plane_height(const formats::CabPlane& p, const float z) {
 }
 
 bool walks_on_planes(const CabView& cab) {
-    return !cab.description().planes.empty();
+    return !cab.description().planes.empty() || !cab.description().ledges.empty();
 }
 
 struct Footing {
-    enum class Kind : std::uint8_t { none, plane, door };
+    enum class Kind : std::uint8_t { none, plane, door, ledge };
     Kind kind = Kind::none;
     std::size_t index{};
     float y{};
+    glm::vec3 on{}; // a ledge: the nearest point of it
 };
+
+// The point of a ledge's segments nearest (x, z) across the floor, with its
+// height there; and how far it is.
+std::pair<glm::vec3, float> nearest_on_ledge(const std::vector<formats::TrajectoryPoint>& ledge, const float x, const float z) {
+    glm::vec3 best{0.0f};
+    float nearest = 1e9f;
+    for (std::size_t k = 0; k + 1 < ledge.size(); ++k) {
+        const glm::vec3 a = vec(ledge[k].at), b = vec(ledge[k + 1].at);
+        const glm::vec2 ab{b.x - a.x, b.z - a.z};
+        const float length2 = glm::dot(ab, ab);
+        const float t = length2 > 1e-8f ? std::clamp(glm::dot(glm::vec2{x - a.x, z - a.z}, ab) / length2, 0.0f, 1.0f) : 0.0f;
+        const glm::vec3 p = a + (b - a) * t;
+        const float d = std::hypot(p.x - x, p.z - z);
+        if (d < nearest) {
+            nearest = d;
+            best = p;
+        }
+    }
+    return {best, nearest};
+}
 
 // What holds a step at (x, z): the highest plane there under `below` (RTS:
 // his feet + 0.4 Height), or an open door's plane above every such plane.
@@ -167,6 +188,17 @@ Footing footing(const CabView& cab, const float x, const float z, const float be
         if (!has_plane(door) || !cab.door_open(i) || !holds(door.plane, x, z)) continue;
         const float y = plane_height(door.plane, z);
         if (y > top && y < below) best = {Footing::Kind::door, i, y};
+    }
+    // Then a ledge within 0.3 m, at its height (0x434C58).
+    if (best.kind == Footing::Kind::none) {
+        float nearest = 0.3f;
+        for (std::size_t i = 0; i < sd.ledges.size(); ++i) {
+            const auto [on, d] = nearest_on_ledge(sd.ledges[i], x, z);
+            if (d <= nearest && on.y < below) {
+                nearest = d;
+                best = {Footing::Kind::ledge, i, on.y, on};
+            }
+        }
     }
     return best;
 }
@@ -473,6 +505,9 @@ void Engineer::walk_planes(const CabView& cab, const glm::vec3& step) {
         const auto& p = cab.description().planes[from.index];
         next = {std::clamp(to.x, p.a[0], p.b[0]), 0.0f, std::clamp(to.z, p.b[2], p.a[2])};
         next.y = plane_height(p, next.z);
+    } else if (from.kind == Footing::Kind::ledge) {
+        // Off a ledge's 0.3 m: along it (openRTS; RTS keeps him where he was).
+        next = nearest_on_ledge(cab.description().ledges[from.index], to.x, to.z).first;
     } else if (from.kind == Footing::Kind::none) {
         if (const auto near = nearest_plane_point(cab, to.x, to.z, below, 0.3f)) next = *near;
     }

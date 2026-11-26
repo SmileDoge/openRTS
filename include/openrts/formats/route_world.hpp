@@ -121,6 +121,12 @@ struct WorldObjectPlacement {
     std::string speed_digit_texture;
     std::vector<std::array<float, 4>> speed_signs;
     std::array<float, 3> speed_text_size{};
+    // Pickup (MSTS): PickupType ( type value ), SpeedRange ( min max ) m/s,
+    // PickupCapacity ( stock rate ).
+    std::uint16_t pickup_type{};
+    float pickup_type_value{};
+    std::array<float, 2> pickup_speed_range{};
+    std::array<float, 2> pickup_capacity{};
 };
 
 struct WorldTile {

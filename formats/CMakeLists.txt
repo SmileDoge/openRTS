@@ -1,4 +1,4 @@
-add_library(openrts_formats STATIC
+﻿add_library(openrts_formats STATIC
     src/ace_file.cpp
     src/ace_writer.cpp
     src/block_compression.cpp
@@ -26,7 +26,8 @@ add_library(openrts_formats STATIC
     src/track_database.cpp
     src/track_sections.cpp
     src/car_spawn.cpp
-    src/cargo_file.cpp)
+    src/cargo_file.cpp
+    src/cargo.cpp)
 openrts_configure_target(openrts_formats)
 target_link_libraries(openrts_formats PUBLIC openrts_core)
 target_link_libraries(openrts_formats PRIVATE ZLIB::ZLIB)

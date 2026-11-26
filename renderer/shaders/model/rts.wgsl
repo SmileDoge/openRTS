@@ -78,6 +78,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
+    // An upscaler's texture LOD bias (ModelRenderer::set_texture_lod_bias).
+    draw.lod_bias = draw.lod_bias + frame.temporal.z;
     let uv_in = keep_inside(input.uv);
     let texel = with_snow(textureSampleBias(source_texture, source_sampler, uv_in, draw.lod_bias), uv_in,
                           dpdx(uv_in) * exp2(draw.lod_bias), dpdy(uv_in) * exp2(draw.lod_bias));
@@ -144,6 +146,10 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         if (alpha_to_coverage) {
             color.w = coverage_alpha(color.w, 0.3, alpha_width, alpha_mip);
             if (color.w <= 0.0) {
+                discard;
+            }
+        } else if (frame.temporal.x > 0.5) {
+            if (!stochastic_keep(coverage_alpha(color.w, 0.3, alpha_width, alpha_mip), input.clip.xy)) {
                 discard;
             }
         } else if (!(color.w > 0.3)) {

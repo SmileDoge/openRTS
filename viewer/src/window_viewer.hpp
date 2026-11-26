@@ -79,6 +79,11 @@ struct WindowOptions {
     bool shadow_cache_check = false;
     // --fly-test <m/s> [deg/s]: the free camera flies on, turning (a check).
     float fly_speed = 0.0f;
+    // --vr: the frames in a headset through OpenXR, seated in the cab
+    // (docs/vr.md; openRTS's wgpu-native, on Vulkan).
+    bool vr = false;
+    // --vr-scale: the eyes' resolution over the headset's recommended one.
+    float vr_scale = 1.5f;
     float fly_turn = 0.0f;
     // The window: in a window, borderless or full screen (--window-mode;
     // else the remembered "window_mode"; window_mode.hpp). A capture and the

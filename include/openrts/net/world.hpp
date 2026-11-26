@@ -98,13 +98,27 @@ class RemoteMotion {
 public:
     // A position at `time` (seconds, any steady clock): car 0's front.
     void add(simulation::TrackNetwork& network, double time, const simulation::TrackLocation& front, float speed);
+    // A position its sender timed (openrts_train_motion, 10 a second):
+    // `time` the sender's clock put on ours (NetSession), so the network's
+    // jitter does not move it, and no interval is measured; drawn
+    // set_timed_delay() behind. Switching between timed and untimed
+    // positions starts the samples anew.
+    void add_timed(simulation::TrackNetwork& network, double time, const simulation::TrackLocation& front, float speed,
+                   float acceleration);
+    // The delay for timed positions: their interval and how late they come.
+    void set_timed_delay(double delay) noexcept { timed_delay_ = delay; }
+    // Timed positions come no more (the server's fast positions off): drawn
+    // the RTS positions' delay behind again, the clock eased back to it.
+    void untimed();
+    [[nodiscard]] bool timed() const noexcept { return timed_; }
     // The train stands (0x4606): no extrapolation past the last position.
     void stand(double time);
     // Moves the drawing clock to `now` (each frame). The time drawn trails
     // `now` by delay(); when the delay changes (the interval is measured
     // anew at each package) the clock runs at most 10 % faster or slower
-    // until it trails by the new delay, instead of jumping, which would
-    // jerk the train at each package. More than half a second off: it jumps.
+    // (timed positions: 2 %) until it trails by the new delay, instead of
+    // jumping, which would jerk the train at each package. More than half a
+    // second off: it jumps.
     void tick(double now);
     // Where car 0's front is drawn at `now`: at the ticked clock when `now`
     // is the last tick, else exactly delay() behind.
@@ -114,7 +128,7 @@ public:
     // The delay: one package interval, measured, and a margin for a package
     // that comes a little late.
     static constexpr double margin = 0.25;
-    [[nodiscard]] double delay() const noexcept { return interval_ + margin; }
+    [[nodiscard]] double delay() const noexcept { return timed_ ? timed_delay_ : interval_ + margin; }
     [[nodiscard]] bool empty() const noexcept { return samples_.empty(); }
 
 private:
@@ -122,6 +136,7 @@ private:
         double time{};
         simulation::TrackLocation front;
         float speed{};
+        float acceleration{}; // timed positions only
         // Metres from the previous sample's front, when the track joins
         // them; otherwise the train is put straight there.
         std::optional<double> from_previous;
@@ -132,9 +147,14 @@ private:
 
     std::vector<Sample> samples_; // a few, oldest first
     double interval_ = 1.5;       // RTS players send every 1.5 s
+    bool timed_ = false;          // add_timed's positions
+    double timed_delay_ = 0.2;
     bool standing_ = false;
     bool ticked_ = false;
     double tick_now_{};           // the last tick's `now`
+    double rate_ = 1.0;           // the clock's pace (timed positions)
+    bool easing_ = false;         // between timed and RTS positions: eased to the new delay
+    bool last_timed_ = false;     // the last sample was a timed one
     double drawn_{};              // the time drawn at it
 };
 

@@ -20,7 +20,14 @@ jobs:
   windows:
     runs-on: windows-latest
     env:
-      WGPU_VERSION: v27.0.4.0
+      # openRTS's wgpu-native (github.com/SmileDoge/wgpu-native, branch
+      # openrts: the official one with the D3D11 shared-texture import, for
+      # VR and DLSS; built and released by its own GitHub Actions).
+      WGPU_VERSION: v27.0.4.0-openrts.4
+      WGPU_REPO: SmileDoge/wgpu-native
+      # NVIDIA Streamline (DLSS): its official SDK release; the game loads
+      # its DLLs at run time (LICENSE-EXCEPTIONS.md).
+      STREAMLINE_VERSION: v2.14.16
       DXC_VERSION: v1.9.2609
       DXC_ZIP: dxc_2026_09_29.zip
       # The compiler's cache in GitHub's cache (sccache): a build compiles
@@ -34,15 +41,38 @@ jobs:
         uses: actions/cache@v4
         with:
           path: wgpu-native
-          key: wgpu-native-${{ env.WGPU_VERSION }}-windows-x86_64-msvc-release
+          key: wgpu-native-${{ env.WGPU_REPO }}-${{ env.WGPU_VERSION }}-windows-x86_64-msvc-release
 
       - name: Download wgpu-native
         if: steps.wgpu-cache.outputs.cache-hit != 'true'
         shell: pwsh
         run: |
-          $url = "https://github.com/gfx-rs/wgpu-native/releases/download/$env:WGPU_VERSION/wgpu-windows-x86_64-msvc-release.zip"
+          $url = "https://github.com/$env:WGPU_REPO/releases/download/$env:WGPU_VERSION/wgpu-windows-x86_64-msvc-release.zip"
           Invoke-WebRequest $url -OutFile wgpu.zip
           Expand-Archive wgpu.zip -DestinationPath wgpu-native
+
+      # NVIDIA Streamline: its headers, the four DLLs DLSS needs and their
+      # terms, kept (the SDK's archive is some 276 MB).
+      - name: Cache Streamline
+        id: streamline-cache
+        uses: actions/cache@v4
+        with:
+          path: streamline
+          key: streamline-${{ env.STREAMLINE_VERSION }}
+
+      - name: Download Streamline
+        if: steps.streamline-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          $version = $env:STREAMLINE_VERSION
+          $url = "https://github.com/NVIDIA-RTX/Streamline/releases/download/$version/streamline-sdk-$version.zip"
+          Invoke-WebRequest $url -OutFile streamline.zip
+          Expand-Archive streamline.zip -DestinationPath streamline-sdk
+          New-Item -ItemType Directory -Force streamline/bin/x64 | Out-Null
+          Copy-Item streamline-sdk/include streamline/include -Recurse
+          Copy-Item streamline-sdk/bin/x64/sl.interposer.dll, streamline-sdk/bin/x64/sl.common.dll, streamline-sdk/bin/x64/sl.dlss.dll, streamline-sdk/bin/x64/nvngx_dlss.dll, streamline-sdk/bin/x64/nvngx_dlss.license.txt streamline/bin/x64
+          Copy-Item streamline-sdk/license.txt, streamline-sdk/3rd-party-licenses.md streamline
+          Remove-Item streamline.zip, streamline-sdk -Recurse -Force
 
       # Microsoft's DirectX Shader Compiler (its distributable dxcompiler.dll
       # and dxil.dll): Direct3D 12's shaders in seconds instead of FXC's
@@ -84,7 +114,7 @@ jobs:
           if ($env:GITHUB_REF -like 'refs/tags/v*') { $label = '' }
           elseif ($env:GITHUB_REF -eq 'refs/heads/master' -and $env:GITHUB_EVENT_NAME -eq 'push') { $label = "nightly $commit" }
           else { $label = "ci $commit" }
-          cmake -S . -B build -G "Ninja Multi-Config" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native" "-DOPENRTS_DXC_ROOT=$env:GITHUB_WORKSPACE/dxc" "-DOPENRTS_BUILD_LABEL=$label"
+          cmake -S . -B build -G "Ninja Multi-Config" -DCMAKE_C_COMPILER_LAUNCHER=sccache -DCMAKE_CXX_COMPILER_LAUNCHER=sccache -DOPENRTS_ENABLE_WGPU=ON "-DOPENRTS_WGPU_ROOT=$env:GITHUB_WORKSPACE/wgpu-native" "-DOPENRTS_DXC_ROOT=$env:GITHUB_WORKSPACE/dxc" "-DOPENRTS_STREAMLINE_ROOT=$env:GITHUB_WORKSPACE/streamline" "-DOPENRTS_BUILD_LABEL=$label"
 
       - name: Build
         run: cmake --build build --config Release --parallel
@@ -102,6 +132,8 @@ jobs:
           $out = "openRTS-windows-x64"
           New-Item -ItemType Directory -Force "$out/tools" | Out-Null
           Copy-Item build/game/Release/openrts_game.exe, build/game/Release/openrts-updater.exe, build/viewer/Release/openrts_viewer.exe, build/viewer/Release/wgpu_native.dll, build/viewer/Release/dxcompiler.dll, build/viewer/Release/dxil.dll, build/viewer/Release/openrts-dllhost32.exe, build/server/Release/openrts-server.exe $out
+          # VR (the OpenXR loader) and DLSS (Streamline's DLLs), beside the game.
+          Copy-Item build/viewer/Release/openxr_loader.dll, build/viewer/Release/sl.interposer.dll, build/viewer/Release/sl.common.dll, build/viewer/Release/sl.dlss.dll, build/viewer/Release/nvngx_dlss.dll $out
           Get-ChildItem build/tools -Recurse -Filter *.exe | Where-Object { $_.DirectoryName -like '*\Release' } |
               ForEach-Object { Copy-Item $_.FullName "$out/tools" }
           # Luau samples (the ВР 292) and how to script, for the brake stand.
@@ -117,10 +149,17 @@ jobs:
           # DXC's terms beside its two DLLs.
           New-Item -ItemType Directory -Force "$out/licenses/dxc" | Out-Null
           Copy-Item dxc/LICENSE-MS.txt, dxc/LICENSE-LLVM.txt, dxc/LICENCE-MIT.txt "$out/licenses/dxc"
+          # Streamline's and DLSS's terms beside theirs.
+          New-Item -ItemType Directory -Force "$out/licenses/streamline" | Out-Null
+          Copy-Item streamline/license.txt, streamline/3rd-party-licenses.md, streamline/bin/x64/nvngx_dlss.license.txt "$out/licenses/streamline"
+          # The OpenXR loader's (Apache 2.0).
+          New-Item -ItemType Directory -Force "$out/licenses/openxr" | Out-Null
+          Copy-Item build/_deps/openxr_loader-src/share/doc/openxr/LICENSE "$out/licenses/openxr"
           # openRTS's own packs (the thunder) and their authors.
           Copy-Item build/game/Release/PACKS "$out/PACKS" -Recurse
           Copy-Item packs/thunder/CREDITS.txt "$out/PACKS/openrts-thunder-CREDITS.txt"
           Copy-Item packs/snow/CREDITS.txt "$out/PACKS/openrts-snow-CREDITS.txt"
+          Copy-Item packs/rails/CREDITS.txt "$out/PACKS/openrts-rails-CREDITS.txt"
           # What people miss first: the VC++ runtime and the RTS installation.
           @(
             'openRTS - перед запуском / before you start',

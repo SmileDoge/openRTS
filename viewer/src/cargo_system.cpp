@@ -132,7 +132,7 @@ CargoSystem::CargoSystem(std::shared_ptr<const core::Vfs> vfs, core::VirtualPath
                            static_cast<float>(placement.y - origin.y),
                            static_cast<float>((placement.tile_z - origin.tile_z) * tile_size + placement.z - origin.z)};
                 site.rotation = object.rotation;
-                site.pickup = *found->second->pickup;
+                site.pickup = *found->second->pickup_object;
                 site.stock = std::numeric_limits<double>::quiet_NaN();
                 loaded->sites.push_back(std::move(site));
             }

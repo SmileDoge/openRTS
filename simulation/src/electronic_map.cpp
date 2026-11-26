@@ -198,7 +198,15 @@ std::string ElectronicMap::track_park(const std::string_view name) {
 }
 
 bool ElectronicMap::in_park(const std::string& station, const std::string& park, const std::uint32_t number) const {
-    return park_numbers_.contains({station, park, number}) || (number <= 2 && park_numbers_.contains({station, std::string(), number}));
+    if (park_numbers_.contains({station, park, number})) return true;
+    if (!park_numbers_.contains({station, std::string(), number})) return false;
+    if (number <= 2) return true;
+    // The number only without a park's letter at the station (Околицы's 10
+    // of its freight park, the trains on 1А, 2А: testers 2026-11-26): from
+    // any park; with a lettered one of it too, that park's.
+    for (auto it = park_numbers_.lower_bound({station, std::string(), 0}); it != park_numbers_.end() && std::get<0>(*it) == station; ++it)
+        if (std::get<2>(*it) == number && !std::get<1>(*it).empty()) return false;
+    return true;
 }
 
 ElectronicMap::ElectronicMap(const TrackNetwork& network, const formats::RouteDatabase& database, std::vector<MapSignal> signals) {
@@ -760,6 +768,18 @@ EkTarget ElectronicMap::update(EkState& state, const TrackNetwork& network, cons
             }
         } else if (!state.leaving.empty() || !state.done_at.empty()) {
             leave(state.leaving.empty() ? state.done_at : state.leaving);
+        }
+    }
+    // Past another track's signal of a station with the entered track, that
+    // track's signal still ahead abreast: the ЭК keeps it, by its coordinate
+    // (testers 2026-11-26: Новокузнецк-Пасс., 6 entered, the train on 10:
+    // past Ч10, Ч6 some 300 m on, the КЛУБ took the next signal as it lay).
+    if (number > 2 && !state.leaving.empty() && !state.leaving_own && state.inside.empty() && state.done_at != state.leaving
+        && station_numbers_.contains({state.leaving, number})) {
+        const auto beside = abreast(network, node, offset, forward, state.leaving, number);
+        if (beside.has_target && !beside.passed) {
+            state.inside = state.leaving;
+            state.leaving.clear();
         }
     }
     // The entered track abreast behind: the first block signal along the

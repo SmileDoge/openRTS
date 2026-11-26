@@ -35,10 +35,6 @@ struct TextureVariant {
     bool night = false;
     rts::Season season = rts::Season::summer;
     rts::Weather weather = rts::Weather::clear;
-    // FullBright surfaces lit as ordinary ones (light_fullbright(), the
-    // experimental path): an image drawn only on them keeps its day texture
-    // at night (its NIGHT one is darkened for being unlit).
-    bool fullbright_lit = false;
     bool operator==(const TextureVariant&) const = default;
 };
 
@@ -49,9 +45,8 @@ struct TextureVariant {
 // other non-zero value SNOW. SNOW: in winter, or when it snows outside
 // summer. An image missing there is taken from the folder itself (openRTS).
 [[nodiscard]] std::vector<std::string> alternative_texture_folders(std::uint32_t flags, const TextureVariant& variant);
-// What a model's textures depend on in this world: its folders, and whether
-// its FullBright-only images keep their day textures at night.
-[[nodiscard]] std::vector<std::string> texture_variant_key(std::uint32_t flags, bool fullbright_images, const TextureVariant& variant);
+// What a model's textures depend on in this world: its folders.
+[[nodiscard]] std::vector<std::string> texture_variant_key(std::uint32_t flags, const TextureVariant& variant);
 
 // A map of openRTS's materials (PBR stage 4, docs/pbr-materials.md) as the
 // GPU takes it: RGBA8 with its mip levels. ORM is always occlusion,
@@ -83,9 +78,9 @@ struct StreamedModelAsset {
     // they gave for the variant it was loaded with, and its light sources.
     std::uint32_t alternative_texture{};
     std::vector<std::string> texture_folders;
-    bool fullbright_images = false;       // some image is drawn only on FullBright surfaces
     std::vector<std::string> texture_key; // texture_variant_key it was loaded with
     std::vector<formats::ShapeLight> lights;
+    std::optional<formats::PickupDescription> pickup; // the .sd's ESD_Pickup_Object
     // The light material each primitive state has in the shape itself,
     // before its `<shape>.openrts` (the inspector's override) changed some.
     std::vector<std::int32_t> original_light;
@@ -161,6 +156,17 @@ struct MaterialTangents {
 // entries; their maps decoded and repacked (through `cache`), the tangents
 // for normal maps. Nothing when no file says anything.
 void load_model_materials(const core::Vfs& vfs, StreamedModelAsset& asset, TextureDecodeCache* cache = nullptr);
+
+// A ground texture's material (TERRTEX, docs/pbr-materials.md): the files
+// by its name in MATERIALS, beside it in TERRTEX, then beside its season's
+// variant, over the ground's own (Lambert, terrain_surface_material). Its
+// normal and ORM maps as the GPU takes them (null: none, or they failed).
+struct TerrainMaterialAsset {
+    formats::Material material;
+    bool found = false; // a material file was read
+    std::shared_ptr<const formats::AceDecodeResult> normal, orm;
+};
+[[nodiscard]] TerrainMaterialAsset load_terrain_material(const core::Vfs& vfs, const core::VirtualPath& texture);
 
 // Worker-thread job: parses the shape and decodes every texture it uses.
 // `shape` may be an RTS .repaint: the Shape and ShapeDescription it names,

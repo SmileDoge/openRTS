@@ -53,7 +53,6 @@ struct GraphicsSettings {
     float light_range = 0.0f;       // m; 0: RTS's MaxLightDistance
     float headlight_reach = 1.0f;   // times the .eng's
     float night_ambient = 1.0f;     // the sky's light at night, a factor
-    bool light_fullbright = false;  // FullBright lit as ordinary surfaces
     bool lamp_own_model = true;     // a lamp throws no shadow of its own model
     // Sky and water (openRTS's own, not as in RTS).
     bool native_sky = true;

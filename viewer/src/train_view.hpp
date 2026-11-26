@@ -29,6 +29,7 @@
 #include <openrts/audio/sound_instance.hpp>
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/rolling_stock.hpp>
+#include <openrts/simulation/cargo.hpp>
 #include <openrts/simulation/electronic_map.hpp>
 #include <openrts/simulation/milepost.hpp>
 #include <openrts/simulation/stock_rules.hpp>
@@ -76,6 +77,7 @@
 namespace openrts::viewer {
 
 class CargoSystem;
+class CargoCatalog; // cargo_view.hpp
 
 // A consist from the content on the route: simulated (simulation::Train on a
 // fixed step), driven with the keyboard, drawn with posed bogies and wheels,
@@ -267,6 +269,10 @@ public:
     void set_shape_keeper(std::function<bool(const std::string&)> keeper) { shape_keeper_ = std::move(keeper); }
     // Every diesel exhaust of every train this frame (SmokeView).
     void collect_exhausts(std::vector<ExhaustSource>& out) const;
+    // The lying snow blown up from under the bogies of running cars
+    // (openRTS): `cover` the snow lying (0..1), `level` 1 little, 2 normal;
+    // cars beyond `reach` metres from `eye` none (the frame rate).
+    void collect_snow_dust(std::vector<ExhaustSource>& out, float cover, int level, const glm::vec3& eye) const;
     // A traveller at the end of the train that leads (by the motion, else
     // the reverser), facing away from the train.
     [[nodiscard]] std::optional<simulation::TrackTraveller> ahead() const;
@@ -585,6 +591,10 @@ public:
     // get in by the door as into any cab of his. An error, or empty.
     [[nodiscard]] std::string board(std::uint64_t id, std::size_t car = SIZE_MAX, bool seat = true);
     [[nodiscard]] simulation::Train* find_train(std::uint64_t id);
+    // The time of the trains' last step: steps x simulation::train_step since
+    // the view began (the network's fast positions are timed by it: exactly
+    // as far apart as the steps that moved the train).
+    [[nodiscard]] double step_time() const noexcept { return static_cast<double>(steps_) * simulation::train_step; }
     bool remove_train(std::uint64_t id);
     // A remote train's look as its owner sends it (car_light, car_state):
     // RTS draws another player's train only by these, its own lights'
@@ -805,6 +815,41 @@ public:
     // in clip x / y) is taken, so the one looked at opens, and the cab car's
     // own bogies are offered too.
     void car_menu_key(const glm::vec3& eye, const glm::mat4& view_projection, glm::vec2 aim = {});
+    // How far from the aim the car menu's choice shows (as car_menu_key would
+    // pick it), to weigh against a pickup's (cargo_view.hpp); nullopt none.
+    [[nodiscard]] std::optional<float> car_menu_score(const glm::vec3& eye, const glm::mat4& view_projection, glm::vec2 aim) const;
+    // Cargo (cargo_view.hpp): the catalogue the cars' loading comes from, set
+    // before the trains are made.
+    void set_cargo_catalog(const CargoCatalog* catalog) noexcept { cargo_catalog_ = catalog; }
+    struct CargoCar {
+        std::size_t unit{}, car{};
+        glm::mat4 transform{1.0f}; // its body this frame (at rest on its springs)
+        float speed{};             // |m/s|
+        float length{};
+        simulation::CarCargo* cargo = nullptr;
+        std::string label;         // its place in the train and its file
+        // A locomotive (fuel and sand from pickups): its train, place in it.
+        simulation::Train* train = nullptr;
+        bool engine = false, diesel = false;
+    };
+    // The cars that take cargo, and the locomotives, within `range` of `near`.
+    [[nodiscard]] std::vector<CargoCar> cargo_cars(const glm::vec3& near, float range);
+    [[nodiscard]] simulation::CarCargo* car_cargo(std::size_t unit, std::size_t car);
+    // Where a car's body is this frame (a crane lowering onto it).
+    [[nodiscard]] std::optional<glm::mat4> car_body(std::size_t unit, std::size_t car) const;
+    // A car's load changed here: its mass follows (the physics reads it),
+    // and the network hears of it (take_cargo_changes).
+    void cargo_changed(std::size_t unit, std::size_t car);
+    // The cars whose loads changed here since the last call, at most twice
+    // a second: train id, car, its loads (net_session.cpp, 0x461C).
+    struct CargoChange {
+        std::uint64_t train{};
+        std::size_t car{};
+        std::vector<simulation::CarLoad> loads;
+    };
+    [[nodiscard]] std::vector<CargoChange> take_cargo_changes(double now);
+    // Another computer's car loaded (0x461C): its loads, its mass with them.
+    void apply_remote_cargo(std::uint64_t train, std::size_t car, std::vector<simulation::CarLoad> loads);
     [[nodiscard]] bool car_menu_open() const noexcept { return car_menu_.has_value(); }
     // --capture-menu: pick item `id` of the open menu (done in update());
     // the menu (or the last one) and its car's state as text.
@@ -1066,6 +1111,8 @@ private:
         std::optional<std::int32_t> remove_time;
         double wait_here = 0.0;
         float wait_left = -1.0f;
+        // Cargo loaded at pickups, by car (cargo_view.hpp).
+        std::vector<std::pair<std::size_t, simulation::CarLoad>> cargo;
     };
     std::vector<SavedTrain> pending_game_;
     // Placements: the picked cars by train id (their keys); the preview of a
@@ -1683,6 +1730,7 @@ private:
     // On a car's outside (Engineer::Mode::on_car): that car, by its key.
     std::optional<std::uint32_t> outside_car_;
     double accumulator_{};
+    std::uint64_t steps_{}; // steps taken (step_time)
     bool follow_ = true;
     bool free_after_look_ = false; // look_once_then_free
     std::size_t joints_ = 0, junctions_ = 0, coupler_breaks_ = 0, derailments_ = 0;
@@ -1845,9 +1893,17 @@ private:
         const char* label; // English, translated when shown
     };
     std::optional<CarMenu> car_menu_;
+    const CargoCatalog* cargo_catalog_ = nullptr;
+    std::set<std::pair<std::uint64_t, std::size_t>> cargo_dirty_; // cars whose loads changed here, by train id
+    double cargo_sent_at_ = -1.0;
+    // Cargo models the cars' loads need (submit asks, update loads them).
+    mutable std::vector<core::VirtualPath> cargo_wanted_;
     std::optional<CarMenu> last_car_menu_; // for car_menu_report()
     std::optional<int> car_menu_choice_; // picked in the window, done in update()
     [[nodiscard]] std::vector<CarMenuItem> car_menu_items(const CarMenu& menu) const;
+    // The car menu nearest the aim and its score (car_menu_key's choice).
+    [[nodiscard]] std::optional<std::pair<CarMenu, float>> pick_car_menu(const glm::vec3& eye, const glm::mat4& view_projection,
+                                                                         glm::vec2 aim) const;
     void update_car_menu(const glm::vec3& eye);
     void do_car_menu_item(const CarMenu& menu, int id);
     void draw_car_menu();

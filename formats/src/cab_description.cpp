@@ -789,6 +789,12 @@ CabDescription parse_cab_description(std::string_view bytes) {
         if (const auto* planes = child_or_nested(*geometry, "interiorplanes"))
             for (const auto& node : planes->children)
                 if (node.name == "interiorplane") cab.planes.push_back(plane(&node));
+        if (const auto* ledges = child_or_nested(*geometry, "interiorledges"))
+            for (const auto& node : ledges->children)
+                if (node.name == "interiorledge") {
+                    auto points = trajectory(node.child("trajectory"));
+                    if (points.size() >= 2) cab.ledges.push_back(std::move(points));
+                }
         if (const auto* doors = child_or_nested(*geometry, "interiordoors")) {
             for (const auto& node : doors->children) {
                 if (node.name != "interiordoor") continue;

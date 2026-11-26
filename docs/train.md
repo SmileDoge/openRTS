@@ -136,6 +136,16 @@ In `openrts_simulation`, no rendering.
     measure, which depends on where in the step the ends touch) is at most
     both cars' `DerailBufferForce`; otherwise momentum is exchanged
     inelastically and an overlap is pushed apart by the masses;
+  - the ends meet at the couplers' slack, `r0 / 2` of each end (`r0` of a
+    rigid one), as in RTS, so a coupled joint starts unpressed. Until
+    2026-11-26 the ends met body to body and the joint started pressed by
+    `r0`. Its spring threw the cars apart: testers, the ЧС7 jerked "как
+    будто въехал на 10 км/ч";
+  - couplers that could lock but close slower than their `Velocity` only
+    push the overlap apart by the masses, and the speeds stay (RTS
+    `0x4FB8CC`). An engine pushing on couples once it closes at `Velocity`.
+    Until 2026-11-26 the trains took a common speed, so after a gentle touch
+    they never coupled;
   - the viewer keeps cuts as further trains (not driven); the driver stays
     with the part holding the master engine.
 - Changing ends (`Train::turn_around()`): only while standing. The old rear

@@ -1,4 +1,7 @@
 #include "window_viewer.hpp"
+#include "vr_session.hpp"
+
+#include <glm/gtc/matrix_transform.hpp>
 
 #include <openrts/core/installation.hpp>
 #include <openrts/core/profile.hpp>
@@ -14,6 +17,9 @@
 #include <openrts/renderer/webgpu_texture.hpp>
 #include <openrts/renderer/screen_quads.hpp>
 #include <openrts/renderer/auto_exposure.hpp>
+#include <openrts/renderer/motion_vectors.hpp>
+#include "dlss_upscaler.hpp"
+#include <openrts/renderer/temporal_aa.hpp>
 #include <openrts/renderer/tone_map.hpp>
 #include <openrts/renderer/bloom.hpp>
 #include <openrts/renderer/light_shafts.hpp>
@@ -33,6 +39,7 @@
 #include <sstream>
 #include <string>
 #include <utility>
+#include <set>
 #include <vector>
 
 #include <glm/ext/matrix_clip_space.hpp>
@@ -77,6 +84,79 @@
 
 namespace openrts::viewer {
 namespace {
+
+// The scene's depth and MSAA colour at a size of their own (an upscaler's
+// internal size), and its HDR frame when asked (TAAU; DLSS draws into its
+// shared texture), made again when the size changes.
+struct SceneTargets {
+    WGPUTexture depth = nullptr, msaa = nullptr, colour = nullptr;
+    WGPUTextureView depth_view = nullptr, msaa_view = nullptr, colour_view = nullptr;
+    std::uint32_t width = 0, height = 0, samples = 0;
+    bool with_colour = false;
+
+    SceneTargets() = default;
+    SceneTargets(const SceneTargets&) = delete;
+    SceneTargets& operator=(const SceneTargets&) = delete;
+    ~SceneTargets() { release(); }
+
+    void release() {
+        if (depth_view) wgpuTextureViewRelease(depth_view);
+        if (msaa_view) wgpuTextureViewRelease(msaa_view);
+        if (colour_view) wgpuTextureViewRelease(colour_view);
+        if (depth) wgpuTextureRelease(depth);
+        if (msaa) wgpuTextureRelease(msaa);
+        if (colour) wgpuTextureRelease(colour);
+        depth_view = msaa_view = colour_view = nullptr;
+        depth = msaa = colour = nullptr;
+        width = height = samples = 0;
+        with_colour = false;
+    }
+
+    bool ensure(const WGPUDevice device, const std::uint32_t w, const std::uint32_t h, const std::uint32_t sample_count,
+                const bool colour_too = false) {
+        if (w == width && h == height && sample_count == samples && colour_too == with_colour && depth_view) return true;
+        release();
+        if (colour_too) {
+            const WGPUTextureDescriptor colour_descriptor{
+                .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {w, h, 1},
+                .format = renderer::hdr_format,
+                .mipLevelCount = 1,
+                .sampleCount = 1,
+            };
+            colour = wgpuDeviceCreateTexture(device, &colour_descriptor);
+            if (colour) colour_view = wgpuTextureCreateView(colour, nullptr);
+            with_colour = true;
+        }
+        const WGPUTextureDescriptor depth_descriptor{
+            .usage = WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding,
+            .dimension = WGPUTextureDimension_2D,
+            .size = {w, h, 1},
+            .format = renderer::depth_format,
+            .mipLevelCount = 1,
+            .sampleCount = sample_count,
+        };
+        depth = wgpuDeviceCreateTexture(device, &depth_descriptor);
+        if (depth) depth_view = wgpuTextureCreateView(depth, nullptr);
+        if (sample_count > 1) {
+            const WGPUTextureDescriptor msaa_descriptor{
+                .usage = WGPUTextureUsage_RenderAttachment,
+                .dimension = WGPUTextureDimension_2D,
+                .size = {w, h, 1},
+                .format = renderer::hdr_format,
+                .mipLevelCount = 1,
+                .sampleCount = sample_count,
+            };
+            msaa = wgpuDeviceCreateTexture(device, &msaa_descriptor);
+            if (msaa) msaa_view = wgpuTextureCreateView(msaa, nullptr);
+        }
+        width = w;
+        height = h;
+        samples = sample_count;
+        return depth_view && (sample_count <= 1 || msaa_view) && (!colour_too || colour_view);
+    }
+};
 
 constexpr int initial_width = 1280;
 constexpr int initial_height = 720;
@@ -710,7 +790,6 @@ struct PanelState {
     float night_ambient = 1.0f;  // sky light at night, a factor (experimental renderer)
     float light_range = 0.0f;    // lamps lit within this distance, m; 0: RTS's MaxLightDistance (experimental renderer)
     float headlight_reach = 1.0f; // the trains' headlights reach this many times the .eng's (experimental renderer)
-    bool light_fullbright = false; // FullBright surfaces lit as ordinary ones (experimental renderer)
     bool lamp_own_model = true;    // a scenery lamp throws no shadow of its own model (experimental)
     double loaded_at = -1.0;       // ImGui time the loading screen went (its fade); -1 while it shows
     // Forests keep their trees off tracks and roads (openRTS; RTS plants them
@@ -727,6 +806,10 @@ struct PanelState {
     int compress_textures = 2; // renderer/bc7.hpp: 0 not, 1 in memory, 2 kept on disk
     int texture_size = 0;      // renderer::texture_size_limit: 0 as the files, 1 1024, 2 512, 3 256
     bool screen_supersampling = true;    // the cab screens supersampled (renderer::cab_screens_supersampled)
+    int taa_view = 0;                    // the temporal AA's preview (TemporalAAFrame::view), not kept
+    int taa_scale = 0;                   // TAAU: the scene drawn at taau_scales[] of the window's size, upscaled by the TAA
+    int dlss_mode = 0;                   // DlssMode: NVIDIA DLSS (DLAA or upscaling) instead of the temporal AA (dlss_upscaler.hpp)
+    std::string dlss_error;              // why DLSS is not available (empty: it is, or not tried)
     float cab_near_plane = 0.0f;         // m, seated in a cab (experiment); 0: as anywhere else
     bool cloud_cover_weather = true; // its clouds' cover by the weather, else cloud_cover
     float cloud_cover = 42.0f;       // %
@@ -766,7 +849,6 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.light_range = g.light_range;
     panel.headlight_reach = g.headlight_reach;
     panel.night_ambient = g.night_ambient;
-    panel.light_fullbright = g.light_fullbright;
     panel.lamp_own_model = g.lamp_own_model;
     panel.native_sky = g.native_sky;
     panel.cloud_cover_weather = g.cloud_cover_weather;
@@ -801,7 +883,6 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.light_range = panel.light_range;
     g.headlight_reach = panel.headlight_reach;
     g.night_ambient = panel.night_ambient;
-    g.light_fullbright = panel.light_fullbright;
     g.lamp_own_model = panel.lamp_own_model;
     g.native_sky = panel.native_sky;
     g.cloud_cover_weather = panel.cloud_cover_weather;
@@ -1636,6 +1717,36 @@ public:
             }
             if (ImGui::Checkbox(tr("Aerial perspective"), &panel.effects.aerial_perspective))
                 remember("effect_aerial", panel.effects.aerial_perspective ? "1" : "0");
+            if (ImGui::Checkbox(tr("Temporal anti-aliasing (TAA): smooth edges, wires and foliage from frame to frame, over the MSAA (HDR)"),
+                                &panel.effects.temporal_aa))
+                remember("effect_taa", panel.effects.temporal_aa ? "1" : "0");
+            if (panel.effects.temporal_aa) {
+                ImGui::Indent();
+                const char* views[] = {tr("TAA shows: the result"), tr("TAA shows: the motion (red, green), the trains (blue)"),
+                                       tr("TAA shows: the depth it reads (trains blue)"), tr("TAA shows: the history alone"),
+                                       tr("TAA shows: the history let go (white)")};
+                ImGui::SetNextItemWidth(420.0f);
+                ImGui::Combo("##taa_view", &panel.taa_view, views, 5);
+                const char* scales[] = {tr("Render resolution: 100 % (no upscaling)"), tr("Render resolution: 77 % (TAAU)"),
+                                        tr("Render resolution: 67 % (TAAU)"), tr("Render resolution: 58 % (TAAU)"),
+                                        tr("Render resolution: 50 % (TAAU)")};
+                ImGui::SetNextItemWidth(420.0f);
+                if (ImGui::Combo("##taa_scale", &panel.taa_scale, scales, 5)) remember("effect_taa_scale", std::to_string(panel.taa_scale));
+                ImGui::Unindent();
+            }
+            {
+                const char* modes[] = {tr("NVIDIA DLSS: off"), tr("NVIDIA DLSS: DLAA (full resolution)"),
+                                       tr("NVIDIA DLSS: Quality (67 %)"), tr("NVIDIA DLSS: Balanced (58 %)"),
+                                       tr("NVIDIA DLSS: Performance (50 %)"), tr("NVIDIA DLSS: Ultra Performance (33 %)")};
+                ImGui::SetNextItemWidth(320.0f);
+                if (ImGui::Combo(tr("instead of TAA (RTX video cards; HDR)"), &panel.dlss_mode, modes, 6))
+                    remember("effect_dlss", std::to_string(panel.dlss_mode));
+            }
+            if (panel.dlss_mode != 0 && !panel.dlss_error.empty()) {
+                ImGui::Indent();
+                ImGui::TextWrapped(tr("DLSS is not available: %s"), panel.dlss_error.c_str());
+                ImGui::Unindent();
+            }
             if (ImGui::Checkbox(tr("Bloom: light spreads round lamps, signals and the sun (HDR)"), &panel.effects.bloom))
                 remember("effect_bloom", panel.effects.bloom ? "1" : "0");
             if (panel.effects.bloom) {
@@ -1676,12 +1787,8 @@ public:
             if (slider_with_input(tr("Light in the cab by day"), &panel.effects.indoor_light, 0.0f, 1.0f, "%.2f", "%.2f"))
                 remember("indoor_light", std::to_string(panel.effects.indoor_light));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("%s", tr("The sun through the windows and the sky's light thrown about the cab or salon you are in, which the shadows alone leave dark. 0: none."));
-            if (ImGui::Checkbox(tr("Light FullBright as ordinary surfaces"), &panel.light_fullbright))
-                remember("light_fullbright", panel.light_fullbright ? "1" : "0");
             if (ImGui::Checkbox(tr("A lamp throws no shadow of its own model"), &panel.lamp_own_model))
                 remember("lamp_own_model", panel.lamp_own_model ? "1" : "0");
-            if (ImGui::IsItemHovered())
-                ImGui::SetTooltip("%s", tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
             ImGui::EndDisabled();
         }
 
@@ -2097,6 +2204,7 @@ struct CameraInput {
     bool scene_takes_scroll = false;
     std::array<bool, 14> train_keys_down{};
     std::vector<KeyEvent> key_events; // since the last scene_input()
+    std::set<int> keys_held;          // pressed by the events, not yet released by them
     bool keyboard_captured = false;   // the scene takes the keyboard (cab keys)
     bool on_foot = false;             // the engineer stands or walks (not in a chair): W A S D walk
     bool action_at_hand = false;      // on foot, something for Enter where he stands (E does it, key_layout.hpp)
@@ -2367,7 +2475,7 @@ struct FovReturn {
     return false;
 }
 
-// Polled keyboard handling: F toggles fly/orbit on key press, WASD/QE move.
+// Polled keyboard handling: WASD/QE move the free camera.
 // The keyboard is ImGui's while one of its text boxes takes it (the console's
 // message, a filter): the keys polled here stay out of the game then, as the
 // key callback's do (on_key).
@@ -2384,18 +2492,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
     auto& camera = *input.camera;
 
-    // F is a cab key when the cab has the keyboard; Ctrl+F is the scene's
-    // (SceneInput::free_camera).
-    const bool ctrl = down(GLFW_KEY_LEFT_CONTROL) || down(GLFW_KEY_RIGHT_CONTROL);
-    const bool toggle = down(GLFW_KEY_F) && !ctrl && !input.keyboard_captured;
-    if (toggle && !input.toggle_key_down) {
-        camera.toggle_fly();
-        if (!camera.fly) {
-            input.fly_looking = false;
-            update_cursor_capture(window, input); // held still in the lock
-        }
-    }
-    input.toggle_key_down = toggle;
+    // F alone no longer turns the free camera into the orbit (2026-11-25:
+    // not wanted any more); Ctrl+F is the scene's (SceneInput::free_camera).
     if (input.keyboard_captured) return; // the cab has the letter keys
     if (input.on_foot && wasd_walking()) return; // W A S D walk the engineer
 
@@ -2417,6 +2515,22 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
 [[nodiscard]] SceneInput scene_input(GLFWwindow* window, CameraInput& input) {
     const bool typing = imgui_has_keyboard();
     const auto down = [window, typing](const int key) { return !typing && glfwGetKey(window, key) == GLFW_PRESS; };
+    // A key the events left down that is up now (its release lost: taken by
+    // a window, or two keys at once on some keyboards) is let go, as RTS
+    // reads the keys' state each frame: a whistle and a horn pressed
+    // together stuck on (testers 2026-11-26).
+    for (const auto& e : input.key_events) {
+        if (e.down) input.keys_held.insert(e.key);
+        else input.keys_held.erase(e.key);
+    }
+    for (auto it = input.keys_held.begin(); it != input.keys_held.end();) {
+        if (glfwGetKey(window, *it) == GLFW_RELEASE) {
+            input.key_events.push_back({.key = *it, .down = false});
+            it = input.keys_held.erase(it);
+        } else {
+            ++it;
+        }
+    }
     const auto pressed = [&](const int key, bool& was_down) {
         const bool now = down(key);
         const bool edge = now && !was_down;
@@ -2454,6 +2568,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     // Num3, Num2 and Ctrl+Num5).
     const bool grave = !rts_keys && pressed(GLFW_KEY_GRAVE_ACCENT, input.kp3_down);
     const bool kp3 = rts_keys ? pressed(GLFW_KEY_KP_3, input.kp3_down) : grave && !shift && !ctrl;
+    // Ctrl+Num3 (Alt+`): a pickup's unloading (rts1.exe 0x4121BC).
+    const bool unload_key = rts_keys ? kp3 && ctrl : grave && alt && !shift && !ctrl;
     const bool kp2 = rts_keys ? pressed(GLFW_KEY_KP_2, input.kp2_down) : grave && shift && !ctrl;
     const bool kp5 = rts_keys && pressed(GLFW_KEY_KP_5, input.kp5_down);
     const bool tape = rts_keys ? kp5 && ctrl : grave && ctrl;
@@ -2488,7 +2604,8 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const auto engineer = [&](SceneInput& in) {
         in.cab_window = kp0;
         in.head_out = kp1;
-        in.car_menu = kp3 || (use && !shift && !input.action_at_hand);
+        in.car_menu = kp3 || unload_key || (use && !shift && !input.action_at_hand);
+        in.car_menu_unload = unload_key;
         in.flashlight = kp2;
         in.clock = kp4;
         in.tape = tape;
@@ -2699,6 +2816,21 @@ float seated_cab_near = 0.0f;
 
 [[nodiscard]] glm::mat4 projection(const ViewerCamera& camera, const float aspect, const float vertical_fov) {
     return renderer::reversed_z_perspective(vertical_fov, aspect, near_plane_of(camera), camera.far_plane());
+}
+
+// An eye's projection (VR): its field's tangents, reversed Z as
+// renderer::reversed_z_perspective.
+[[nodiscard]] glm::mat4 eye_projection(const float left, const float right, const float up, const float down, const float near_plane,
+                                       const float far_plane) {
+    glm::mat4 m{0.0f};
+    m[0][0] = 2.0f / (right - left);
+    m[1][1] = 2.0f / (up - down);
+    m[2][0] = (right + left) / (right - left);
+    m[2][1] = (up + down) / (up - down);
+    m[2][2] = near_plane / (far_plane - near_plane);
+    m[2][3] = -1.0f;
+    m[3][2] = near_plane * far_plane / (far_plane - near_plane);
+    return m;
 }
 
 struct FrameTargets {
@@ -3026,6 +3158,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (!backend) {
         if (const auto key = remembered("backend")) backend = renderer::parse_graphics_backend(*key);
     }
+    // VR: the eyes' textures are shared with Vulkan only.
+    if (options.vr) backend = renderer::GraphicsBackend::vulkan;
     auto context = renderer::create_wgpu_device(backend.value_or(renderer::GraphicsBackend::automatic));
     if (!context.ok()) {
         std::cerr << "WebGPU device failed: " << context.error << '\n';
@@ -3092,6 +3226,17 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     std::cout << ", anisotropy " << renderer::max_anisotropy << "x" << std::endl;
     PresentationSurface surface(context.context, window.get(), capture);
     if (!surface.ok()) return exit_code::surface_failed;
+#ifdef OPENRTS_HAS_XR
+    std::unique_ptr<VrSession> vr;
+    if (options.vr) {
+        std::string error;
+        vr = VrSession::start(context.context.instance(), device, surface.format(), options.vr_scale, error);
+        if (!vr) std::cerr << "VR off: " << error << std::endl;
+    }
+    bool vr_recenter_down = false;
+#else
+    if (options.vr) std::cerr << "VR off: this build has no OpenXR (openRTS's wgpu-native, docs/vr.md)" << std::endl;
+#endif
 
     // The interface language chosen last time (Russian by default).
     set_ui_language(remembered("language").value_or("ru") == "en" ? UiLanguage::english : UiLanguage::russian);
@@ -3165,6 +3310,11 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer::ModelRenderer renderer(device, surface.scene_format());
     std::cout << "graphics: the models' shaders ready in " << seconds_since(shaders_started) << " s" << std::endl;
     std::unique_ptr<renderer::ToneMapper> tone;
+    std::unique_ptr<renderer::TemporalAA> temporal_aa;
+    std::unique_ptr<renderer::MotionVectors> motion_vectors; // the jitter and the screen's motion (TAA, the upscalers)
+    std::unique_ptr<DlssUpscaler> dlss;                    // made when DLSS is first chosen
+    SceneTargets dlss_targets;                             // the depth and MSAA at DLSS's internal size
+    SceneTargets taau_targets;                             // the frame, depth and MSAA at TAAU's internal size
     std::unique_ptr<renderer::AutoExposure> auto_exposure; // made on first use
     bool auto_exposure_was_on = false;
     if (renderer::scene_hdr()) tone = std::make_unique<renderer::ToneMapper>(device, surface.format());
@@ -3395,6 +3545,25 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         panel.effects.aerial_perspective = has("aerial");
         panel.effects.show_occlusion = has("show-ao");
         panel.effects.light_shafts = has("shafts");
+        panel.effects.temporal_aa = has("taa");
+        if (const auto at = list.find("taau"); at != std::string::npos && at + 4 < list.size() && list[at + 4] >= '0' && list[at + 4] <= '4')
+            panel.taa_scale = list[at + 4] - '0';
+        if (const auto at = list.find("taa-view"); at != std::string::npos && at + 8 < list.size())
+            panel.taa_view = std::clamp(list[at + 8] - '0', 0, 4);
+    }
+    if (const auto scale = remembered("effect_taa_scale"); scale && !options.effects) panel.taa_scale = std::clamp(std::atoi(scale->c_str()), 0, 4);
+    // DLSS's mode (effect_dlaa "1": DLAA, as v0.43 kept it).
+    if (const auto mode = remembered("effect_dlss")) {
+        panel.dlss_mode = std::clamp(std::atoi(mode->c_str()), 0, 5);
+    } else if (remembered("effect_dlaa").value_or("0") == "1") {
+        panel.dlss_mode = 1;
+    }
+    if (options.effects) {
+        // --effects ...,dlaa or dlss1..dlss5 (DlssMode).
+        const auto& list = *options.effects;
+        panel.dlss_mode = list.find("dlaa") != std::string::npos ? 1 : 0;
+        if (const auto at = list.find("dlss"); at != std::string::npos && at + 4 < list.size() && list[at + 4] >= '0' && list[at + 4] <= '5')
+            panel.dlss_mode = list[at + 4] - '0';
     }
     // The field of view: the panel's, else RTS's (config.ini FOV, vertical, degrees).
     // Num* brings back RTS's (else the default).
@@ -3436,7 +3605,14 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         const bool background = !options.fps_background
                                 && (glfwGetWindowAttrib(window.get(), GLFW_FOCUSED) == GLFW_FALSE
                                     || glfwGetWindowAttrib(window.get(), GLFW_ICONIFIED) == GLFW_TRUE);
-        limiter.set(frame_limit(panel.fps_limit, !loading.done, background));
+        // VR: the headset paces the frames (xrWaitFrame), never the limit.
+        const bool vr_paced =
+#ifdef OPENRTS_HAS_XR
+            vr != nullptr;
+#else
+            false;
+#endif
+        limiter.set(vr_paced ? 0 : frame_limit(panel.fps_limit, !loading.done, background));
         limiter.wait();
         stage_clock.start();
         // The mouse lock: the wheel's click switches it; in force but over
@@ -3567,7 +3743,6 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::night_ambient_scale() = panel.night_ambient;
         renderer::light_range() = panel.light_range;
         renderer::headlight_reach() = panel.headlight_reach;
-        renderer::light_fullbright() = panel.light_fullbright;
         renderer::night_textures() = panel.night_textures;
         renderer::smooth_train_textures() = panel.smooth_train_textures;
         renderer::texture_compression() = static_cast<renderer::TextureCompression>(std::clamp(panel.compress_textures, 0, 2));
@@ -3796,6 +3971,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                          ? renderer::FrameEncoding::linear
                                          : renderer::FrameEncoding::gamma;
         scene.update(renderer, camera, scene_clock, frame_input);
+#ifdef OPENRTS_HAS_XR
+        // VR: the head is the player's own; the game's nods and tilts make sick.
+        if (vr) camera.head_nod = camera.head_tilt = 0.0f;
+#endif
         discord.update(scene);
         if (!scene.loading().done) loading_camera = camera;
         if (capture && options.capture_camera) {
@@ -3860,21 +4039,152 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stage_clock.mark(FrameStage::wait, stages);
         if (!frame_texture) continue;
         pass_timer.begin_frame();
-        const auto frame_view = wgpuTextureCreateView(frame_texture, nullptr);
-        const auto encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
-        const bool hdr = tone && surface.hdr_view();
-
-        const auto aspect = static_cast<float>(width) / static_cast<float>(height);
+        const auto window_view = wgpuTextureCreateView(frame_texture, nullptr);
+        const int window_width = width, window_height = height;
         // What the frame is drawn with, for the wheel on a cab's screen: the
         // eye fits the screen into the frame with it (cab_screen_focus).
+        const auto aspect = static_cast<float>(window_width) / static_cast<float>(window_height);
         camera.aspect = aspect;
         camera.frame_fov = camera.vertical_fov(glm::radians(panel.fov));
         seated_cab_near = panel.cab_near_plane > 0.0f && scene.seated_in_cab() ? panel.cab_near_plane : 0.0f;
+        // VR (docs/vr.md): the frame once per eye into the headset, the
+        // window then shows the left eye and the panels.
+#ifdef OPENRTS_HAS_XR
+        if (vr) {
+            // Insert or the keypad's point (the controller's button: VrSession).
+            const bool keys = glfwGetKey(window.get(), GLFW_KEY_INSERT) == GLFW_PRESS || glfwGetKey(window.get(), GLFW_KEY_KP_DECIMAL) == GLFW_PRESS;
+            if (keys && !vr_recenter_down) vr->recenter();
+            vr_recenter_down = keys;
+        }
+        const bool vr_frame = vr && !capture && vr->begin_frame();
+        const std::size_t view_count = vr_frame ? vr->eye_count() : 1;
+#else
+        constexpr bool vr_frame = false;
+        constexpr std::size_t view_count = 1;
+#endif
+        WGPURenderPassEncoder pass = nullptr;
+        WGPUCommandEncoder encoder = nullptr;
+        WGPUCommandBuffer commands = nullptr;
+        bool parallel = false;
+        bool depth_copy = false;
+        bool hdr = false;
+        FrameCapture shot, depth_shot, hdr_shot, shafts_shot;
+        bool hdr_linear = false;
+        for (std::size_t view_index = 0; view_index < view_count; ++view_index) {
+        if (encoder) {
+            // The eye before: its own submit (the frame's uniforms are one set).
+            wgpuRenderPassEncoderRelease(pass);
+            wgpuCommandEncoderRelease(encoder);
+        }
+        encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+        WGPUTextureView frame_view = window_view;
+        WGPUTextureView hdr_view = surface.hdr_view();
+        WGPUTextureView depth_view = surface.depth_view();
+        WGPUTextureView msaa_view = surface.msaa_view();
+        glm::mat4 view_matrix = camera.view();
+        glm::vec3 view_eye = camera.eye();
+        float vertical_fov = camera.vertical_fov(glm::radians(panel.fov));
+        float aspect = static_cast<float>(window_width) / static_cast<float>(window_height);
+        glm::mat4 projection_matrix = projection(camera, aspect, vertical_fov);
+        width = window_width;
+        height = window_height;
+#ifdef OPENRTS_HAS_XR
+        if (vr_frame) {
+            const auto& e = vr->eye(view_index);
+            frame_view = e.colour;
+            hdr_view = e.hdr;
+            depth_view = e.depth;
+            msaa_view = e.msaa;
+            width = static_cast<int>(e.width);
+            height = static_cast<int>(e.height);
+            // The head's pose in the seat's view space, after MSTS's mirrored
+            // X (camera.view() is mirror * look-at): the head turns and the
+            // eyes sit as the player's, on the screen's side of the mirror.
+            view_matrix = glm::inverse(e.pose) * camera.view();
+            view_eye = glm::vec3(glm::inverse(view_matrix)[3]);
+            projection_matrix = eye_projection(e.left, e.right, e.up, e.down, near_plane_of(camera), camera.far_plane());
+            // A symmetric field round it for the shadows' fit and the occlusion.
+            const float half_up = (std::max)(e.up, -e.down), half_side = (std::max)(e.right, -e.left);
+            vertical_fov = 2.0f * std::atan(half_up);
+            aspect = half_side / half_up;
+        }
+#endif
+        hdr = tone && hdr_view;
+        // The temporal AA (the experimental path's HDR frame, not in VR):
+        // the frame drawn a sub-pixel apart each time.
+        const glm::mat4 steady_projection = projection_matrix;
+        const bool experimental_frame = hdr && !vr_frame && renderer.shading_path() == renderer::ShadingPath::experimental;
+        // NVIDIA DLSS (DLAA, or upscaling from a smaller internal size) in
+        // place of the temporal AA when it works: the scene drawn at its
+        // size straight into the textures DLSS shares (the frame, the
+        // motion), its output at the window's.
+        if (experimental_frame && panel.dlss_mode != 0 && !dlss) {
+            dlss = std::make_unique<DlssUpscaler>(device, context.context.adapter());
+            panel.dlss_error = dlss->available() ? std::string() : dlss->error();
+            std::cout << "DLSS: " << (dlss->available() ? std::string("available") : dlss->error()) << std::endl;
+        }
+        const int output_width = width, output_height = height;
+        bool dlss_frame = experimental_frame && panel.dlss_mode != 0 && dlss && dlss->available()
+                          && dlss->prepare(static_cast<DlssMode>(panel.dlss_mode), static_cast<std::uint32_t>(width),
+                                           static_cast<std::uint32_t>(height));
+        if (dlss_frame) {
+            const auto w = dlss->render_width(), h = dlss->render_height();
+            if (dlss_targets.ensure(device, w, h, renderer::render_sample_count())) {
+                width = static_cast<int>(w);
+                height = static_cast<int>(h);
+                hdr_view = dlss->colour_view();
+                depth_view = dlss_targets.depth_view;
+                msaa_view = dlss_targets.msaa_view;
+            } else {
+                dlss_frame = false;
+            }
+        }
+        const bool taa_frame = experimental_frame && panel.effects.temporal_aa && !dlss_frame;
+        // TAAU: the scene at a part of the window's size in a frame of its
+        // own, the TAA upscaling it into its history at the window's.
+        if (taa_frame && panel.taa_scale > 0) {
+            static constexpr float taau_scales[] = {1.0f, 0.77f, 0.67f, 0.58f, 0.5f};
+            const float scale = taau_scales[std::clamp(panel.taa_scale, 0, 4)];
+            const auto w = static_cast<std::uint32_t>((std::max)(1.0f, std::round(static_cast<float>(width) * scale)));
+            const auto h = static_cast<std::uint32_t>((std::max)(1.0f, std::round(static_cast<float>(height) * scale)));
+            if (taau_targets.ensure(device, w, h, renderer::render_sample_count(), true)) {
+                width = static_cast<int>(w);
+                height = static_cast<int>(h);
+                hdr_view = taau_targets.colour_view;
+                depth_view = taau_targets.depth_view;
+                msaa_view = taau_targets.msaa_view;
+            }
+        }
+        const glm::vec2 frame_jitter = motion_vectors ? motion_vectors->jitter() : glm::vec2{0.0f};
+        if (taa_frame || dlss_frame) {
+            if (!temporal_aa) temporal_aa = std::make_unique<renderer::TemporalAA>(device);
+            if (!motion_vectors) motion_vectors = std::make_unique<renderer::MotionVectors>(device);
+            // The jitter's phases: 8, times the upscaling ratio squared (DLSS's guide).
+            const float ratio = static_cast<float>(output_width) / static_cast<float>((std::max)(width, 1));
+            motion_vectors->set_jitter_phases(static_cast<std::uint32_t>(std::ceil(8.0f * ratio * ratio)));
+            if (temporal_aa->ready() && motion_vectors->ready())
+                projection_matrix =
+                    motion_vectors->jittered(projection_matrix, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+        } else {
+            if (temporal_aa) temporal_aa->reset();
+            if (motion_vectors) motion_vectors->reset();
+        }
+        // Without MSAA the alpha test's edge by noise, which the temporal AA
+        // blends into a soft edge (alpha to coverage under MSAA).
+        {
+            static std::uint32_t stochastic_frame = 0;
+            renderer.set_stochastic_alpha((taa_frame || dlss_frame) && renderer::render_sample_count() <= 1, ++stochastic_frame);
+            // Upscaling: the textures' detail as at the window's size.
+            renderer.set_texture_lod_bias(width < output_width
+                                              ? std::log2(static_cast<float>(width) / static_cast<float>(output_width))
+                                              : 0.0f);
+        }
         FrameView frame{
-            .eye = camera.eye(),
-            .view = camera.view(),
-            .projection = projection(camera, aspect, camera.vertical_fov(glm::radians(panel.fov))),
-            .vertical_fov = camera.vertical_fov(glm::radians(panel.fov)),
+            .eye = view_eye,
+            .view = view_matrix,
+            .projection = projection_matrix,
+            .steady_projection = steady_projection,
+            .vertical_fov = vertical_fov,
             .view_zoom = camera.view_zoom,
             .aspect = aspect,
             .viewport_height = static_cast<float>(height),
@@ -3887,12 +4197,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // The lamps' beams in snow or rain go through the light shafts'
         // pass (its depth pre-pass wanted too), the sun's shafts or not.
         const auto beams = scene.light_shaft_beams();
-        if (beams.any()) {
+        {
             auto settings = panel.effects;
-            settings.light_shafts = true;
+            if (beams.any()) settings.light_shafts = true;
+            // DLAA reads the camera's depth and the trains' as the TAA does.
+            if (dlss_frame) settings.temporal_aa = true;
             effects.set_settings(settings);
-        } else {
-            effects.set_settings(panel.effects);
         }
         effects.begin_frame({.view = frame.view,
                              .projection = frame.projection,
@@ -3938,7 +4248,8 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                                                                   const glm::mat4& view_projection, const renderer::DepthPassKind kind,
                                                                   const renderer::DepthCasters casters) {
             // The terrain stays where it is.
-            if (casters != renderer::DepthCasters::moving) scene.draw_depth(depth_pass, slot, view_projection, kind);
+            if (casters == renderer::DepthCasters::all || casters == renderer::DepthCasters::still)
+                scene.draw_depth(depth_pass, slot, view_projection, kind);
             renderer.render_depth(depth_pass, slot, view_projection, kind,
                                   renderer::lamp_skips_own_model() ? effects.depth_slot_owner(slot) : 0u, casters);
         };
@@ -3948,7 +4259,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         // In parallel the workers record and finish a command buffer each
         // (the cascades, the pre-pass) while this thread records the main pass.
         renderer.set_multi_draw(panel.multi_draw);
-        const bool parallel = panel.parallel_recording && experimental;
+        parallel = panel.parallel_recording && experimental;
         if (parallel) {
             effects.record_parallel(device, recording_pool, depth_draw);
         } else {
@@ -3957,12 +4268,12 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         effects.record_check(encoder);
         scene.before_main_pass(encoder, frame);
         stage_clock.mark(FrameStage::effects, stages);
-        const auto pass =
+        pass =
             begin_main_pass(encoder,
-                            {.color = hdr ? surface.hdr_view() : frame_view,
-                             .depth = surface.depth_view(),
-                             .msaa = surface.msaa_view(),
-                             .keep_depth = reshade_depth},
+                            {.color = hdr ? hdr_view : frame_view,
+                             .depth = depth_view,
+                             .msaa = msaa_view,
+                             .keep_depth = reshade_depth && !vr_frame},
                             renderer::frame_linear()
                                 ? glm::vec4{glm::pow((glm::max)(glm::vec3{environment.clear_colour}, glm::vec3{0.0f}), glm::vec3{2.2f}),
                                             environment.clear_colour.a}
@@ -3976,18 +4287,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         stage_clock.mark(FrameStage::models, stages);
         scene.draw_foreground(pass, frame);
 #ifdef OPENRTS_HAS_IMGUI
-        if (!hdr && (!capture || options.capture_ui)) overlay.render(pass);
+        if (!hdr && !vr_frame && (!capture || options.capture_ui)) overlay.render(pass);
 #endif
         stage_clock.mark(FrameStage::foreground, stages);
         wgpuRenderPassEncoderEnd(pass);
         stage_clock.mark(FrameStage::end, stages);
         // The depth for ReShade: a single-sample copy of a multisampled one
         // (a single-sample depth is kept as it is, keep_depth above).
-        const bool depth_copy = reshade_depth && renderer::render_sample_count() > 1;
+        depth_copy = reshade_depth && !vr_frame && renderer::render_sample_count() > 1;
         if (depth_copy) {
             // Made on first use: its pipeline does not exist on OpenGL.
             if (!depth_export) depth_export = std::make_unique<renderer::DepthExport>(device);
-            depth_export->record(encoder, surface.depth_view(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
+            depth_export->record(encoder, depth_view, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
         }
         if (hdr) {
             // The tone curve to the screen, then the panels over it.
@@ -4022,7 +4333,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                             wgpuRenderPassEncoderRelease(source);
                         }
                     }
-                    bloom_view = bloom->build(encoder, surface.hdr_view(), w, h,
+                    bloom_view = bloom->build(encoder, hdr_view, w, h,
                                               {.textures = panel.effects.bloom_textures, .night = panel.night, .linear = renderer::frame_linear()});
                     settings.bloom = 0.15f * panel.effects.bloom_strength;
                 }
@@ -4057,7 +4368,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     // From the frame's light at once: turned on, or still loading
                     // (no adapting from the loading screen's dark).
                     if (!auto_exposure_was_on || !loading.done) auto_exposure->reset();
-                    auto_exposure->measure(encoder, surface.hdr_view(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
+                    auto_exposure->measure(encoder, hdr_view, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height),
                                            renderer::frame_linear(), elapsed, panel.auto_exposure);
                     exposure_state = auto_exposure->state();
                     settings.auto_exposure = true;
@@ -4066,8 +4377,72 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                 }
             }
             auto_exposure_was_on = exposure_state != nullptr;
-            tone->render(encoder, surface.hdr_view(), frame_view, settings, bloom_view, shafts_view, exposure_state);
+            // The temporal AA over the resolved frame, before the tone curve.
+            WGPUTextureView toned = hdr_view;
+            if (taa_frame && temporal_aa && temporal_aa->ready() && motion_vectors && motion_vectors->ready()) {
+                // The screen's motion since the last frame, then the blend.
+                const auto motion = motion_vectors->compute(encoder, effects.camera_depth(), effects.moving_depth(),
+                                                            {.view_projection = frame.projection * frame.view,
+                                                             .steady_view_projection = steady_projection * frame.view,
+                                                             .eye = frame.eye,
+                                                             .train = scene.player_train_place(),
+                                                             .width = static_cast<std::uint32_t>(width),
+                                                             .height = static_cast<std::uint32_t>(height)});
+                toned = temporal_aa->resolve(encoder, hdr_view, effects.camera_depth(), motion,
+                                             {.width = static_cast<std::uint32_t>(output_width),
+                                              .height = static_cast<std::uint32_t>(output_height),
+                                              .input_width = static_cast<std::uint32_t>(width),
+                                              .input_height = static_cast<std::uint32_t>(height),
+                                              .jitter = frame_jitter,
+                                              .view = panel.taa_view});
+            }
+            // DLSS: the motion into its shared texture and the depth into
+            // its own (the frame is drawn there already), the submission,
+            // DLSS on its D3D11 device in step with it, then the tone curve
+            // from its output (the window's size) in a new encoder.
+            if (dlss_frame && motion_vectors && motion_vectors->ready()) {
+                const bool reset = !motion_vectors->has_last();
+                const auto last = motion_vectors->last_view_projection();
+                const auto motion = motion_vectors->compute(encoder, effects.camera_depth(), effects.moving_depth(),
+                                                            {.view_projection = frame.projection * frame.view,
+                                                             .steady_view_projection = steady_projection * frame.view,
+                                                             .eye = frame.eye,
+                                                             .train = scene.player_train_place(),
+                                                             .width = static_cast<std::uint32_t>(width),
+                                                             .height = static_cast<std::uint32_t>(height)},
+                                                            dlss->motion_view());
+                if (motion && dlss->record_inputs(encoder, effects.camera_depth())) {
+                    const auto inputs = wgpuCommandEncoderFinish(encoder, nullptr);
+                    auto early = parallel ? effects.finish_parallel(recording_pool) : std::vector<WGPUCommandBuffer>{};
+                    early.push_back(inputs);
+                    const auto queue = wgpuDeviceGetQueue(device);
+                    const WGPUSubmissionIndex index = wgpuQueueSubmitForIndex(queue, early.size(), early.data());
+                    for (const auto buffer : early) wgpuCommandBufferRelease(buffer);
+                    parallel = false;
+                    wgpuCommandEncoderRelease(encoder);
+                    encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+                    // DLSS in step with this submission (on the GPU on D3D12).
+                    const auto output = dlss->evaluate({.projection = steady_projection,
+                                                            .view = frame.view,
+                                                            .previous_view_projection = last,
+                                                            .jitter = frame_jitter,
+                                                            .eye = frame.eye,
+                                                            .near_plane = near_plane_of(camera),
+                                                            .far_plane = camera.far_plane(),
+                                                            .vertical_fov = frame.vertical_fov,
+                                                            .aspect = frame.aspect,
+                                                            .reset = reset},
+                                                       queue, index);
+                    wgpuQueueRelease(queue);
+                    if (output) toned = output;
+                }
+            }
+            tone->render(encoder, toned, frame_view, settings, bloom_view, shafts_view, exposure_state);
+            // The window's size again for the panels and the captures.
+            width = output_width;
+            height = output_height;
 #ifdef OPENRTS_HAS_IMGUI
+            if (!vr_frame) {
             const WGPURenderPassColorAttachment ui_colour{
                 .view = frame_view,
                 .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED,
@@ -4081,6 +4456,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             if (!capture || options.capture_ui) overlay.render(ui);
             wgpuRenderPassEncoderEnd(ui);
             wgpuRenderPassEncoderRelease(ui);
+            }
 #endif
         }
         scene.after_main_pass(encoder);
@@ -4095,21 +4471,59 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                               .ground_albedo = std::clamp(panel.effects.ground_bounce, 0.0f, 0.5f)});
         }
 
-        FrameCapture shot;
-        FrameCapture depth_shot;
+        shot = {};
+        depth_shot = {};
         if (capture_now) shot = begin_capture(device, encoder, frame_texture, static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height));
         if (capture_now && depth_copy && depth_export->texture())
             depth_shot = begin_capture(device, encoder, depth_export->texture(), static_cast<std::uint32_t>(width),
                                        static_cast<std::uint32_t>(height));
-        FrameCapture hdr_shot;
-        const bool hdr_linear = renderer::frame_linear();
+        hdr_shot = {};
+        hdr_linear = renderer::frame_linear();
         if (capture_now && hdr && surface.hdr_texture())
             hdr_shot = begin_capture(device, encoder, surface.hdr_texture(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 8);
-        FrameCapture shafts_shot;
+        shafts_shot = {};
         if (capture_now && shafts && shafts->texture() && panel.effects.light_shafts)
             shafts_shot = begin_capture(device, encoder, shafts->texture(), static_cast<std::uint32_t>(width), static_cast<std::uint32_t>(height), 8);
         stage_clock.mark(FrameStage::post, stages);
-        const auto commands = wgpuCommandEncoderFinish(encoder, nullptr);
+#ifdef OPENRTS_HAS_XR
+        if (vr_frame) {
+            const auto eye_commands = wgpuCommandEncoderFinish(encoder, nullptr);
+            auto eye_submitted = parallel ? effects.finish_parallel(recording_pool) : std::vector<WGPUCommandBuffer>{};
+            eye_submitted.push_back(eye_commands);
+            const auto queue = wgpuDeviceGetQueue(device);
+            const auto index = wgpuQueueSubmitForIndex(queue, eye_submitted.size(), eye_submitted.data());
+            for (const auto buffer : eye_submitted) wgpuCommandBufferRelease(buffer);
+            scene.frame_submitted();
+            renderer.frame_submitted(queue);
+            wgpuQueueRelease(queue);
+            vr->eye_done(view_index, index);
+            parallel = false;
+            if (view_index + 1 < view_count) continue;
+            vr->end_frame();
+            // The window: the left eye and the panels over it.
+            wgpuRenderPassEncoderRelease(pass);
+            wgpuCommandEncoderRelease(encoder);
+            encoder = wgpuDeviceCreateCommandEncoder(device, nullptr);
+            vr->mirror(encoder, window_view);
+#ifdef OPENRTS_HAS_IMGUI
+            const WGPURenderPassColorAttachment ui_colour{
+                .view = window_view, .depthSlice = WGPU_DEPTH_SLICE_UNDEFINED, .loadOp = WGPULoadOp_Load, .storeOp = WGPUStoreOp_Store};
+            const WGPURenderPassDescriptor ui_descriptor{.colorAttachmentCount = 1, .colorAttachments = &ui_colour};
+            pass = wgpuCommandEncoderBeginRenderPass(encoder, &ui_descriptor);
+            overlay.render(pass);
+            wgpuRenderPassEncoderEnd(pass);
+#else
+            pass = nullptr;
+#endif
+            frame_view = window_view;
+            width = window_width;
+            height = window_height;
+            hdr = false;
+        }
+#endif
+        }
+        const auto frame_view = window_view;
+        commands = wgpuCommandEncoderFinish(encoder, nullptr);
         stage_clock.mark(FrameStage::encode, stages);
         // The workers' command buffers first: the shadows and the occlusion
         // the main pass reads.
@@ -4129,7 +4543,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer.frame_submitted(queue);
         wgpuQueueRelease(queue);
         wgpuCommandBufferRelease(commands);
-        wgpuRenderPassEncoderRelease(pass);
+        if (pass) wgpuRenderPassEncoderRelease(pass);
         wgpuCommandEncoderRelease(encoder);
         wgpuTextureViewRelease(frame_view);
         if (shot.buffer) {
@@ -4143,6 +4557,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
                     std::cout << "cab switch " << id << ": asked " << asked << ", State " << where->first << ", SetState " << where->second << std::endl;
                 }
             }
+            if (sound) std::cout << "sound: " << sound->active_voices() << " voices, " << sound->audible_voices() << " heard" << std::endl;
             const auto model_stats = renderer.stats();
             std::cout << "models: " << model_stats.instances << " instances, " << model_stats.draw_calls << " draw calls" << std::endl;
             if (const auto world = scene.world_report(); !world.empty()) std::cout << "world: " << world << std::endl;

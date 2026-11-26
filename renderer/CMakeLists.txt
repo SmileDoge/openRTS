@@ -8,6 +8,8 @@ add_library(openrts_renderer STATIC
     src/weather_particles.cpp
     src/screen_quads.cpp
     src/tone_map.cpp
+    src/temporal_aa.cpp
+    src/motion_vectors.cpp
     src/auto_exposure.cpp
     src/bc7.cpp
     src/bloom.cpp
@@ -18,6 +20,7 @@ add_library(openrts_renderer STATIC
     src/model_assets.cpp
     src/model_materials.cpp
     src/transfer_shape.cpp
+    src/cargo_shape.cpp
     src/forest_shape.cpp
     src/forest_clearance.cpp
     src/scene_effects.cpp
@@ -82,6 +85,13 @@ if(OPENRTS_ENABLE_WGPU)
     target_include_directories(openrts_renderer PUBLIC "${OPENRTS_WGPU_INCLUDE_DIR}")
     target_compile_definitions(openrts_renderer PUBLIC OPENRTS_HAS_WGPU=1)
     target_link_libraries(openrts_renderer PUBLIC openrts_wgpu_native)
+    # VR (docs/vr.md): with openRTS's wgpu-native (third_party/wgpu-native).
+    if(WIN32)
+        include("${PROJECT_SOURCE_DIR}/cmake/openxr.cmake")
+        if(OPENRTS_HAS_XR)
+            target_compile_definitions(openrts_renderer PUBLIC OPENRTS_HAS_XR=1)
+        endif()
+    endif()
 endif()
 
 # Places the wgpu-native runtime next to an executable so it starts without a
@@ -91,6 +101,11 @@ function(openrts_copy_wgpu_runtime target)
         add_custom_command(TARGET ${target} POST_BUILD
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "$<TARGET_FILE:openrts_wgpu_native>" "$<TARGET_FILE_DIR:${target}>")
+        # The OpenXR loader beside it, with VR.
+        if(OPENRTS_HAS_XR)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENRTS_OPENXR_LOADER_DLL}" "$<TARGET_FILE_DIR:${target}>")
+        endif()
         # DXC beside it when given (renderer/src/wgpu_context.cpp takes it).
         if(OPENRTS_DXC_ROOT AND EXISTS "${OPENRTS_DXC_ROOT}/bin/x64/dxcompiler.dll")
             add_custom_command(TARGET ${target} POST_BUILD

@@ -121,13 +121,28 @@ CabCollision CabCollision::build(const formats::ShapeModel& model) {
     for (std::uint32_t index = 0; index < out.triangles_.size(); ++index)
         range(out.triangles_[index], [&](std::size_t i) { out.items_[counts[i]++] = index; });
     out.seen_.assign(out.triangles_.size(), 0);
+    std::int32_t last = -1;
+    for (const auto& t : out.triangles_) last = (std::max)(last, t.node);
+    out.node_start_.assign(static_cast<std::size_t>(last + 2), 0);
+    for (const auto& t : out.triangles_)
+        if (t.node >= 0) ++out.node_start_[static_cast<std::size_t>(t.node) + 1];
+    for (std::size_t i = 1; i < out.node_start_.size(); ++i) out.node_start_[i] += out.node_start_[i - 1];
+    out.node_items_.resize(out.node_start_.back());
+    {
+        auto at = out.node_start_;
+        for (std::uint32_t index = 0; index < out.triangles_.size(); ++index) {
+            const auto n = out.triangles_[index].node;
+            if (n >= 0) out.node_items_[at[static_cast<std::size_t>(n)]++] = index;
+        }
+    }
     return out;
 }
 
 void CabCollision::node_points(const std::int32_t node, std::vector<glm::vec3>& out, const std::size_t step) const {
+    if (node < 0 || static_cast<std::size_t>(node) + 1 >= node_start_.size()) return;
     std::size_t k = 0;
-    for (const auto& t : triangles_) {
-        if (t.node != node) continue;
+    for (auto i = node_start_[static_cast<std::size_t>(node)]; i < node_start_[static_cast<std::size_t>(node) + 1]; ++i) {
+        const auto& t = triangles_[node_items_[i]];
         if (k++ % (std::max)(step, std::size_t{1}) != 0) continue;
         out.push_back(t.a);
         out.push_back(t.b);

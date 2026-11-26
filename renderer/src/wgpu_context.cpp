@@ -238,6 +238,12 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
                                    static_cast<WGPUFeatureName>(WGPUNativeFeature_TextureAdapterSpecificFormatFeatures)}) {
             if (wgpuAdapterHasFeature(context.adapter_, feature)) features.push_back(feature);
         }
+#ifdef OPENRTS_HAS_XR
+        // openRTS's wgpu-native: D3D11 textures shared with Vulkan (VR, docs/vr.md).
+        if (const auto shared = static_cast<WGPUFeatureName>(WGPUNativeFeature_VulkanExternalMemoryWin32);
+            wgpuAdapterHasFeature(context.adapter_, shared))
+            features.push_back(shared);
+#endif
         const WGPUDeviceDescriptor device_descriptor{
             .requiredFeatureCount = features.size(),
             .requiredFeatures = features.empty() ? nullptr : features.data(),

@@ -49,6 +49,13 @@ folders, each with its own `zdsLoco_chs7-6A.ace`).
 - Layered as a texture's file: the general ones, then the folders', then
   the one beside the texture, each over the one before.
 - The folder is listed again when the VFS changes (hot reload).
+- Not for a season's own image (`WINTER`, `SNOW`, ... beside the texture):
+  it keeps its look, the snow on it (since 2026-11-26). `NIGHT` images take
+  them.
+- openRTS's own `openrts-rails` pack (`packs/rails`) dresses the track this
+  way: `rels_1` (the rails, the sleepers, their fastenings) and `shpal_2`
+  (the ballast) on every route drawing them, the routes' own versions too
+  (Novokuznetsk, Stepy Priazovya, Uspensk).
 
 ## How a part's material is made
 
@@ -119,6 +126,26 @@ drive letters), PNG or ACE. An unknown key, a value out of range or of the
 wrong type: a warning in the log, the field left out. A file that does not
 parse: an error in the log; if it was read well before in this run (hot
 reload), that reading stays.
+
+**Compressed maps** (since 2026-11-26). openRTS compresses PNG maps
+itself when it loads them (BC7, normals BC5, heights BC4; cached on disk
+after the first start). For a smaller mod, convert the maps to openRTS's
+ACE of blocks and name the `.ace` files in the material:
+
+```
+openrts-ace to-ace body_baseColor.png --format bc7
+openrts-ace to-ace body_orm.png --format bc7
+openrts-ace to-ace body_n.png --format bc5
+openrts-ace to-ace body_h.png --format bc4
+```
+
+Such a map goes to the GPU as it is, neither decoded nor compressed again.
+That holds for colour, emission and snow maps of any block format, for
+heights of any format, for a normal map in BC5 or BC7 with `normal_y: "up"`,
+and for one packed ORM map (`orm`, no separate maps) in BC7. Other maps
+are decoded and compressed as PNG ones. A rail mod (two textures,
+2048 px): 26 MB of PNG, 15 MB of ACE. Keep the PNGs for editing: hot reload
+follows the files the material names.
 
 ### Packed maps
 
@@ -302,11 +329,33 @@ your own elsewhere is never changed (the mod's copy wins over it).
   seam) is split. Triangles without texture area get no normal map (a
   message counts them).
 - Hot reload: the material files and maps are the model's dependencies.
+  A changed map is uploaded again. Until 2026-11-26 the reloaded model took
+  the old one from the GPU cache, so a PNG changed showed nothing.
+
+## The ground (TERRTEX, 2026-11-25)
+
+A ground texture takes a material file as a model's texture does, by its
+name: `ROUTES/<route>/TERRTEX/grass.material.json5` beside `grass.ace`,
+over it the season's (`TERRTEX/SNOW/grass.material.json5` when the snow's
+texture is drawn), under them `MATERIALS/grass.material.json5`.
+
+- Read: `normal` (`normal_y`, `normal_strength`), the ORM maps (`orm` and
+  its `layout`, or `ao_map`, `roughness_map`, `metallic_map`; occlusion by
+  `ao_strength`), `roughness`, `metallic`, `reflectance`, `specular`.
+- The maps lie over the ground texture as it does (the same coordinates;
+  the microtexture is not under them).
+- The ground's own is Lambert alone (no reflection). A file that does not
+  give `specular` makes it 1: the surface reflects as its roughness says.
+- Drawn by openRTS's lighting (the experimental path); RTS's lighting draws
+  the ground as before. The normal map's frame comes from the screen (the
+  terrain has no tangents).
+- Not read for the ground: `base_color`, `emissive`, `height`, `snow`.
+- Read once, when the texture is first drawn (no hot reload).
 
 ## Not yet
 
 - `alpha_mode`, `alpha_cutoff`, `double_sided` (the pipelines are RTS's).
 - Wetness (`wet`): the rain's darkening and gloss.
 - DDS maps (an ACE of openRTS's block formats is read, `docs/reverse/ace.md`).
-- Materials of the ground (terrain), and of transfers and forests.
+- Materials of transfers and forests; the ground's height and snow maps.
 - glTF back into a shape (export only).

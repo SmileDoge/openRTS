@@ -8,6 +8,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <glm/mat4x4.hpp>
@@ -223,8 +224,9 @@ enum class DepthPassKind { shadow, camera };
 // Which casters a depth pass draws: all, those that stay where they are (the
 // world's objects, the terrain), or those that move (ModelRenderer::set_moving:
 // trains, road traffic, crossing gates, switch blades). The sun's shadow cache
-// keeps the still ones' depth between frames (SceneEffects).
-enum class DepthCasters : std::uint8_t { all, still, moving };
+// keeps the still ones' depth between frames (SceneEffects). `trains`: the
+// trains alone (set_train; the temporal AA's moving models).
+enum class DepthCasters : std::uint8_t { all, still, moving, trains };
 
 struct ModelFrameContext {
     glm::mat4 view_projection{1.0f};
@@ -337,12 +339,12 @@ public:
     // images came from (alternative_texture_folders).
     [[nodiscard]] std::uint32_t alternative_texture() const noexcept;
     [[nodiscard]] const std::vector<std::string>& texture_folders() const noexcept;
-    // Whether some image is drawn only on FullBright surfaces, and the
-    // texture_variant_key this generation was loaded with.
-    [[nodiscard]] bool fullbright_images() const noexcept;
+    // The texture_variant_key this generation was loaded with.
     [[nodiscard]] const std::vector<std::string>& texture_key() const noexcept;
     // ESD_Light_Sources of the shape (scenery lamps), in its space.
     [[nodiscard]] const std::vector<formats::ShapeLight>& lights() const noexcept;
+    // Its .sd's ESD_Pickup_Object: the shape is a pickup (docs/reverse/cargo.md).
+    [[nodiscard]] const std::optional<formats::PickupDescription>& pickup() const noexcept;
     // Its lamps changed in place (the inspector's, live; till it is loaded anew).
     void set_lights(std::vector<formats::ShapeLight> lights);
     // Its primitive states, in the shape's order (the inspector).
@@ -399,6 +401,11 @@ public:
     [[nodiscard]] std::shared_ptr<const void> replace_texture(const core::VirtualPath& path,
                                                               const formats::AceRgbaImage& image);
     void forget_texture(const core::VirtualPath& path);
+    // The material maps (docs/pbr-materials.md) made from any of these files
+    // (VirtualPath::key()) forgotten: the models made from now on upload
+    // them again. Until 2026-11-26 a reloaded model took the old map from
+    // the cache, so a material's PNG changed showed nothing (testers).
+    void forget_material_maps(const std::unordered_set<std::string>& files);
     // Every texture forgotten: the models made from now on upload their own
     // (texture_size_limit() changed; those loaded keep theirs till reloaded).
     void forget_textures();
@@ -453,6 +460,18 @@ public:
     // default): trains, road traffic, crossing gates, switch blades. The
     // sun's shadow cache redraws only those every frame.
     void set_moving(bool moving) noexcept;
+    // Instances submitted from here on are trains (true) or not (the
+    // default): the temporal AA takes their points as riding with the camera.
+    void set_train(bool train) noexcept;
+    // Without MSAA under a temporal AA or an upscaler: an alpha test's edge
+    // by noise that changes every frame (`frame`), which those blend into a
+    // soft edge as alpha to coverage gives under MSAA; off: the test at its
+    // cut (RTS's).
+    void set_stochastic_alpha(bool on, std::uint32_t frame) noexcept;
+    // Added to every texture's LOD bias this frame: an upscaler drawing at a
+    // smaller size than the window's wants log2(that size / the window's)
+    // (DLSS's guide), the textures as sharp as at the window's size.
+    void set_texture_lod_bias(float bias) noexcept;
     // After prepare(): a hash of this frame's moving instances (set_moving):
     // their models, distance levels, places and node poses, to a millimetre
     // and a ten-thousandth. The same as last frame: nothing moving moved
@@ -481,7 +500,7 @@ public:
                       std::uint32_t skip_owner = 0, DepthCasters casters = DepthCasters::all);
     // Depth slots: the cascades, the camera, the focus, 8 lamps, the shadow
     // cache's pieces (8 a cascade) and its check (a cascade each).
-    static constexpr std::uint32_t depth_slots = 50;
+    static constexpr std::uint32_t depth_slots = 51;
     // An instance out of view that casts a shadow into it: shadow passes only.
     void submit_shadow_caster(RenderModel& model, const ModelTransform& transform);
     // Group 2 of the experimental path (SceneEffects::bind_group); nullptr: a
