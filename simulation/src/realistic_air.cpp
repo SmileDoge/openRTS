@@ -212,20 +212,40 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 (*inputs.has_controller)[i] && demands[i].equalising >= 0.0f) {
                 const auto& d = demands[i];
                 const float vmr = reservoir_volume(*car.definition->engine);
-                if (d.emergency) {
+                // A full 395 gives the engine's node its own chamber's
+                // pressure; the relay follows that instead of the УР. The
+                // train's pipe (and its air) is still this network.
+                const bool crane = d.pipe_target >= 0.0f;
+                const float target = crane ? d.pipe_target : d.equalising;
+                if (d.emergency && !crane) {
                     flow[i] -= emergency_valve * car.pipe * h;
                 } else {
-                    float q = relay_gain * (d.equalising - car.pipe);
+                    float q = relay_gain * (target - car.pipe);
                     q = std::clamp(q, -relay_vent, relay_feed);
                     // Feeding needs the main reservoir above the pipe, and
                     // the valve not in III (lap without feed: its leaks are
                     // not made up; until 2026-11-18 it held the pipe as IV).
                     if (q > 0.0f) q = d.pipe_feed ? (std::min)(q, relay_gain * (std::max)(car.main_reservoir - car.pipe, 0.0f)) : 0.0f;
-                    // The relay holds the pipe at the УР: no overshoot in a sub-step.
-                    const float most = (d.equalising - car.pipe) * volume[i];
-                    q = q > 0.0f ? (std::min)(q * h, (std::max)(most, 0.0f)) : (std::max)(q * h, (std::min)(most, 0.0f));
-                    flow[i] += q;
-                    if (q > 0.0f) car.main_reservoir = (std::max)(car.main_reservoir - q / vmr, 0.0f);
+                    // The relay holds the pipe at the target: no overshoot in
+                    // a sub-step.
+                    const float most = (target - car.pipe) * volume[i];
+                    float moved = q > 0.0f ? (std::min)(q * h, (std::max)(most, 0.0f))
+                                           : (std::max)(q * h, (std::min)(most, 0.0f));
+                    // I: the 395's wide channel feeds the pipe straight from
+                    // the main reservoir, past the relay, so the engine's pipe
+                    // runs ahead of the УР (the faster the shorter the train).
+                    // It is not held back by the relay's УР target: its own
+                    // limit is the air the main reservoir can share with this
+                    // node. With a full 395 its own chamber already asks for
+                    // that pressure; do not feed twice.
+                    if (!crane && d.pipe_direct && car.main_reservoir > car.pipe) {
+                        moved = (std::max)(moved, 0.0f);
+                        const float gap = car.main_reservoir - car.pipe;
+                        const float equal = gap * volume[i] * vmr / (volume[i] + vmr);
+                        moved += (std::min)((std::min)(direct_gain * gap, direct_feed) * h, (std::max)(equal - moved, 0.0f));
+                    }
+                    flow[i] += moved;
+                    if (moved > 0.0f) car.main_reservoir = (std::max)(car.main_reservoir - moved / vmr, 0.0f);
                 }
             }
         }

@@ -18,6 +18,7 @@ add_library(openrts_simulation STATIC
     src/milepost.cpp
     src/electronic_map.cpp
     src/driver_valve.cpp
+    src/brake_crane_395.cpp
     src/track_profile.cpp
     src/track_traveller.cpp
     src/train.cpp

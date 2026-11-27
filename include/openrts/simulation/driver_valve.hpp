@@ -70,7 +70,9 @@ struct ValveOutput {
 };
 
 // One step of `dt` s of a 395 as the ВЛ10к DLL works it (vl10k_main.cpp),
-// the ЭПТ as the ЭР9Т's (docs/train.md, the table of positions).
+// the ЭПТ as the ЭР9Т's (docs/train.md, the table of positions). The full
+// 395's own air (УР and its pipe chamber) is BrakeCrane395 (brake_crane_395.hpp);
+// this rate-based boundary stays for the ЭПТ clock and legacy callers.
 ValveOutput step_valve_395(ValveState& state, ValvePosition position, const ValveInputs& in, float dt);
 
 // The driver's valve: 395 (the 29/394+395 rig of the VL10k DLL) or the КРМ-130

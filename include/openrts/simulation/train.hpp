@@ -16,6 +16,7 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
+#include <openrts/simulation/brake_crane_395.hpp>
 #include <openrts/simulation/car_registry.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
 #include <openrts/simulation/derailment.hpp>
@@ -127,6 +128,11 @@ struct EngineDemands {
     // I: the main reservoir feeds the pipe straight, past the relay
     // (ValveOutput::direct).
     bool pipe_direct = false;
+    // A full 395: the pressure its own brake-pipe chamber asks the engine's
+    // pipe node to follow (BrakeCrane395::brake_pipe); < 0: the relay follows
+    // `equalising` as before. This is not a second pipe: the train's pipe
+    // network still carries the air.
+    float pipe_target = -1.0f;
     // openRTS's cab brake devices in place of a DLL's (cab_brakes.hpp): what
     // they did this step, for the cab's gauges and lamps.
     std::optional<CabBrakeOutput> cab_brakes;
@@ -255,6 +261,9 @@ private:
     std::shared_ptr<DriverHandles> handles_;
     bool master_;
     bool compressor_ = false;
+    // The master's full 395: its УР and its own pipe chamber (brake_crane_395.hpp).
+    BrakeCrane395 crane_;
+    bool crane_initialized_ = false;
 };
 
 class Train;

@@ -459,6 +459,7 @@ void KeyboardController::save(StateWriter& out, const std::string_view prefix) c
     out.put(p + "handles", h.throttle, h.reverser, h.brake, h.independent, h.charging_pressure, h.equalising, h.ep_brake, h.sanding,
             h.ep_target);
     out.put(p + "compressor", compressor_);
+    out.put(p + "crane", crane_.brake_pipe(), crane_.equalising(), crane_initialized_);
 }
 
 void KeyboardController::restore(const StateReader& in, const std::string_view prefix) {
@@ -467,6 +468,10 @@ void KeyboardController::restore(const StateReader& in, const std::string_view p
     in.get(p + "handles", h.throttle, h.reverser, h.brake, h.independent, h.charging_pressure, h.equalising, h.ep_brake, h.sanding,
            h.ep_target);
     in.get(p + "compressor", compressor_);
+    float crane_pipe = 0.0f;
+    float crane_equalising = 0.0f;
+    in.get(p + "crane", crane_pipe, crane_equalising, crane_initialized_);
+    if (crane_initialized_) crane_.set_state(crane_pipe, crane_equalising);
 }
 
 KeyboardController::KeyboardController(std::shared_ptr<DriverHandles> handles, const bool master)
@@ -526,9 +531,22 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
     demands.independent_brake = std::clamp(handles.independent, 0.0f, 4.0f);
     demands.sanding = handles.sanding;
     if (!master_) return;
-    // The brake valve 395 (driver_valve.hpp), its УР and ЭПТ demand kept in
-    // the shared handles.
-    ValveState state{handles_->equalising, handles_->ep_target};
+    // The full 395 (brake_crane_395.hpp): its own УР and pipe chamber work
+    // every position as RRS's krm395. The train's pipe itself stays openRTS's
+    // realistic network; the crane only gives its engine's pipe node the
+    // pressure its chamber asks for (EngineDemands::pipe_target).
+    if (!crane_initialized_) {
+        crane_.reset(inputs.train_pipe, handles_->equalising);
+        crane_initialized_ = true;
+    }
+    crane_.set_charge_pressure(handles.charging_pressure);
+    crane_.set_feed_line(inputs.main_reservoir);
+    const auto position = static_cast<ValvePosition>(brake);
+    crane_.step(position, static_cast<float>(dt));
+    handles_->equalising = crane_.equalising();
+    // The ЭПТ is the 395's controller, not its air: its clock and command
+    // stay the driver_valve model's (the EPT rates unchanged).
+    ValveState ep_state{handles_->equalising, handles_->ep_target};
     const ValveInputs valve{
         .pipe = inputs.train_pipe,
         .main_reservoir = inputs.main_reservoir,
@@ -537,15 +555,18 @@ void KeyboardController::step(const double dt, const EngineInputs& inputs, Engin
         .realistic = true,
         .ep_on = handles.ep_brake,
     };
-    const auto out = step_valve_395(state, static_cast<ValvePosition>(brake), valve, static_cast<float>(dt));
-    handles_->equalising = state.equalising;
-    handles_->ep_target = state.ep_target;
+    const auto out = step_valve_395(ep_state, position, valve, static_cast<float>(dt));
+    handles_->ep_target = ep_state.ep_target;
     demands.train_pipe_rate = out.pipe_rate;
-    demands.equalising = out.equalising;
-    demands.equalising_kept = out.equalising;
-    demands.emergency = out.emergency;
-    demands.pipe_feed = out.feed;
-    demands.pipe_direct = out.direct;
+    demands.equalising = crane_.equalising();
+    demands.equalising_kept = crane_.equalising();
+    demands.emergency = crane_.emergency();
+    demands.pipe_feed = crane_.feed();
+    // I's wide channel is the openRTS direct feed (the tuned 0.16 branch);
+    // from II on the pipe follows the crane's own chamber, as RRS's boundary.
+    const bool direct = position == ValvePosition::charge;
+    demands.pipe_direct = direct;
+    demands.pipe_target = direct ? -1.0f : crane_.boundary_pipe();
     demands.systems = out.systems;
     if (out.ep_value >= 0.0f) {
         demands.ep_value = out.ep_value;
