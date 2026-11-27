@@ -1647,7 +1647,7 @@ void Launcher::State::draw_account() {
 
     const bool logged = !account_name.empty() && !account_token.empty();
     const auto width = 720.0f * scale;
-    const auto height = (logged ? 430.0f : 540.0f) * scale;
+    const auto height = (logged ? 390.0f : 480.0f) * scale;
     const Rect box{{(display.x - width) * 0.5f, (display.y - height) * 0.5f}, {(display.x + width) * 0.5f, (display.y + height) * 0.5f}};
     draw->AddRectFilled(box.min, box.max, card_fill, 24.0f * scale);
     draw->AddRect(box.min, box.max, card_line, 24.0f * scale);
