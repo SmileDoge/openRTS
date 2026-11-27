@@ -210,7 +210,8 @@ void CargoSystem::update(const float seconds, simulation::Train& train,
             const double moved = (std::min)(amount, room_car);
             if (!(moved > 0.0)) continue;
             const double next = unloading ? mass - moved : mass + moved;
-            train.set_cargo(i, static_cast<float>((std::max)(0.0, next)), unloading && next <= 0.001 ? std::string{} : cargo->id);
+            train.set_cargo(i, static_cast<float>((std::max)(0.0, next)), unloading && next <= 0.001 ? std::string{} : cargo->id,
+                            capacity);
             site.stock += unloading ? moved : -moved;
             if (site_capacity > 0.0) site.stock = std::clamp(site.stock, 0.0, site_capacity);
             break;

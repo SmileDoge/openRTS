@@ -201,13 +201,28 @@ float brake_rigging_share(const float cylinder, const float reference) noexcept 
 }
 
 void step_distributor(DistributorState& s, const DistributorCar& car, const float rate, const float ep, const float h,
-                      const EpCommand command) {
+                      const EpCommand command, float* cylinder_flow) {
     (void)rate;
     const float p = s.pipe;
     const float zr_volume = car.auxiliary_volume;
     const float tc_max = car.full_cylinder;
+    // The auto mode's working chamber: a 483 fills it, and the caller feeds
+    // its air through the auto mode instead of letting it fill the brake
+    // cylinder. The flow is the net change of that chamber.
+    const bool external_cylinder = cylinder_flow != nullptr && car.kind == DistributorKind::vr483;
+    const float flow_h = h > 0.0f ? h : 1.0e-9f;
+    float cylinder_flow_now = 0.0f;
+    if (cylinder_flow) *cylinder_flow = 0.0f;
+    const auto set_cylinder = [&](const float value) {
+        const float next = (std::max)(value, 0.0f);
+        if (external_cylinder) cylinder_flow_now += (next - s.cylinder) * car.cylinder_volume / flow_h;
+        s.cylinder = next;
+    };
+    const auto finish_cylinder = [&] {
+        if (cylinder_flow) *cylinder_flow = external_cylinder ? cylinder_flow_now : 0.0f;
+    };
     const auto take_for_cylinder = [&](const float rise) {
-        s.cylinder += rise;
+        set_cylinder(s.cylinder + rise);
         s.auxiliary = (std::max)(s.auxiliary - rise * car.cylinder_volume / zr_volume, 0.0f);
     };
     auto rates = plug_rates(car.plug);
@@ -222,6 +237,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
         if (rise > 0.0f && s.auxiliary > s.cylinder) take_for_cylinder(rise);
         s.channel = (std::min)(tc_max, s.channel + fill);
         if (s.cylinder >= s.ep_chamber) s.ep_side = false;
+        finish_cylinder();
         return;
     }
     // ЗР charging from the pipe (the air comes out of the pipe): a 483
@@ -265,7 +281,7 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
                 // what the pipe's shortfall below РК gives, and is released
                 // once the pipe is back at РК.
                 if (s.cylinder > target + tc_max / 1.5f * step_483) {
-                    s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, target);
+                    set_cylinder((std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, target));
                 }
                 if (drop < step_483) s.braking = false;
             } else if (p >= s.reference - release_483 || (!filling && p >= s.pipe_low + rise_483)) {
@@ -277,10 +293,11 @@ void step_distributor(DistributorState& s, const DistributorCar& car, const floa
                 s.reference = (std::min)(s.reference, p);
             }
         } else if (s.cylinder > 0.0f) {
-            s.cylinder = (std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, 0.0f);
+            set_cylinder((std::max)(s.cylinder - tc_max / 35.0f * car.pace * h, 0.0f));
         }
         if (!s.braking && s.channel > 0.0f) s.channel = (std::max)(s.channel - tc_max / 35.0f * car.pace * h, 0.0f);
-        if (s.cylinder < 1.0e-4f) s.cylinder = 0.0f;
+        if (s.cylinder < 1.0e-4f) set_cylinder(0.0f);
+        finish_cylinder();
         return;
     }
     // ЭВР 305: its РК by the line (step_ep_chamber). The 292 behind it

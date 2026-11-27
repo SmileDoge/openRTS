@@ -358,6 +358,7 @@ struct CarState {
     const formats::WagonDefinition* definition = nullptr;
     float cargo_mass{};   // kg (RTS industries), on top of the definition's
     std::string cargo_id; // the catalog ID; empty: the car carries nothing
+    float cargo_capacity{}; // kg of this cargo at full load; 0: unknown
     // Its identity (CarSetup::id): moves with the car through couplings,
     // cuts and turns, as the car's state does.
     CarId id{};
@@ -663,7 +664,7 @@ public:
 
     // RTS cargo: car `car` carries `mass_kg` of `id` (its catalog entry);
     // the physics adds it to the car's own mass. Zero clears the load.
-    void set_cargo(std::size_t car, float mass_kg, std::string id);
+    void set_cargo(std::size_t car, float mass_kg, std::string id, float capacity_kg = -1.0f);
     // The train's cars by identity, front to rear: the ordered list the
     // train refers to its cars by (CarState::id, as cars()).
     [[nodiscard]] std::vector<CarId> car_ids() const;

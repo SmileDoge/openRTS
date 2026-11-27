@@ -101,6 +101,11 @@ void RealisticAir::save(StateWriter& out) const {
         const auto& a = air_[i];
         out.put("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
                 a.ep_side, a.pipe_low, a.zk, a.kdr, a.discharge, a.channel);
+        // The auto mode's own state: its working chamber and damper. A car
+        // without one writes nothing.
+        if (a.auto_mode.initialized()) {
+            out.put("a" + std::to_string(i) + ".auto", a.auto_mode.work_pressure(), a.auto_mode.damper());
+        }
     }
     out.put_list("air.links", link_flow_);
 }
@@ -110,6 +115,13 @@ void RealisticAir::restore(const StateReader& in) {
         auto& a = air_[i];
         in.get("a" + std::to_string(i) + ".state", a.braking, a.emergency, a.reference, a.last_pipe, a.wave, a.accelerator, a.ep_chamber,
                a.ep_side, a.pipe_low, a.zk, a.kdr, a.discharge, a.channel);
+        // Older saves have no auto mode key: it initializes from the car's
+        // cylinder on its first step instead of releasing a braked car.
+        float auto_work = -1.0f;
+        float auto_damper = 0.0f;
+        if (in.get("a" + std::to_string(i) + ".auto", auto_work, auto_damper) && auto_work >= 0.0f) {
+            a.auto_mode.reset(auto_work, auto_damper);
+        }
     }
     std::vector<float> links;
     if (in.get_list("air.links", links) && links.size() == link_flow_.size()) {
@@ -269,13 +281,31 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 else car.auxiliary = (std::max)(car.auxiliary - 0.5f * h, 0.0f);
             }
             const auto load = load_of(car);
+            const bool script_active =
+                a.script && car.definition->brakes.distributor == formats::BrakeDistributor::inferred;
+            // The auto mode is always fitted to a freight car with the 483;
+            // a script's own distributor (or another kind) has none.
+            const bool auto_eligible =
+                car.definition->kind == formats::WagonKind::freight && kind == DistributorKind::vr483 && !script_active;
+            // Its load: the cargo's share of the car's capacity; without a
+            // known capacity, the 483's discrete mode stands in.
+            const float payload =
+                car.cargo_capacity > 0.0f
+                    ? std::clamp(car.cargo_mass / car.cargo_capacity, 0.0f, 1.0f)
+                    : (load == DistributorLoad::empty ? 0.0f : load == DistributorLoad::medium ? 0.5f : 1.0f);
+            if (auto_eligible) {
+                if (!a.auto_mode.initialized()) a.auto_mode.reset(car.cylinder * mpa_per_atm, payload);
+                a.auto_mode.set_payload(payload);
+            } else if (a.auto_mode.initialized()) {
+                a.auto_mode = AutoMode265{};
+            }
             const DistributorCar device{
                 .kind = kind,
                 .full_cylinder = distributor_full_cylinder(kind, load),
                 .ratio = car.definition->brakes.triple_valve_ratio,
                 .pipe_volume = volume[i],
                 .auxiliary_volume = distributor_auxiliary_volume(kind),
-                .cylinder_volume = distributor_cylinder_volume,
+                .cylinder_volume = auto_eligible ? a.auto_mode.work_volume : distributor_cylinder_volume,
                 .mass = car_mass(car),
                 .ep = (car.definition->brakes.system & 2) != 0,
                 .ep_fill = car.ep_fill,
@@ -285,9 +315,11 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                 .pace = car.wear.pace,
                 .sensitivity = car.wear.sensitivity,
             };
+            // With the auto mode the distributor fills its working chamber;
+            // the auto mode then feeds the real brake cylinder.
             DistributorState state{.pipe = car.pipe,
                                    .auxiliary = car.auxiliary,
-                                   .cylinder = car.cylinder,
+                                   .cylinder = auto_eligible ? a.auto_mode.work_pressure() / mpa_per_atm : car.cylinder,
                                    .reference = a.reference,
                                    .braking = a.braking,
                                    .emergency = a.emergency,
@@ -298,6 +330,7 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                                    .pipe_low = a.pipe_low,
                                    .discharge = false,
                                    .channel = a.channel};
+            float q_ad_atm = 0.0f;
             bool stepped = false;
             // A built-in one named (the car menu, a mod) stands in for a script.
             if (a.script && car.definition->brakes.distributor == formats::BrakeDistributor::inferred) {
@@ -308,10 +341,16 @@ void RealisticAir::step(std::vector<CarState>& cars, const AirInputs& inputs, co
                     a.script.reset();
                 }
             }
-            if (!stepped) step_distributor(state, device, rate, car.ep, h, car.ep_command);
+            if (!stepped) step_distributor(state, device, rate, car.ep, h, car.ep_command, auto_eligible ? &q_ad_atm : nullptr);
             car.pipe = state.pipe;
             car.auxiliary = state.auxiliary;
-            car.cylinder = state.cylinder;
+            if (auto_eligible) {
+                const float q_bc = a.auto_mode.step(q_ad_atm * mpa_per_atm, car.cylinder * mpa_per_atm, h);
+                car.cylinder =
+                    (std::max)(car.cylinder + (q_bc / mpa_per_atm) / distributor_cylinder_volume * h, 0.0f);
+            } else {
+                car.cylinder = state.cylinder;
+            }
             a.reference = state.reference;
             a.braking = state.braking;
             a.zk = state.zk;

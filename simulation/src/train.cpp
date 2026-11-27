@@ -996,11 +996,14 @@ double Train::mass() const noexcept {
     return total;
 }
 
-void Train::set_cargo(const std::size_t car, const float mass_kg, std::string id) {
+void Train::set_cargo(const std::size_t car, const float mass_kg, std::string id, const float capacity_kg) {
     if (car >= cars_.size()) return;
     auto& state = cars_[car];
     state.cargo_mass = (std::max)(mass_kg, 0.0f);
     state.cargo_id = state.cargo_mass > 0.0f ? std::move(id) : std::string{};
+    // The auto mode needs the full-load mass of this cargo, not just what is
+    // aboard now. -1 keeps a capacity already known from an earlier call.
+    if (capacity_kg >= 0.0f) state.cargo_capacity = capacity_kg;
 }
 
 void Train::hit(const std::size_t index, const float force, const float (&direction)[3], const float time) {

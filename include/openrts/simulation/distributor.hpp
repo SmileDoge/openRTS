@@ -140,9 +140,13 @@ inline constexpr float distributor_cylinder_volume = 0.008f;
 
 // One sub-step of `h` s of a built-in distributor; the pipe changing at
 // `rate` atm/s, `ep` the ЭПТ target (atm, < 0: none) or, `command` not
-// target, the line powered with that command.
+// target, the line powered with that command. When `cylinder_flow` is given
+// and the car's distributor is a 483, the state's `cylinder` is the working
+// chamber of an auto mode: it is left for the caller to feed through the
+// auto mode, and `*cylinder_flow` is the air the distributor sent into it
+// (atm·m³/s, negative when it vented it). The other distributors ignore it.
 void step_distributor(DistributorState& state, const DistributorCar& car, float rate, float ep, float h,
-                      EpCommand command = EpCommand::target);
+                      EpCommand command = EpCommand::target, float* cylinder_flow = nullptr);
 
 // A distributor in Luau: the script's `step(c, dt)` with the car's table
 // (docs/scripting.md). One per car: its `c.state` table is the car's own.

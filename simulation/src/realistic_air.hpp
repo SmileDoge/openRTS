@@ -12,6 +12,7 @@
 #include <memory>
 #include <vector>
 
+#include <openrts/simulation/auto_mode.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/train.hpp>
 
@@ -41,6 +42,9 @@ struct AirCar {
     // ORTSBrakeDistributor: the car's own distributor in Luau (null: the
     // built-in one; also after a script error, reported once).
     std::shared_ptr<ScriptDistributor> script;
+    // The freight 483's auto mode (АР-265), between the distributor and the
+    // real brake cylinder. Uninitialized on the other cars.
+    AutoMode265 auto_mode;
 };
 
 // What the model needs to know about car i's neighbours and engines.

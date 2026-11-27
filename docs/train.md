@@ -668,6 +668,20 @@ built, against the proposal below:
     PROBABLE); УВ — as Д, and the car's accelerator does not vent the pipe
     (the front still passes on). A Luau distributor gets them as `c.load`,
     `c.mountain`, `c.plug` (`docs/scripting.md`).
+- **AR-265 auto mode** (2026-11-27). A freight car with the 483 always has
+  the auto mode: it sits after the distributor and has no in-game switch.
+  The distributor sees its working chamber (0.003 m³), and the real brake
+  cylinder is fed through the auto mode, so the distributor's pressure
+  stays the ceiling: the auto mode can only reduce it, never raise it.
+  The load is continuous, `cargo_mass / cargo_capacity` (0…1); without a
+  known capacity the 483's mode stands in: empty 0, medium 0.5, loaded 1.
+  While the working chamber is below 0.05 MPa (0.49 atm) and the car is
+  not braking, the damper moves to the load; above it the damper is frozen.
+  The reduction is 0.4…1.0 between payload 0.1 and 0.8: on the 483's medium
+  mode an empty car gets about 1.5 atm, a medium one 2.5, a loaded one all
+  3.0. Locomotives, passenger cars, 292 and 305 have no auto mode. Its
+  state (working chamber and damper) is saved as `aN.auto`; old saves load
+  without it. Test: `openrts.auto_mode` (`tests/auto_mode_test.cpp`).
 - **Choosing a car's distributor** (2026-11-16). RTS and MSTS content says
   nothing of it: a multiple unit's cars are `Type ( Engine )` like a
   locomotive's, the trailer cars often `.eng` too, and freight locomotives
