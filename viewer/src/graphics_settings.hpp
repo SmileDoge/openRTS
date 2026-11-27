@@ -73,6 +73,7 @@ struct GraphicsSettings {
     bool grass = true;           // openRTS's grass (docs/grass.md)
     float grass_density = 1.0f;  // 0.25..2
     float grass_reach = 45.0f;   // m, 20..120
+    float world_draw_distance = 1800.0f; // m, 500..4000 (world_draw_distance)
     bool signal_lights_real_size = true;
     // The models' night textures (TEXTURES\NIGHT, ESD_Alternative_Texture)
     // at night, as RTS; off: the day's, lit by the lamps (night_textures).

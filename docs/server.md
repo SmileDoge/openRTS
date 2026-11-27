@@ -221,6 +221,22 @@ openRTS itself is the console (the user's choice, 2026-11-09):
   given to a player. A train's menu has "Jump to train", "Cancel the route"
   and "Remove train" (on the server); who drives it is the console
   window's. Picking a train on the map picks it in the window.
+- **Setting a route on the server's map (2026-11-26):** a train's menu,
+  "Set a route" (or "Edit the route" for one the map set) turns the map
+  into a route mode, the panel greyed under what is asked: a right click on
+  the track sets the end, then points to pass in order (or moves the end);
+  on a junction, the branch to take (or any); anywhere, "Turn the
+  direction" (from the rear), "Confirm and set: train order" or "...:
+  shunting order", or cancel (Esc too). The way it would take is drawn as
+  it is asked (blue; white for shunting): the shortest way through the
+  points by the chosen branches, never onto another train's track
+  (`GameServer::preview_route`), nothing set until confirmed. Confirmed
+  (`set_requested_route`), its junctions are thrown and held till the rear
+  passes them; a train order opens its manual signals facing the train; a
+  shunting order holds them at RESTRICTING (the white where the type has
+  it), each back to STOP as the head passes it, and sets the train's signal
+  mode SHUNT (an activity's SetSignalMode) till the route ends. The map's
+  "Route for train N to here" goes round other trains too.
 - **A train's route from the map, as RTS's console sets it (Legacy):**
   pick the train, right-click the track, "Route for the selected train to
   here". The console finds the way from the train's head (or its rear,

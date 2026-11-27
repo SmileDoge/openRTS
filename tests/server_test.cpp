@@ -1519,11 +1519,47 @@ void content(const std::filesystem::path& root) {
             check(got.size() == 1 && got[0].id == P(Package::junction) && got[0].body[4] == selected, "who gets its state back");
             break;
         }
+        // The map's request to the same end: previewed, set as a shunting
+        // order (the train's signal mode SHUNT, its signals held), freed.
+        const auto old_leg = game.route_leg(*id);
         check(game.cancel_route(*id, error) && game.route_junctions(*id).empty() && !game.cancel_route(*id, error), "the route freed once");
         bool closed = true;
         for (const auto u : opened) closed = closed && signals->unit_mode(u) == simulation::UnitMode::manual;
         check(closed, "cancelled: its signals closed (manual again)");
         take(rec, 1);
+        check(old_leg.has_value() && !old_leg->spans.empty(), "the signal route's leg for the map's request");
+        if (old_leg && !old_leg->spans.empty()) {
+            const auto& last = old_leg->spans.back();
+            server::GameServer::RouteRequest request;
+            request.end = simulation::TrackLocation{last.node, last.to, last.forward};
+            const auto preview = game.preview_route(*id, request);
+            check(preview.ok && std::abs(preview.leg.length() - old_leg->length()) < 50.0,
+                  "the map's request previewed (" + std::to_string(preview.ok ? preview.leg.length() : -1.0) + " m of " +
+                      std::to_string(old_leg->length()) + "): " + preview.error);
+            check(game.route_junctions(*id).empty(), "a preview sets nothing");
+            // A facing junction's other branch chosen: another way, or none.
+            for (const auto& j : preview.leg.junctions) {
+                const auto* node = route->network().node(j.junction);
+                if (!j.facing || !node || node->branch_count() < 2) continue;
+                auto other = request;
+                other.branches[j.junction] = 1 - (j.branch % 2);
+                const auto changed = game.preview_route(*id, other);
+                bool takes = false;
+                for (const auto& k : changed.leg.junctions) takes = takes || (k.junction == j.junction && k.branch == other.branches[j.junction]);
+                check(!changed.ok || takes, "a chosen branch is taken (or no way)");
+                break;
+            }
+            request.shunting = true;
+            std::string result;
+            check(game.set_requested_route(*id, request, result) && result.find("shunting order") != std::string::npos,
+                  "set as a shunting order: " + result);
+            check(game.route_request(*id).has_value() && game.route_request(*id)->shunting, "its request kept for editing");
+            const auto sim_train = game.train_sim_id(*id);
+            check(sim_train && signals->train_settings(*sim_train).mode == simulation::SignalMode::shunt, "the train's signal mode SHUNT");
+            check(game.cancel_route(*id, error), "the shunting order freed");
+            check(!sim_train || signals->train_settings(*sim_train).mode == simulation::SignalMode::normal, "back to NORMAL");
+            take(rec, 1);
+        }
     }
     // Station routes (RoutePoints, TrainRoutes, TrainPaths) and the
     // dispatcher's segments of a train's route.

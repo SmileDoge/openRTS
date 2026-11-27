@@ -66,7 +66,12 @@ void ViewerCamera::rotate(const float pixels_x, const float pixels_y) {
 }
 
 float ViewerCamera::far_plane() const {
-    return (std::max)(distance * 20.0f, min_far);
+    // The orbit's distance widens it (a far view of the whole route), but
+    // not a free camera's, whose distance the wheel still turns unseen
+    // (testers 2026-11-26: the draw distance "grew with the wheel", FPS
+    // down): the world's draw distance's there; an orbit's at most 50 km.
+    if (fly) return (std::max)(min_far, world_draw_distance() * 2.2f);
+    return (std::max)((std::min)(distance * 20.0f, 50000.0f), min_far);
 }
 
 float ViewerCamera::vertical_fov(const float set) const {

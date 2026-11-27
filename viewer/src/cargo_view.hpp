@@ -105,6 +105,21 @@ public:
     [[nodiscard]] std::string report() const;
 
 private:
+    // What the pickups are loading or unloading now (RTS's "Pickup type: %s
+    // Current cargo: %s"), drawn as a small window while they work.
+    struct Activity {
+        std::string pickup;  // its type's name
+        std::string cargo;   // the kind's
+        std::size_t car{};   // the car's number in its train (from 1)
+        bool loading = true; // else unloading
+        bool engine = false; // fuel or sand into a locomotive
+        float fill{};        // the car's percent
+        float mass{};        // its load, kg
+        float stock = -1.0f; // the pickup's stock left, kg (< 0 none kept)
+        float age{};         // s since it last worked
+    };
+    std::vector<Activity> activity_;
+    void draw_activity();
     using Key = std::tuple<std::int32_t, std::int32_t, std::uint32_t>; // world tile, UiD
     using TileKey = std::pair<std::int32_t, std::int32_t>;
     struct Place {

@@ -317,7 +317,8 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         kind = message;
         what = message_value;
     }
-    const float block_scale = k.block_scale_150 ? 150.0f : 300.0f; // its bars: BLOCK_MODE 1 to 150 km/h, else 300
+    // Its arcs: the screen's own top, else BLOCK_MODE 1 to 150 km/h, else 300.
+    const float block_scale = k.block_arc_scale > 0.0f ? k.block_arc_scale : k.block_scale_150 ? 150.0f : 300.0f;
     if (block) {
         // Its start: the picture 0 for 20 s after power-on, nothing else.
         if (s.powered_time < 20.0f) {

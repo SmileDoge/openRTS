@@ -116,6 +116,7 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"grass", text(s.grass)},
         {"grass_density", text(s.grass_density)},
         {"grass_reach", text(s.grass_reach)},
+        {"world_draw_distance", text(s.world_draw_distance)},
         {"signal_lights_real_size", text(s.signal_lights_real_size)},
         {"night_textures", text(s.night_textures)},
         {"screen_supersampling", text(s.screen_supersampling)},
@@ -197,6 +198,7 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.grass = flag_not_zero(value_of, "grass", s.grass);
     s.grass_density = number(value_of, "grass_density", s.grass_density, 0.25f, 2.0f);
     s.grass_reach = number(value_of, "grass_reach", s.grass_reach, 20.0f, 120.0f);
+    s.world_draw_distance = number(value_of, "world_draw_distance", s.world_draw_distance, 500.0f, 4000.0f);
     s.signal_lights_real_size = flag_not_zero(value_of, "signal_lights_real_size", s.signal_lights_real_size);
     s.night_textures = flag_not_zero(value_of, "night_textures", s.night_textures);
     s.screen_supersampling = flag_not_zero(value_of, "screen_supersampling", s.screen_supersampling);

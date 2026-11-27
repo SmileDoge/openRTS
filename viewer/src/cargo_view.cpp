@@ -555,6 +555,29 @@ void CargoView::update(float elapsed, const std::vector<renderer::StreamedInstan
             }
         }
         if (step.car >= 0 && step.volume != 0.0f) trains.cargo_changed(cars[static_cast<std::size_t>(step.car)].unit, cars[static_cast<std::size_t>(step.car)].car);
+        // The activity window's line for it.
+        if (step.car >= 0 && (step.volume != 0.0f || step.engine)) {
+            const auto& c = cars[static_cast<std::size_t>(step.car)];
+            Activity a;
+            a.pickup = tr(formats::pickup_type_name(pickup.description().type));
+            if (pickup.cargo()) a.cargo = catalog_.name(*pickup.cargo());
+            else if (c.cargo && !c.cargo->loads().empty())
+                if (const auto* kind = catalog_.kinds.find(c.cargo->loads().front().cargo)) a.cargo = catalog_.name(*kind);
+            a.car = c.car + 1;
+            a.loading = step.volume >= 0.0f;
+            a.engine = step.engine;
+            a.fill = c.cargo ? c.cargo->fill_percent() : 0.0f;
+            a.mass = c.cargo ? c.cargo->load_mass() : 0.0f;
+            a.stock = pickup.stock();
+            bool found_line = false;
+            for (auto& old : activity_) {
+                if (old.pickup == a.pickup && old.car == a.car) {
+                    old = a;
+                    found_line = true;
+                }
+            }
+            if (!found_line) activity_.push_back(a);
+        }
         // The falling cargo: from over the car (RTS's disc in the air) down to
         // the pile.
         if (step.pouring && step.car >= 0 && pickup.cargo()) {
@@ -979,7 +1002,36 @@ void CargoView::unload_selected(Place& place, TrainView& trains, const std::opti
     w.loaded = -1;
 }
 
+void CargoView::draw_activity() {
+    const float dt = ImGui::GetIO().DeltaTime;
+    for (auto& a : activity_) a.age += dt;
+    std::erase_if(activity_, [](const Activity& a) { return a.age > 3.0f; });
+    if (activity_.empty()) return;
+    const auto& io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 20.0f, 120.0f), ImGuiCond_FirstUseEver, ImVec2(1.0f, 0.0f));
+    ImGui::SetNextWindowBgAlpha(0.8f);
+    if (ImGui::Begin((std::string(tr("Cargo loading")) + "###cargo_activity").c_str(), nullptr,
+                     ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoFocusOnAppearing)) {
+        for (const auto& a : activity_) {
+            ImGui::TextUnformatted(trf("Pickup type: %s    Current cargo: %s", a.pickup.c_str(), a.cargo.empty() ? "-" : a.cargo.c_str()).c_str());
+            if (a.engine) {
+                ImGui::TextUnformatted(trf("Car %zu: the locomotive's supplies", a.car).c_str());
+            } else {
+                ImGui::TextUnformatted(trf(a.loading ? "Car %zu: loading, %.0f %%, %.1f t" : "Car %zu: unloading, %.0f %%, %.1f t", a.car, a.fill,
+                                           a.mass * 0.001f)
+                                           .c_str());
+                ImGui::ProgressBar(a.fill / 100.0f, ImVec2(260.0f, 0.0f));
+            }
+            if (a.stock >= 0.0f) ImGui::TextUnformatted(trf("Stock: %.1f t", a.stock * 0.001f).c_str());
+            if (a.age > 0.5f) ImGui::TextDisabled("%s", tr("(stopped)"));
+            ImGui::Separator();
+        }
+    }
+    ImGui::End();
+}
+
 void CargoView::draw_ui(TrainView& trains) {
+    draw_activity();
     if (!window_) return;
     const auto found = pickups_.find(window_->pickup);
     if (found == pickups_.end() || window_->cars.empty()) {

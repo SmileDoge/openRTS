@@ -809,6 +809,7 @@ struct PanelState {
     bool grass = true;
     float grass_density = 1.0f;
     float grass_reach = 45.0f;
+    float world_draw_distance = 1800.0f;
     int hdr_calibration = 0; // the HDR calibration's step shown (0: closed)
     bool native_water = true; // the openRTS water instead of the environment's layers
     bool native_sky = true;   // openRTS's own sky (atmosphere, volumetric clouds) instead of RTS's dome
@@ -876,6 +877,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     panel.grass = g.grass;
     panel.grass_density = g.grass_density;
     panel.grass_reach = g.grass_reach;
+    panel.world_draw_distance = g.world_draw_distance;
     panel.signal_lights_real_size = g.signal_lights_real_size;
     panel.night_textures = g.night_textures;
     panel.screen_supersampling = g.screen_supersampling;
@@ -913,6 +915,7 @@ void set_panel_graphics(PanelState& panel, const GraphicsSettings& g) {
     g.grass = panel.grass;
     g.grass_density = panel.grass_density;
     g.grass_reach = panel.grass_reach;
+    g.world_draw_distance = panel.world_draw_distance;
     g.signal_lights_real_size = panel.signal_lights_real_size;
     g.night_textures = panel.night_textures;
     g.screen_supersampling = panel.screen_supersampling;
@@ -1400,6 +1403,10 @@ public:
             if (slider_with_input(tr("Trees from the track's or road's edge"), &panel.forest_clearance_distance, 0.5f, 20.0f, tr("%.1f m"), "%.1f"))
                 remember("forest_clearance_distance", std::to_string(panel.forest_clearance_distance));
             ImGui::EndDisabled();
+            ImGui::SetNextItemWidth(220.0f);
+            if (slider_with_input(tr("World draw distance"), &panel.world_draw_distance, 500.0f, 4000.0f, tr("%.0f m"), "%.0f"))
+                remember("world_draw_distance", std::to_string(panel.world_draw_distance));
+            ImGui::TextDisabled("%s", tr("(objects as far as this; 1800 m as RTS; over 1900 m the next ring of tiles loads too, from the route's next load, heavier)"));
             ImGui::BeginDisabled(!panel.experimental_supported);
             if (ImGui::Checkbox(tr("openRTS grass near the eye (experimental path, not as in RTS)"), &panel.grass))
                 remember("grass", panel.grass ? "1" : "0");
@@ -3543,6 +3550,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     renderer::texture_cache_directory() = user_data_directory() / "texture_cache" / "bc7";
     if (const auto kept = remembered("cab_near_plane")) panel.cab_near_plane = std::clamp(std::strtof(kept->c_str(), nullptr), 0.0f, 0.3f);
     set_panel_graphics(panel, panel.kept_graphics);
+    world_draw_distance() = panel.world_draw_distance; // before the route loads (its tiles by it)
     if (options.reshade_depth) panel.reshade_depth = *options.reshade_depth;
     if (options.pbr) panel.pbr = *options.pbr;
     if (options.sky_light) renderer::sky_light_from_probe() = *options.sky_light;
@@ -3795,6 +3803,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         renderer::set_forest_clearance_distance(panel.forest_clearance ? panel.forest_clearance_distance : 0.0f);
         renderer::grass_density() = panel.grass ? panel.grass_density : 0.0f;
         renderer::grass_reach() = panel.grass_reach;
+        world_draw_distance() = panel.world_draw_distance;
         auto frame_input = scene_input(window.get(), input);
         if (frame_input.clock) panel.show_clock = !panel.show_clock;
         if (!loading.done) {

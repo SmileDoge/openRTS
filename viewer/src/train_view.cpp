@@ -5844,8 +5844,13 @@ void TrainView::draw_hud() {
                          ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings
                              | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav)) {
             ImGui::TextUnformatted(cargo_text_.c_str());
+            ImGui::TextDisabled("%s", tr("(a click closes it)"));
+            if (ImGui::IsWindowHovered() && ImGui::IsMouseClicked(ImGuiMouseButton_Left)) cargo_time_ = 0.0f;
         }
         ImGui::End();
+        // Its 30 s by the clock shown, paused or not (the step's was not
+        // always counted: it stayed; testers 2026-11-26).
+        cargo_time_ = (std::max)(cargo_time_ - ImGui::GetIO().DeltaTime, 0.0f);
     }
     const auto* unit = shown_unit();
     if (!unit) return;
@@ -5930,6 +5935,20 @@ void TrainView::draw_hud() {
                             marks += front && rear ? tr(" [CHOCKS front and rear]") : front ? tr(" [CHOCK front]") : tr(" [CHOCK rear]");
                         }
                         if (state.derailed) marks += tr(" [DERAILED]");
+                        // Its load (pickups' bulk, liquids, objects): the kind and how full.
+                        if (car.cargo && !car.cargo->empty()) {
+                            std::string what;
+                            for (const auto& load : car.cargo->loads()) {
+                                if (!load.object.empty()) {
+                                    const auto* object = cargo_catalog_ ? cargo_catalog_->object(load.object) : nullptr;
+                                    what = object ? object->name : load.object;
+                                } else if (const auto* kind = cargo_catalog_ ? cargo_catalog_->kinds.find(load.cargo) : nullptr) {
+                                    what = cargo_catalog_->name(*kind);
+                                }
+                                if (!what.empty()) break;
+                            }
+                            marks += trf(" [cargo %s %.0f%%]", what.empty() ? tr("cargo") : what.c_str(), car.cargo->fill_percent());
+                        }
                         // Wheel slide and the shoes (the realistic air, adhesion.hpp).
                         if (state.wheelslip != 0) {
                             std::string slipping;
@@ -6814,7 +6833,6 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
             repair_.reset();
         }
     }
-    if (cargo_time_ > 0.0f) cargo_time_ = (std::max)(cargo_time_ - elapsed, 0.0f);
 
     accumulator_ += (std::min)(elapsed, 0.25f);
     while (accumulator_ >= simulation::train_step) {
@@ -9236,6 +9254,12 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
                     text += "\n" + (load.object.empty() ? trf("%s: %.1f t, %.1f m3", what.c_str(), load.mass * 0.001f, load.volume)
                                                          : trf("%s: %.1f t", what.c_str(), load.mass * 0.001f));
                 }
+            }
+            // How full (RTS's "Cargo: %0.02ft, used %0.02f of %0.02f volume"):
+            // the percent, the load's mass, its volume of the room.
+            if (c.cargo && c.cargo->loadable()) {
+                text += "\n" + trf("Loaded: %.0f %%, %.2f t, %.2f of %.2f m3", c.cargo->fill_percent(), c.cargo->load_mass() * 0.001f,
+                                    c.cargo->bulk_volume(), c.cargo->room());
             }
             text += "\n" + trf("Total: %.1f t", c.definition->mass * 0.001f);
             cargo_text_ = std::move(text);

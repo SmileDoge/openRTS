@@ -148,7 +148,13 @@ struct GameServer::Impl {
         float sent = -2.0f;      // the distance left last sent (0x4619)
         double send_at = 0.0;
         std::vector<std::uint32_t> opened; // the signal units it opened
+        // A shunting order: its units held at RESTRICTING (the white), each
+        // with its distance along the leg, closed once the head passes it.
+        bool shunting = false;
+        std::vector<std::pair<std::uint32_t, double>> shunt_units;
+        std::uint64_t sim_train{}; // the train's signal mode set SHUNT for the order (0 none)
     };
+    std::map<std::uint32_t, GameServer::RouteRequest> requests; // train -> the map's request of its route
     // A route opens its manual signals facing the train (0x40918C: not those
     // whose aspect the dispatcher picked), the signals being run as
     // rts_server.exe runs them.
@@ -163,6 +169,12 @@ struct GameServer::Impl {
             if (!at || span >= route.leg.spans.size() || route.leg.spans[span].forward != head.forward) continue;
             done.insert(*unit);
             if (signals->unit_mode(*unit) != simulation::UnitMode::manual || signals->unit_pinned(*unit)) continue;
+            if (route.shunting) {
+                // The shunting white: RESTRICTING where its type has it.
+                signals->hold_aspect(*unit, formats::SignalAspect::restricting, false);
+                route.shunt_units.emplace_back(*unit, *at);
+                continue;
+            }
             signals->set_unit_mode(*unit, simulation::UnitMode::open);
             route.opened.push_back(*unit);
         }
@@ -203,6 +215,9 @@ struct GameServer::Impl {
         }
         return std::nullopt;
     }
+    // The vector nodes other trains than `train` stand on (a route goes
+    // round them).
+    [[nodiscard]] std::set<std::uint32_t> occupied_by_others(std::uint32_t train) const;
     // Where a train stands on the server's network: per vector node, the
     // stretch it covers.
     struct Covered {
@@ -256,6 +271,14 @@ struct GameServer::Impl {
         for (const auto unit : route.opened) {
             if (signals->unit_mode(unit) == simulation::UnitMode::open) signals->set_unit_mode(unit, simulation::UnitMode::manual);
         }
+        for (const auto& [unit, _] : route.shunt_units) close_shunt(unit);
+        // The train's signal mode back to normal (SetSignalMode NORMAL).
+        if (route.sim_train != 0) signals->set_train_settings(route.sim_train, simulation::TrainSignalSettings{.mode = simulation::SignalMode::normal});
+    }
+    // A unit a shunting order held white: back to its stop.
+    void close_shunt(const std::uint32_t unit) {
+        if (!signals || signals->unit_pinned(unit) || signals->unit_mode(unit) != simulation::UnitMode::manual) return;
+        signals->hold_aspect(unit, formats::SignalAspect::stop, false);
     }
     std::map<std::uint32_t, HeldRoute> routes;
     [[nodiscard]] std::optional<std::uint32_t> holder(const std::uint32_t node) const {
@@ -1378,6 +1401,16 @@ void GameServer::tick(const double now) {
                 route.ended = true;
             }
             if (left <= 0.5f) route.ended = true;
+            // A shunting order's signals close as the head passes each.
+            if (route.shunting && leading) {
+                if (const auto at = route.leg.locate(leading->node(), leading->offset())) {
+                    std::erase_if(route.shunt_units, [&](const auto& u) {
+                        if (u.second + 2.0 >= *at) return false;
+                        impl.close_shunt(u.first);
+                        return true;
+                    });
+                }
+            }
             if (now >= route.send_at && std::abs(left - route.sent) >= 0.5f) {
                 send_route_left(it->first, left, route.rear_first);
                 route.sent = left;
@@ -2151,7 +2184,8 @@ bool GameServer::set_route(const std::uint32_t train, const std::vector<std::vec
             double shortest = 0.0;
             for (const auto& place : places(stops[i])) {
                 auto trial = plan;
-                trial.points.push_back({.kind = simulation::PlanPointKind::end, .node = place.node, .offset = place.offset});
+                trial.points.push_back({.kind = simulation::PlanPointKind::end, .node = place.node, .offset = place.offset,
+                                        .avoid = impl.occupied_by_others(train)});
                 const auto route = simulation::build_route(impl.network, trial);
                 if (!route.ok() || route.legs.size() != 1) continue;
                 const double length = route.legs[0].length();
@@ -2165,7 +2199,8 @@ bool GameServer::set_route(const std::uint32_t train, const std::vector<std::vec
                 break;
             }
             if (!plan.points.empty()) plan.points.back().kind = simulation::PlanPointKind::via;
-            plan.points.push_back({.kind = simulation::PlanPointKind::end, .node = chosen->node, .offset = chosen->offset});
+            plan.points.push_back({.kind = simulation::PlanPointKind::end, .node = chosen->node, .offset = chosen->offset,
+                                   .avoid = impl.occupied_by_others(train)});
         }
         if (!reached) continue;
         auto route = simulation::build_route(impl.network, plan);
@@ -2179,7 +2214,13 @@ bool GameServer::set_route(const std::uint32_t train, const std::vector<std::vec
         result = "no way from train " + std::to_string(train) + " to the signal";
         return false;
     }
-    const auto& leg = best->legs[0];
+    return hold_leg(train, best->legs[0], from_rear, result);
+}
+
+bool GameServer::hold_leg(const std::uint32_t train, const simulation::RouteLeg& leg, const bool from_rear, std::string& result,
+                          const bool shunting) {
+    auto& impl = *impl_;
+    impl.requests.erase(train); // set_requested_route keeps its own after
     // Every junction must be free to set: none under a train, locked or on
     // another train's route the other way.
     for (const auto& j : leg.junctions) {
@@ -2199,7 +2240,16 @@ bool GameServer::set_route(const std::uint32_t train, const std::vector<std::vec
         }
     }
     std::size_t thrown = 0;
-    Impl::HeldRoute held{.leg = leg, .rear_first = from_rear};
+    Impl::HeldRoute held{.leg = leg, .rear_first = from_rear, .shunting = shunting};
+    // A shunting order: the train's signal mode SHUNT (as an activity's
+    // SetSignalMode), its shunting heads obeyed, till the route ends.
+    if (shunting && impl.signals) {
+        if (const auto* t = impl.train(train); t && t->sim) {
+            held.sim_train = t->sim->id();
+            impl.signals->set_train_settings(held.sim_train,
+                                            simulation::TrainSignalSettings{.mode = simulation::SignalMode::shunt, .obey_shunting = true});
+        }
+    }
     for (const auto& j : leg.junctions) {
         const auto* state = impl.network.junction(j.junction);
         if (!state) continue;
@@ -2258,6 +2308,82 @@ std::vector<std::uint32_t> GameServer::route_junctions(const std::uint32_t train
         for (const auto& [node, _] : it->second.junctions) out.push_back(node);
     }
     return out;
+}
+
+GameServer::RoutePreview GameServer::preview_route(const std::uint32_t train, const RouteRequest& request) const {
+    const auto& impl = *impl_;
+    RoutePreview out;
+    const auto it = impl.trains.find(train);
+    if (it == impl.trains.end() || !it->second.sim || !it->second.sim->placed()) {
+        out.error = "train " + std::to_string(train) + " is not on the server's track";
+        return out;
+    }
+    if (!request.end) {
+        out.error = "no end set";
+        return out;
+    }
+    const auto& sim = *it->second.sim;
+    const auto end = request.rear_first ? sim.rear_end() : sim.front_end();
+    if (!end) {
+        out.error = "train " + std::to_string(train) + " has no end on the track";
+        return out;
+    }
+    simulation::PathPlan plan;
+    plan.name = "route";
+    plan.start = {end->node(), end->offset(), request.rear_first ? !end->forward() : end->forward()};
+    const auto avoid = impl.occupied_by_others(train);
+    for (const auto& v : request.via)
+        plan.points.push_back({.kind = simulation::PlanPointKind::via, .node = v.node, .offset = v.offset, .branches = request.branches, .avoid = avoid});
+    plan.points.push_back(
+        {.kind = simulation::PlanPointKind::end, .node = request.end->node, .offset = request.end->offset, .branches = request.branches, .avoid = avoid});
+    const auto built = simulation::build_route(impl.network, plan);
+    if (!built.ok() || built.legs.size() != 1 || built.legs[0].length() <= 0.5) {
+        out.error = built.error.empty() ? "no free way through the points (behind the train, or other trains stand on it)" : built.error;
+        return out;
+    }
+    out.ok = true;
+    out.leg = built.legs[0];
+    return out;
+}
+
+bool GameServer::set_requested_route(const std::uint32_t train, const RouteRequest& request, std::string& result) {
+    auto preview = preview_route(train, request);
+    if (!preview.ok) {
+        result = preview.error;
+        return false;
+    }
+    // The old route freed first (an edit), kept if the new one cannot be set.
+    std::optional<Impl::HeldRoute> old;
+    if (const auto it = impl_->routes.find(train); it != impl_->routes.end()) {
+        old = std::move(it->second);
+        impl_->close_signals(*old);
+        old->opened.clear();
+        old->shunt_units.clear();
+        impl_->routes.erase(it);
+    }
+    if (!hold_leg(train, preview.leg, request.rear_first, result, request.shunting)) {
+        if (old) {
+            impl_->open_signals(*old);
+            impl_->routes[train] = std::move(*old);
+        }
+        return false;
+    }
+    impl_->requests[train] = request;
+    if (request.shunting) result += " (shunting order)";
+    return true;
+}
+
+std::optional<std::uint64_t> GameServer::train_sim_id(const std::uint32_t train) const {
+    const auto it = impl_->trains.find(train);
+    if (it == impl_->trains.end() || !it->second.sim) return std::nullopt;
+    return it->second.sim->id();
+}
+
+std::optional<GameServer::RouteRequest> GameServer::route_request(const std::uint32_t train) const {
+    if (!impl_->routes.contains(train)) return std::nullopt;
+    const auto it = impl_->requests.find(train);
+    if (it == impl_->requests.end()) return std::nullopt;
+    return it->second;
 }
 
 bool GameServer::cancel_route(const std::uint32_t train, std::string& error) {
@@ -2595,6 +2721,15 @@ bool GameServer::set_helper(const std::string_view nick, const std::optional<std
 
 // ---- the dispatcher's segments: station routes (rts_server.exe 0x450B) -------------
 
+std::set<std::uint32_t> GameServer::Impl::occupied_by_others(const std::uint32_t train) const {
+    std::set<std::uint32_t> out;
+    for (const auto& [id, t] : trains) {
+        if (id == train || !t.sim || !t.sim->placed()) continue;
+        for (const auto& c : extent(*t.sim)) out.insert(c.node);
+    }
+    return out;
+}
+
 void GameServer::set_station_routes(const StationRoutes* routes) noexcept {
     impl_->station_routes = routes;
 }
@@ -2913,6 +3048,32 @@ bool GameServer::lay_route_to(const std::uint32_t train, const simulation::Track
         return false;
     }
     return lay_route(train, *distance, rear_first, result);
+}
+
+bool GameServer::lay_free_route_to(const std::uint32_t train, const simulation::TrackLocation& to, const bool rear_first, std::string& result) {
+    auto& impl = *impl_;
+    const auto* t = impl.train(train);
+    if (!t || !t->sim || !t->sim->placed()) {
+        result = "train " + std::to_string(train) + " is not on the server's track";
+        return false;
+    }
+    const auto end = rear_first ? t->sim->rear_end() : t->sim->front_end();
+    if (!end) {
+        result = "train " + std::to_string(train) + " has no end on the track";
+        return false;
+    }
+    simulation::TrackLocation from{end->node(), end->offset(), rear_first ? !end->forward() : end->forward()};
+    // The shortest free way (other trains' track gone round), its
+    // junctions thrown as it needs (testers 2026-11-26: a route laid along
+    // the junctions as they stood ran onto standing cars).
+    simulation::PathPlan plan;
+    plan.name = "route";
+    plan.start = from;
+    plan.points.push_back({.kind = simulation::PlanPointKind::end, .node = to.node, .offset = to.offset, .avoid = impl.occupied_by_others(train)});
+    const auto built = simulation::build_route(impl.network, plan);
+    if (built.ok() && built.legs.size() == 1 && built.legs[0].length() > 0.5) return hold_leg(train, built.legs[0], rear_first, result);
+    result = "no free way from train " + std::to_string(train) + " to the place (other trains stand on it)";
+    return false;
 }
 
 net::RouteSegment GameServer::segment_record(const std::size_t index) const {

@@ -121,8 +121,9 @@ struct RecorderState {
     bool whistle_flag = false; // + 8 0x10000000
     bool epk_bit = false;      // + 32 bit 1
     bool alsn_on = false;      // Engine +106
-    // openRTS (not Brakes.dll): the request the ALSN's coming on made (a КЖ
-    // or no code at once, a hot start too) the РБ answers as well as the
+    // openRTS (not Brakes.dll): a request in the first 8 s after the ALSN
+    // came on (no code, then its first code past the ALSN's delay; a hot
+    // start too) the РБ answers as well as the
     // РБС, as on a real engine; Brakes.dll's РБ does not past 35 s
     // standing (testers 2026-11-26). The time since the ALSN came on, s.
     bool request_at_switch_on = false;

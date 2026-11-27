@@ -117,6 +117,11 @@ struct KlubSettings {
     bool block_mode = false;     // BLOCK_MODE (the БЛОК's whistle codes)
     std::uint32_t screen_type = 0;  // KLUB_BILTYPE (2: the ЭП2К's screen)
     bool block_scale_150 = false;   // BLOCK_MODE 1: the БЛОК's bars to 150 km/h (else 300)
+    // openRTS: the top of the screen's own speed arcs (its "Скорость красная"
+    // SECTOR's ValuesRange), 0 none: Brakes.dll's 150 / 300 then. The ЭП2Д's
+    // screen goes to 140 while Brakes.dll counts to 150, so its red arc stood
+    // 10 km/h under the permitted speed (testers 2026-11-27).
+    float block_arc_scale = 0.0f;
 };
 
 // What the КЛУБ gets this step.

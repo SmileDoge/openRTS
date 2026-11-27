@@ -268,6 +268,35 @@ public:
     // rear when `rear_first`) to `to` (the console's map); false when `to` is
     // not ahead of it.
     bool lay_route_to(std::uint32_t train, const simulation::TrackLocation& to, bool rear_first, std::string& result);
+    // The console's map's "route here": the shortest way not onto other
+    // trains' track, its junctions thrown as it needs.
+    bool lay_free_route_to(std::uint32_t train, const simulation::TrackLocation& to, bool rear_first, std::string& result);
+    // A route the console's map asks for (its "Задать маршрут" mode): from
+    // the train's head (its rear, `rear_first`: the other way) through the
+    // `via` points in order to `end`, by the chosen branches of junctions
+    // (else the shortest way), never onto another train's track. As a train
+    // order (its signals opened) or a shunting order (theirs RESTRICTING,
+    // the white, each closed as the head passes it).
+    struct RouteRequest {
+        bool rear_first = false;
+        std::vector<simulation::TrackLocation> via;
+        std::optional<simulation::TrackLocation> end;
+        std::map<std::uint32_t, std::uint32_t> branches; // junction node -> branch
+        bool shunting = false;
+    };
+    struct RoutePreview {
+        bool ok = false;
+        simulation::RouteLeg leg;
+        std::string error;
+    };
+    // The way such a request would take, nothing set.
+    [[nodiscard]] RoutePreview preview_route(std::uint32_t train, const RouteRequest& request) const;
+    // Sets it (the old route of the train freed first); kept for editing.
+    bool set_requested_route(std::uint32_t train, const RouteRequest& request, std::string& result);
+    // The request the train's route was set by, if the map set it.
+    [[nodiscard]] std::optional<RouteRequest> route_request(std::uint32_t train) const;
+    // The train's simulation id (its signals' settings are kept by it).
+    [[nodiscard]] std::optional<std::uint64_t> train_sim_id(std::uint32_t train) const;
     // The junctions a train's route holds (TDB nodes), in its order.
     [[nodiscard]] std::vector<std::uint32_t> route_junctions(std::uint32_t train) const;
     // For a map: each car's ends where the server has the train (empty when
@@ -356,6 +385,9 @@ public:
     [[nodiscard]] std::vector<std::string> take_log();
 
 private:
+    // A route's leg held for `train`: its junctions free and thrown as it
+    // needs, held until its rear has passed them, the signals along opened.
+    bool hold_leg(std::uint32_t train, const simulation::RouteLeg& leg, bool from_rear, std::string& result, bool shunting = false);
     struct User;
     struct Train;
     struct Impl;

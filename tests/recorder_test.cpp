@@ -152,6 +152,22 @@ void alsn_on_at_kzh() {
         step(u, 10.0f);
         check(!u.out.vent, "ALSN on at КЖ standing, answered: no ЭПК");
     }
+    {
+        // No code until the ALSN's delay passed, then К (a white): the
+        // second request the РБ answers too.
+        auto u = make();
+        u.in.aspect = 8;
+        step(u, 5.0f);
+        u.cabs[0].rb = u.cabs[0].rb_pressed = true;
+        step(u, dt);
+        u.in.aspect = 0;
+        step(u, 1.0f);
+        u.cabs[0].rb = u.cabs[0].rb_pressed = true;
+        step(u, dt);
+        check(u.s.whistle == 0.0f && !(u.s.flags & recorder_flag::stood), "ALSN on, К past the delay: the РБ answers (openRTS)");
+        step(u, 10.0f);
+        check(!u.out.vent, "ALSN on, К past the delay, answered: no ЭПК");
+    }
 }
 
 void kpd() {

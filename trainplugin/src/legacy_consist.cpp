@@ -1865,6 +1865,15 @@ LegacyConsist::KlubCar* LegacyConsist::klub_car(const std::size_t i) {
         std::unique_ptr<KlubCar> made;
         auto parameters = klub_parameters(*definition->engine);
         if (parameters.present && (parameters.settings.setup & 7) && parameters.setup_index >= 0) {
+            // The БЛОК screen's own arc top (its sub-object 39, "Скорость
+            // красная", a SECTOR) where it is not Brakes.dll's 150 / 300.
+            if (const auto* cab_description = cab(i); cab_description && !parameters.cabs.empty() && parameters.cabs.front().screen >= 0) {
+                for (const auto& display : cab_description->displays) {
+                    if (static_cast<std::int32_t>(display.id) != parameters.cabs.front().screen || display.screen.objects.size() <= 39) continue;
+                    const auto& arc = display.screen.objects[39];
+                    if (arc.type == formats::ScreenObjectType::sector && arc.range[1] > arc.range[0]) parameters.settings.block_arc_scale = arc.range[1];
+                }
+            }
             made = std::make_unique<KlubCar>();
             made->parameters = std::move(parameters);
         }

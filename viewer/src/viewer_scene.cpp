@@ -430,7 +430,11 @@ public:
             renderer::set_forest_clearance_axes(std::move(axes));
             forest_distance_ = renderer::forest_clearance_distance();
         }
-        streamer_ = std::make_unique<renderer::RouteStreamer>(content_.vfs(), route_, origin_, tile_radius);
+        // Over some 1.9 km the next ring of world tiles too (the setting's,
+        // as the route loads).
+        // The remembered setting itself: the window may not have read it yet.
+        if (const auto kept = remembered("world_draw_distance")) world_draw_distance() = std::strtof(kept->c_str(), nullptr);
+        streamer_ = std::make_unique<renderer::RouteStreamer>(content_.vfs(), route_, origin_, draw_distance_now() > 1900.0f ? tile_radius + 1 : tile_radius);
         streamer_->update(origin_);
         library_ = std::make_unique<renderer::ModelLibrary>(gpu.models, content_.vfs(), streamer_->texture_directories());
         model_cache_.clear();
@@ -1393,14 +1397,14 @@ public:
         if (train_) {
             renderer.set_train(true);
             train_->submit(renderer, *library_,
-                           {.frustum = culling_ ? &frustum : nullptr, .eye = frame.eye, .draw_distance = culling_ ? draw_distance : 0.0f,
+                           {.frustum = culling_ ? &frustum : nullptr, .eye = frame.eye, .draw_distance = culling_ ? draw_distance_now() : 0.0f,
                             .shadow_range = frame.shadow_range});
             renderer.set_train(false);
         }
         if (cargo_) cargo_->submit(renderer, *library_);
-        if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance : 0.0f);
+        if (roads_ && effects_.traffic) roads_->submit(renderer, *library_, culling_ ? &frustum : nullptr, frame.eye, culling_ ? draw_distance_now() : 0.0f);
         renderer.set_moving(false);
-        if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance, frame.view_zoom);
+        if (signals_) signals_->collect_lights(streamer_->visible_instances(), *library_, frame.eye, draw_distance_now(), frame.view_zoom);
     }
 
     [[nodiscard]] std::optional<formats::RoutePosition> origin() const override { return origin_; }
@@ -2252,7 +2256,7 @@ public:
         const auto models = library_->stats();
         ImGui::Text(tr("Tiles: %zu/%zu  |  Instances: %zu"), stream.loaded_tiles, stream.requested_tiles,
                     stream.visible_instances);
-        ImGui::Text(tr("Drawn: %zu within %.0f m"), drawn_instances_, draw_distance);
+        ImGui::Text(tr("Drawn: %zu within %.0f m"), drawn_instances_, draw_distance_now());
         if (world_sounds_) {
             const auto sounds = world_sounds_->stats();
             ImGui::Text(tr("World sounds: %zu sources (%zu active, %zu voices), %zu scripts, %zu clips"), sounds.sources,
@@ -2461,13 +2465,13 @@ private:
         });
         return it == environments_.end() ? nullptr : &*it;
     }
-    static constexpr float draw_distance = 1800.0f;
+    static float draw_distance_now() { return std::clamp(world_draw_distance(), 500.0f, 4000.0f); }
 
     // Horizontal-only distance test, matching a ground-level view range.
     [[nodiscard]] static bool beyond_draw_distance(const glm::vec3& center, const float radius, const glm::vec3& eye) {
         const auto dx = center.x - eye.x;
         const auto dz = center.z - eye.z;
-        const auto limit = draw_distance + radius;
+        const auto limit = draw_distance_now() + radius;
         return dx * dx + dz * dz > limit * limit;
     }
 
