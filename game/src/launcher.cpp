@@ -1710,7 +1710,7 @@ void Launcher::State::draw_account() {
         if (submit) start_account_login();
 
         ImGui::SetCursorScreenPos({left, box.min.y + 382.0f * scale});
-        if (ImGui::Button("Регистрация на сайте ↗", {field_width, 40.0f * scale})) open_link("https://dark-team.ru/register");
+        if (ImGui::Button("Регистрация на сайте", {field_width, 40.0f * scale})) open_link("https://dark-team.ru/register");
 
         if (!account_error.empty()) {
             ImGui::PushStyleColor(ImGuiCol_Text, error_colour);
