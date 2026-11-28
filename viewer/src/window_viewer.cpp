@@ -440,7 +440,7 @@ public:
 
     ~PresentationSurface() {
         release_depth();
-        if (configured_) wgpuSurfaceUnconfigure(surface_);
+        if (configured_ && !renderer::device_lost()) wgpuSurfaceUnconfigure(surface_);
         if (surface_) wgpuSurfaceRelease(surface_);
     }
 
@@ -470,13 +470,14 @@ public:
 
     void set_vsync(const bool enabled) {
         const auto mode = enabled ? WGPUPresentMode_Fifo : uncapped_mode_;
-        if (!configured_ || config_.presentMode == mode) return;
+        if (!configured_ || config_.presentMode == mode || renderer::device_lost()) return;
         config_.presentMode = mode;
         wgpuSurfaceConfigure(surface_, &config_);
     }
 
     void resize(const std::uint32_t width, const std::uint32_t height) {
         if (config_.width == width && config_.height == height) return;
+        if (renderer::device_lost()) return;
         config_.width = width;
         config_.height = height;
         wgpuSurfaceConfigure(surface_, &config_);
@@ -498,6 +499,8 @@ public:
             wgpuTextureAddRef(offscreen_);
             return offscreen_;
         }
+        // Lost, the surface's calls abort in wgpu-native: nothing drawn.
+        if (renderer::device_lost()) return nullptr;
         WGPUSurfaceTexture frame{};
         wgpuSurfaceGetCurrentTexture(surface_, &frame);
         const bool usable = frame.status == WGPUSurfaceGetCurrentTextureStatus_SuccessOptimal
@@ -506,7 +509,7 @@ public:
     }
 
     void present() const {
-        if (!offscreen_) wgpuSurfacePresent(surface_);
+        if (!offscreen_ && !renderer::device_lost()) wgpuSurfacePresent(surface_);
     }
 
 private:
@@ -3663,6 +3666,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         panel.effects.show_occlusion = has("show-ao");
         panel.effects.light_shafts = has("shafts");
         panel.effects.temporal_aa = has("taa");
+        panel.effects.ray_shadows = has("rays");
         if (const auto at = list.find("taau"); at != std::string::npos && at + 4 < list.size() && list[at + 4] >= '0' && list[at + 4] <= '4')
             panel.taa_scale = list[at + 4] - '0';
         if (const auto at = list.find("taa-view"); at != std::string::npos && at + 8 < list.size())
@@ -3710,7 +3714,18 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     DiscordStatus discord(options.discord && !capture);
     double scripted_save_loaded_at = -1.0; // --save-game-after
     bool scripted_save_done = false;
+    bool lost = false;
     while (!glfwWindowShouldClose(window.get())) {
+        // The device lost (renderer::device_lost: the driver reset it, as a
+        // full screen switch did on Vulkan with DLSS, testers 2026-11-28):
+        // the game ends here with its own code, the menu says why, instead
+        // of wgpu-native aborting at the surface's next call.
+        if (renderer::device_lost()) {
+            std::cerr << "openRTS: the graphics device was lost (" << renderer::device_lost_reason()
+                      << "); the game ends. DirectX 12 may hold where Vulkan lost it." << std::endl;
+            lost = true;
+            break;
+        }
         // The start's loading (as the last update left it): its screen, no
         // input for the scene, and for a start in the cab no time passing.
         const auto loading = scene.loading();
@@ -3749,7 +3764,26 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         if (!panel.window_mode_fixed) {
             // Alt+Enter: the window, or the full screen kind chosen last.
             const auto down = [&window](const int key) { return glfwGetKey(window.get(), key) == GLFW_PRESS; };
-            const bool switch_keys = (down(GLFW_KEY_LEFT_ALT) || down(GLFW_KEY_RIGHT_ALT)) && (down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER));
+            // OPENRTS_TEST_ALT_ENTER=<s>[,<s>...] (automated runs): Alt+Enter held for a frame at those seconds.
+            static std::vector<double> test_at = [] {
+                std::vector<double> times;
+                if (const char* text = std::getenv("OPENRTS_TEST_ALT_ENTER")) {
+                    for (std::string rest = text; !rest.empty();) {
+                        times.push_back(std::atof(rest.c_str()));
+                        const auto comma = rest.find(',');
+                        rest = comma == std::string::npos ? std::string{} : rest.substr(comma + 1);
+                    }
+                }
+                return times;
+            }();
+            bool test_press = false;
+            if (!test_at.empty() && now >= test_at.front()) {
+                test_at.erase(test_at.begin());
+                test_press = !input.window_mode_key_down;
+                std::fprintf(stderr, "[test] Alt+Enter at %.2f s\n", now);
+            }
+            const bool switch_keys =
+                test_press || ((down(GLFW_KEY_LEFT_ALT) || down(GLFW_KEY_RIGHT_ALT)) && (down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER)));
             if (switch_keys && !input.window_mode_key_down) {
                 panel.window_mode = panel.window_mode == WindowMode::windowed ? panel.full_mode : WindowMode::windowed;
                 remember("window_mode", window_mode_key(panel.window_mode));
@@ -4775,6 +4809,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
             }
         }
     }
+    if (lost) return exit_code::device_lost;
     return scene.close_code();
 }
 

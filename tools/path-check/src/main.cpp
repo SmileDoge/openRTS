@@ -21,6 +21,10 @@
 
 #include <openrts/core/installation.hpp>
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/sound.hpp>
+#include <openrts/simulation/savpe.hpp>
+#include <openrts/simulation/timetable.hpp>
+#include <openrts/simulation/electronic_map.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/route_world.hpp>
@@ -102,7 +106,9 @@ int main(int argc, char** argv) {
             following = std::atof(argv[++i]);
         } else if (arg == "--junction" && i + 1 < argc) {
             ++i;
-        } else if (arg == "--replan") {
+        } else if (arg == "--replan" || arg == "--savpe") {
+        } else if (arg == "--ek" && i + 2 < argc) {
+            i += 2;
         } else {
             wanted.push_back(arg);
         }
@@ -207,6 +213,87 @@ int main(int argc, char** argv) {
     if (paths.empty()) {
         std::printf("no paths\n");
         return 1;
+    }
+    // --ek <track> <station>: at each platform of that station on the paths
+    // (its name containing the text), the КЛУБ's way to station track
+    // <track> (ElectronicMap::way): its parts and the switches it takes off
+    // the straight with their speeds (the limits it gives).
+    for (int a = 4; a + 2 < argc; ++a) {
+        if (std::string(argv[a]) != "--ek") continue;
+        const auto number = static_cast<std::uint32_t>(std::atoi(argv[a + 1]));
+        const std::string station = argv[a + 2];
+        const auto database = formats::load_route_database(vfs, route);
+        const simulation::ElectronicMap map(*network, database, {});
+        std::printf("map: %zu station tracks; track %u at '%s'\n", map.tracks().size(), number, station.c_str());
+        // Every station track with its name, number and nodes (to find a station's).
+        for (const auto& t : map.tracks()) {
+            std::printf("track '%s' '%s' number %u park '%s' nodes", t.station.c_str(), t.name.c_str(), t.number, t.park.c_str());
+            for (const auto& sp : t.spans) std::printf(" %u[%.0f..%.0f]", sp.node, sp.from, sp.to);
+            std::printf("\n");
+        }
+        for (const auto& path : paths) {
+            auto plan = simulation::plan_from_path(*network, path, &error);
+            if (!plan) continue;
+            const auto built = simulation::build_route(*network, *plan);
+            if (!built.ok()) continue;
+            const auto& items = network->database().items;
+            for (const auto& pass : simulation::platform_passes(*network, built)) {
+                if (pass.far_item >= items.size() || (station != "*" && items[pass.far_item].station.find(station) == std::string::npos)) continue;
+                for (const double back : {pass.length, 0.0}) {
+                    const auto at = built.legs[pass.leg].at(pass.far - back);
+                    if (!at) continue;
+                    for (const bool turned : {false, true}) {
+                    const auto way = map.way(*network, at->node, at->offset, turned ? !at->forward : at->forward, number);
+                    if (turned) std::printf("  facing back: ");
+                    std::printf("%s %s: %s, %s end (node %u at %.0f): way %zu parts", path.id.c_str(), path.file.c_str(),
+                                items[pass.far_item].station.c_str(), back > 0.0 ? "near" : "far", at->node, at->offset,
+                                way.parts.size());
+                    if (!way.parts.empty()) std::printf(" (to %.0f m, last node %u)", way.parts.back().distance, way.parts.back().node);
+                    for (const auto& t : way.turns) std::printf(", turn at %.0f m %.0f km/h", t.distance, t.speed * 3.6);
+                    std::printf("\n");
+                    }
+                }
+            }
+        }
+        return 0;
+    }
+    // --savpe: each path's stops as openRTS's САВПЭ sees them (simulation/
+    // savpe.hpp): the platforms in order, their kind, km and the voice of
+    // their name found in the installed САВПЭ's script.
+    if (std::find(argv + 4, argv + argc, std::string("--savpe")) != argv + argc) {
+        const auto script_path = core::VirtualPath::parse("TRAINS/TRAINSET/mdd_Libraries/Usavp/Usavp.sms");
+        const auto script = script_path && vfs.exists(*script_path) ? formats::load_sound_script(vfs, *script_path) : formats::SoundScript{};
+        const auto lines = simulation::savpe_voice_lines(script);
+        std::printf("САВПЭ voices: %zu lines\n", lines.size());
+        for (const auto& line : lines)
+            std::printf("  line %u: %zu trains, %zu points, next '%s' doors '%s' welcome '%s' all '%s' terminus '%s'\n", line.route,
+                        line.trains.size(), line.points.size(), line.next.c_str(), line.doors.c_str(), line.welcome.c_str(),
+                        line.all_stops.c_str(), line.terminus.c_str());
+        for (const auto& path : paths) {
+            auto plan = simulation::plan_from_path(*network, path, &error);
+            if (!plan) continue;
+            const auto built = simulation::build_route(*network, *plan);
+            if (!built.ok()) continue;
+            auto stops = simulation::savpe_stops(*network, built);
+            const int line = simulation::match_savpe_voices(stops, lines);
+            std::size_t voiced = 0;
+            for (const auto& s : stops) voiced += s.arrival.empty() ? 0 : 1;
+            std::printf("%s %s: %zu stops, %zu voiced (line %d)\n", path.id.c_str(), path.file.c_str(), stops.size(), voiced,
+                        line >= 0 ? static_cast<int>(lines[static_cast<std::size_t>(line)].route) : -1);
+            for (const auto& s : stops)
+            {
+                const auto base = [](const std::string& f) { return f.substr(f.find_last_of('/') + 1); };
+                const auto join = [&](const std::vector<std::string>& files) {
+                    std::string out;
+                    for (const auto& f : files) out += (out.empty() ? "" : " + ") + base(f);
+                    return out;
+                };
+                std::printf("  %-28s %-7s at %8.0f m, platform %4.0f m, km %7.2f  name [%s] approach [%s] arrival [%s]\n",
+                            s.name.c_str(), s.station ? "station" : "halt", s.far, s.length, s.km, base(s.voice).c_str(),
+                            join(s.approach).c_str(), join(s.arrival).c_str());
+            }
+        }
+        return 0;
     }
     // --replan: each path planned again from its start and end only (as
     // Track control plans a new path) and compared with the .pat, junction

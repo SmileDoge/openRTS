@@ -12,5 +12,6 @@ inline constexpr int surface_failed = 7;
 inline constexpr int renderer_failed = 8;  // renderer, overlay or scene GPU setup failed
 inline constexpr int network_failed = 9;   // the server could not be joined (its "status:" line says why)
 inline constexpr int server_gone = 10;     // the network game's server stopped, or the connection to it broke
+inline constexpr int device_lost = 11;     // the graphics device was lost while running (renderer::device_lost)
 
 } // namespace openrts::viewer::exit_code

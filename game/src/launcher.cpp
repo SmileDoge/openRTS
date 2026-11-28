@@ -1100,6 +1100,8 @@ struct Launcher::State {
             // A failed join keeps its status: it says why.
             net_step = NetStep::none;
             status = code == static_cast<DWORD>(viewer::exit_code::server_gone) ? std::string(tr("The server stopped: the network game is over."))
+                   : code == static_cast<DWORD>(viewer::exit_code::device_lost)
+                       ? std::string(tr("The video card reset the game's graphics (the device was lost). Try DirectX 12 in Graphics."))
                    : code == 0 ? std::string(tr("The game is over."))
                                : viewer::trf("The game ended with code %lu: see openrts.log in %s.", static_cast<unsigned long>(code),
                                              utf8(viewer::user_data_directory()).c_str());

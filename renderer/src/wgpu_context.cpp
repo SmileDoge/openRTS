@@ -6,6 +6,8 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <mutex>
+#include <atomic>
 #include <filesystem>
 #include <string>
 #include <thread>
@@ -46,6 +48,26 @@ void on_uncaptured_error(WGPUDevice const*, const WGPUErrorType type, const WGPU
     std::fprintf(stderr, "WebGPU error %d: %.*s\n", static_cast<int>(type),
                  static_cast<int>(message.data ? (message.length == WGPU_STRLEN ? std::strlen(message.data) : message.length) : 0),
                  message.data ? message.data : "");
+    std::fflush(stderr);
+}
+
+std::atomic<bool> lost_flag{false};
+std::mutex lost_mutex;
+std::string lost_reason;
+
+// The device lost while running (not destroyed by us at the end).
+void on_device_lost(WGPUDevice const*, const WGPUDeviceLostReason reason, const WGPUStringView message, void*, void*) {
+    if (reason == WGPUDeviceLostReason_Destroyed || reason == WGPUDeviceLostReason_InstanceDropped
+        || reason == WGPUDeviceLostReason_FailedCreation)
+        return;
+    const std::string text(message.data ? message.data : "",
+                           message.data ? (message.length == WGPU_STRLEN ? std::strlen(message.data) : message.length) : 0);
+    {
+        std::lock_guard lock(lost_mutex);
+        lost_reason = text.empty() ? std::string("unknown") : text;
+    }
+    lost_flag = true;
+    std::fprintf(stderr, "graphics: the device was lost (reason %d): %s\n", static_cast<int>(reason), text.c_str());
     std::fflush(stderr);
 }
 
@@ -254,6 +276,7 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
         const WGPUDeviceDescriptor device_descriptor{
             .requiredFeatureCount = features.size(),
             .requiredFeatures = features.empty() ? nullptr : features.data(),
+            .deviceLostCallbackInfo = {.mode = WGPUCallbackMode_AllowSpontaneous, .callback = on_device_lost},
             .uncapturedErrorCallbackInfo = {.callback = on_uncaptured_error},
         };
         wgpuAdapterRequestDevice(context.adapter_, &device_descriptor, device_callback);
@@ -327,6 +350,13 @@ std::uint32_t supported_sample_count(const WgpuDeviceContext& context, const std
         if (!outcome.done) std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
     return outcome.done && !outcome.failed ? wanted : 4;
+}
+
+bool device_lost() noexcept { return lost_flag.load(); }
+
+std::string device_lost_reason() {
+    std::lock_guard lock(lost_mutex);
+    return lost_reason;
 }
 
 } // namespace openrts::renderer

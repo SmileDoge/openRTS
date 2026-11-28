@@ -805,6 +805,8 @@ const std::unordered_map<std::string_view, const char*>& russian() {
         {"Positions by UDP (experimental)", "Позиции по UDP (эксперимент)"},
         {"The fast positions by UDP on the same port number where it gets through (open the UDP port too), else by TCP.",
          "Частые позиции по UDP на том же номере порта, где он проходит (откройте и UDP-порт), иначе по TCP."},
+        {"The video card reset the game's graphics (the device was lost). Try DirectX 12 in Graphics.",
+         "Видеокарта сбросила графику игры (устройство потеряно). Попробуйте DirectX 12 в «Графике»."},
         {"Fast train positions (10 times a second)", "Частые позиции поездов (10 раз в секунду)"},
         {"The others' trains are seen 0.2 s behind (off: 1.75 s).", "Чужие поезда видны с опозданием 0,2 с (без них — 1,75 с)."},
         {"As in RTS: the others' trains are seen 1.75 s behind.", "Как в RTS: чужие поезда видны с опозданием 1,75 с."},

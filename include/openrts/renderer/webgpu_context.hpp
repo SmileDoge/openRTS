@@ -54,6 +54,12 @@ struct WgpuDeviceContextResult {
     [[nodiscard]] bool ok() const noexcept { return static_cast<bool>(context); }
 };
 
+// The device was lost (the driver reset it: a TDR, a full screen switch on
+// some drivers): set by its lost callback, with why. Nothing is drawn after
+// it (the surface's calls would abort in wgpu-native); the viewer ends.
+[[nodiscard]] bool device_lost() noexcept;
+[[nodiscard]] std::string device_lost_reason();
+
 // Requests an adapter of that API and a device, without a surface (a windowed
 // viewer creates its surface on this instance). A chosen API that has no
 // adapter here falls back to the automatic choice, with a line on stderr.

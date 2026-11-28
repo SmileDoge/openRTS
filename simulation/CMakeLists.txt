@@ -32,6 +32,7 @@ add_library(openrts_simulation STATIC
     src/train_lights.cpp
     src/tape.cpp
     src/timetable.cpp
+    src/savpe.cpp
     src/cargo.cpp)
 openrts_configure_target(openrts_simulation)
 target_link_libraries(openrts_simulation PUBLIC openrts_core openrts_formats PRIVATE openrts_script)

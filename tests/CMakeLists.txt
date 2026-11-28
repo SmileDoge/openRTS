@@ -437,6 +437,10 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.klub_ep2k COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_EP2K-025 mdd_EP2k-025 --start on --seconds 66
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep2k.script" --klub shadow)
+    # The САВПЭ's stops on Novokuznetsk (Prokopyevsk p.3 pass.): 14
+    # platforms, each voiced from line 33 of Usavp.sms.
+    add_test(NAME openrts.content.savpe_novokuznetsk COMMAND openrts_path_check "${OPENRTS_TEST_ROOT}" Novokuznetsk x "#30" --savpe)
+    set_tests_properties(openrts.content.savpe_novokuznetsk PROPERTIES PASS_REGULAR_EXPRESSION "14 stops, 14 voiced \\(line 33\\)")
     add_test(NAME openrts.content.ep2d_saut_permitted COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_EP2D-0002 mdd_EP2D_LP_01 --start on --seconds 14
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ep2d_saut_permitted.script" --klub openrts)
@@ -557,6 +561,11 @@ openrts_configure_target(openrts_console_place_test)
 openrts_copy_wgpu_runtime(openrts_console_place_test)
 target_link_libraries(openrts_console_place_test PRIVATE openrts_viewer_core)
 add_test(NAME openrts.console_place COMMAND openrts_console_place_test)
+
+add_executable(openrts_savpe_test savpe_test.cpp)
+openrts_configure_target(openrts_savpe_test)
+target_link_libraries(openrts_savpe_test PRIVATE openrts_simulation)
+add_test(NAME openrts.savpe COMMAND openrts_savpe_test)
 
 add_executable(openrts_ray_mask_test ray_mask_test.cpp)
 openrts_configure_target(openrts_ray_mask_test)
