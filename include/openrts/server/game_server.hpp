@@ -14,6 +14,7 @@
 #include <openrts/net/wire.hpp>
 #include <openrts/server/server_route.hpp>
 #include <openrts/server/transport.hpp>
+#include <openrts/simulation/car_registry.hpp>
 
 namespace openrts::simulation {
 class SignalSystem;
@@ -74,6 +75,15 @@ struct ServerOptions {
     // when new players are not taken; one coming back under his nick is not.
     // 0: no limit.
     std::uint32_t max_players = 0;
+    // Fast positions (openRTS's, 2026-11-26): the hello's answer tells
+    // openRTS players to send their trains' motion 10 times a second
+    // (openrts_train_motion), relayed to the others, who draw them a fifth
+    // of a second behind instead of 1.75 s. Off: positions as RTS's alone.
+    bool fast_positions = true;
+    // Experimental (2026-11-28): the fast positions by UDP between this
+    // server and its openRTS players (net/datagram.hpp), TCP while UDP does
+    // not get through. Off: by TCP as all else.
+    bool udp_positions = false;
 };
 
 // A train the dispatcher puts on the track.
@@ -196,6 +206,10 @@ public:
     // and see the time jump at each of its syncs when it runs faster.
     void set_clock(float speed, std::uint8_t season);
     [[nodiscard]] float clock_speed() const noexcept { return speed_; }
+    // The server's world's cars (car_registry.hpp): a train's by identity,
+    // front to rear (none: no such train, or not on the track).
+    [[nodiscard]] std::vector<simulation::CarId> car_ids(std::uint32_t train) const;
+    [[nodiscard]] const simulation::CarRegistry& car_registry() const noexcept;
     [[nodiscard]] std::uint8_t season() const noexcept { return options_.season; }
     // Throws junction `node` (TDB node number); `lock` set or cleared when given.
     bool set_junction(std::uint32_t node, std::optional<std::uint32_t> branch, std::optional<bool> lock, std::string& error);
@@ -258,6 +272,35 @@ public:
     // rear when `rear_first`) to `to` (the console's map); false when `to` is
     // not ahead of it.
     bool lay_route_to(std::uint32_t train, const simulation::TrackLocation& to, bool rear_first, std::string& result);
+    // The console's map's "route here": the shortest way not onto other
+    // trains' track, its junctions thrown as it needs.
+    bool lay_free_route_to(std::uint32_t train, const simulation::TrackLocation& to, bool rear_first, std::string& result);
+    // A route the console's map asks for (its "Задать маршрут" mode): from
+    // the train's head (its rear, `rear_first`: the other way) through the
+    // `via` points in order to `end`, by the chosen branches of junctions
+    // (else the shortest way), never onto another train's track. As a train
+    // order (its signals opened) or a shunting order (theirs RESTRICTING,
+    // the white, each closed as the head passes it).
+    struct RouteRequest {
+        bool rear_first = false;
+        std::vector<simulation::TrackLocation> via;
+        std::optional<simulation::TrackLocation> end;
+        std::map<std::uint32_t, std::uint32_t> branches; // junction node -> branch
+        bool shunting = false;
+    };
+    struct RoutePreview {
+        bool ok = false;
+        simulation::RouteLeg leg;
+        std::string error;
+    };
+    // The way such a request would take, nothing set.
+    [[nodiscard]] RoutePreview preview_route(std::uint32_t train, const RouteRequest& request) const;
+    // Sets it (the old route of the train freed first); kept for editing.
+    bool set_requested_route(std::uint32_t train, const RouteRequest& request, std::string& result);
+    // The request the train's route was set by, if the map set it.
+    [[nodiscard]] std::optional<RouteRequest> route_request(std::uint32_t train) const;
+    // The train's simulation id (its signals' settings are kept by it).
+    [[nodiscard]] std::optional<std::uint64_t> train_sim_id(std::uint32_t train) const;
     // The junctions a train's route holds (TDB nodes), in its order.
     [[nodiscard]] std::vector<std::uint32_t> route_junctions(std::uint32_t train) const;
     // For a map: each car's ends where the server has the train (empty when
@@ -321,6 +364,13 @@ public:
     // console_next answered.
     [[nodiscard]] net::ConsoleNext next_routes(std::uint32_t train, bool back) const;
     void set_admit(bool admit) noexcept { options_.admit = admit; }
+    // Fast positions on or off (ServerOptions::fast_positions): the openRTS
+    // players are told at once.
+    void set_fast_positions(bool on);
+    [[nodiscard]] bool fast_positions() const noexcept { return options_.fast_positions; }
+    // The fast positions by UDP on or off (ServerOptions::udp_positions).
+    void set_udp_positions(bool on);
+    [[nodiscard]] bool udp_positions() const noexcept { return options_.udp_positions; }
     [[nodiscard]] bool admits() const noexcept { return options_.admit; }
     // What a console's command line (console_command) runs: the server's
     // console commands; its answer goes back as console_reply.
@@ -342,6 +392,9 @@ public:
     [[nodiscard]] std::vector<std::string> take_log();
 
 private:
+    // A route's leg held for `train`: its junctions free and thrown as it
+    // needs, held until its rear has passed them, the signals along opened.
+    bool hold_leg(std::uint32_t train, const simulation::RouteLeg& leg, bool from_rear, std::string& result, bool shunting = false);
     struct User;
     struct Train;
     struct Impl;
@@ -372,6 +425,8 @@ private:
     // A helper's train gone or given to another: his help ends.
     void check_helpers();
     std::unique_ptr<Impl> impl_;
+    // The positions by UDP offered to an openRTS player (ServerOptions::udp_positions).
+    void offer_udp(User& user);
     Transport& transport_;
     ServerOptions options_;
     net::OpenrtsWeather weather_;

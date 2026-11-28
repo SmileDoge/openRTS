@@ -280,6 +280,8 @@ struct StartForm {
     bool weather_dynamic = false; // openRTS's dynamic weather from the start
     bool discord = false; // the players' Discord "Join"
     char address[128]{};  // the address it hands over (empty: the one each connected to)
+    bool fast_positions = true; // ServerOptions::fast_positions
+    bool udp_positions = false; // ServerOptions::udp_positions (experimental)
     std::string error;
     int loading = 0; // frames since "Start": the load runs after "Loading" is shown
 
@@ -320,6 +322,8 @@ struct StartForm {
                 else if (key == "places") places = std::clamp(std::stoi(value), 0, 999);
                 else if (key == "weather_dynamic") weather_dynamic = value == "1";
                 else if (key == "public_address") std::snprintf(address, sizeof address, "%s", value.c_str());
+                else if (key == "fast_positions") fast_positions = value == "1";
+                else if (key == "udp_positions") udp_positions = value == "1";
             } catch (const std::exception&) {
                 // a number spoilt by hand: the default kept
             }
@@ -332,7 +336,8 @@ struct StartForm {
         out << "root=" << root << "\nroute=" << (route >= 0 ? routes[static_cast<std::size_t>(route)] : std::string()) << "\nseason=" << season
             << "\nweather=" << weather << "\ntime=" << time << "\nport=" << port << "\nadmit=" << (admit ? 1 : 0)
             << "\ndispatcher_password=" << password << "\nplaces=" << places << "\ndiscord_join=" << (discord ? 1 : 0) << "\npublic_address=" << address
-            << "\nweather_dynamic=" << (weather_dynamic ? 1 : 0) << '\n';
+            << "\nweather_dynamic=" << (weather_dynamic ? 1 : 0) << "\nfast_positions=" << (fast_positions ? 1 : 0)
+            << "\nudp_positions=" << (udp_positions ? 1 : 0) << '\n';
     }
 };
 
@@ -435,6 +440,12 @@ public:
                      ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus);
         top_bar(running);
         ImGui::BeginChild("panel", ImVec2(460.0f, 0.0f), ImGuiChildFlags_Borders);
+        // Setting a route: the panel greyed under what is being asked.
+        const bool routing = routing_.active;
+        if (routing) {
+            routing_banner();
+            ImGui::BeginDisabled();
+        }
         if (ImGui::BeginTabBar("tabs")) {
             if (ImGui::BeginTabItem(tr("Trains"))) {
                 trains_tab();
@@ -462,6 +473,7 @@ public:
             }
             ImGui::EndTabBar();
         }
+        if (routing) ImGui::EndDisabled();
         ImGui::EndChild();
         ImGui::SameLine();
         ImGui::BeginChild("map", ImVec2(0.0f, 0.0f), ImGuiChildFlags_Borders, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -565,8 +577,18 @@ private:
         ImGui::SameLine();
         ImGui::TextUnformatted(s_.settings().dispatcher_password.empty() ? tr("dispatcher: this computer only")
                                                                          : tr("dispatcher: from anywhere, by password"));
-        ImGui::SameLine(ImGui::GetWindowWidth() - 170.0f);
-        if (ImGui::Button(tr("Stop the server"))) running = false;
+        // At the right edge, after the line's text; on a line of its own when
+        // the window is too narrow for both (it overlapped the text).
+        {
+            const char* stop = tr("Stop the server");
+            const float width = ImGui::CalcTextSize(stop).x + ImGui::GetStyle().FramePadding.x * 2.0f;
+            ImGui::SameLine();
+            const float after = ImGui::GetCursorPosX();
+            const float right = ImGui::GetWindowContentRegionMax().x - width;
+            if (right >= after) ImGui::SetCursorPosX(right);
+            else ImGui::NewLine();
+            if (ImGui::Button(stop)) running = false;
+        }
         // The line stays, empty when nothing is shown: the panels below keep their place.
         if (ImGui::GetTime() < status_until_) {
             ImGui::TextColored(status_error_ ? ImVec4(1.0f, 0.4f, 0.4f, 1.0f) : ImGui::GetStyleColorVec4(ImGuiCol_Text), "%s", status_.c_str());
@@ -619,9 +641,17 @@ private:
         }
         route_lines();
         if (placing_.active) placement_bar();
+        if (routing_.active) {
+            refresh_routing();
+            if (routing_.preview.ok)
+                map_.lines.push_back({.points = map_.along(routing_.preview.leg, 0.0, routing_.preview.leg.length()),
+                                      .colour = routing_.request.shunting ? IM_COL32(230, 230, 230, 230) : IM_COL32(0, 120, 255, 220),
+                                      .width = 7.0f});
+        }
         map_.overlay = [this](ImDrawList* draw) {
             draw_route_marks(draw);
             if (placing_.active) draw_placement(draw);
+            if (routing_.active) draw_routing(draw);
         };
         const bool menu_open = ImGui::IsPopupOpen("map_menu");
         const auto frame = map_.draw(route.signals(), menu_open);
@@ -656,6 +686,9 @@ private:
                 else if (ImGui::IsKeyPressed(ImGuiKey_RightArrow)) slide_placement(step);
                 else if (ImGui::IsKeyPressed(ImGuiKey_LeftArrow)) slide_placement(-step);
             }
+        } else if (routing_.active) {
+            const auto& io = ImGui::GetIO();
+            if (!io.WantTextInput && !menu_open && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) routing_.active = false;
         } else if (frame.left_click && frame.left_click->kind == trackmap::PickKind::train) {
             selected_train_ = static_cast<std::uint32_t>(frame.left_click->train);
         }
@@ -954,8 +987,146 @@ private:
         ImGui::EndChild();
     }
 
+    // ---- setting a route on the map ----
+    void start_routing(const std::uint32_t train, const bool edit) {
+        routing_ = {};
+        routing_.active = true;
+        routing_.train = train;
+        selected_train_ = train;
+        if (edit) {
+            if (const auto request = s_.game().route_request(train)) routing_.request = *request;
+        }
+    }
+    void refresh_routing() {
+        const double now = ImGui::GetTime();
+        if (!routing_.dirty && now - routing_.at < 1.0) return;
+        routing_.preview = s_.game().preview_route(routing_.train, routing_.request);
+        routing_.dirty = false;
+        routing_.at = now;
+    }
+    void confirm_routing(const bool shunting) {
+        routing_.request.shunting = shunting;
+        std::string result;
+        const bool ok = s_.game().set_requested_route(routing_.train, routing_.request, result);
+        report(ok, result, result);
+        if (ok) routing_.active = false;
+    }
+    // Over the greyed panel: what is asked, the way's state, the actions.
+    void routing_banner() {
+        auto& r = routing_;
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.1f, 1.0f), "%s", trf("Setting a route for train %u", r.train).c_str());
+        ImGui::TextWrapped("%s", tr("Right-click the track: the end, then points to pass; a junction: the branch to take; anywhere: confirm."));
+        ImGui::TextUnformatted(trf("End: %s, points to pass: %zu, junctions chosen: %zu, from: %s", r.request.end ? tr("set") : tr("none"),
+                                   r.request.via.size(), r.request.branches.size(), r.request.rear_first ? tr("the rear") : tr("the head"))
+                                   .c_str());
+        refresh_routing();
+        if (r.preview.ok) ImGui::TextUnformatted(trf("The way: %.0f m, %zu junctions", r.preview.leg.length(), r.preview.leg.junctions.size()).c_str());
+        else if (r.request.end) ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s", r.preview.error.c_str());
+        if (ImGui::Button(tr("Turn the direction"))) {
+            r.request.rear_first = !r.request.rear_first;
+            r.dirty = true;
+        }
+        ImGui::SameLine();
+        ImGui::BeginDisabled(!r.preview.ok);
+        if (ImGui::Button(tr("Train order"))) confirm_routing(false);
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Shunting order"))) confirm_routing(true);
+        ImGui::EndDisabled();
+        ImGui::SameLine();
+        if (ImGui::Button(tr("Cancel"))) r.active = false;
+        ImGui::Separator();
+    }
+    // The map's menu while a route is set: the end, points to pass, a
+    // junction's branch, confirming.
+    void routing_menu() {
+        auto& r = routing_;
+        auto& network = s_.route().network();
+        ImGui::TextDisabled("%s", trf("Route for train %u", r.train).c_str());
+        if (menu_.kind == trackmap::PickKind::track) {
+            const auto at = menu_.location;
+            if (!r.request.end) {
+                if (ImGui::MenuItem(tr("The route's end here"))) {
+                    r.request.end = at;
+                    r.dirty = true;
+                }
+            } else {
+                if (ImGui::MenuItem(tr("A point to pass here"))) {
+                    r.request.via.push_back(at);
+                    r.dirty = true;
+                }
+                if (ImGui::MenuItem(tr("Move the end here"))) {
+                    r.request.end = at;
+                    r.dirty = true;
+                }
+            }
+        } else if (menu_.kind == trackmap::PickKind::junction) {
+            const auto node = menu_.junction;
+            const auto* info = network.node(node);
+            const auto chosen = r.request.branches.find(node);
+            for (std::uint32_t b = 0; info && b < info->branch_count(); ++b) {
+                if (ImGui::MenuItem(trf("Take branch %u", b).c_str(), nullptr, chosen != r.request.branches.end() && chosen->second == b)) {
+                    r.request.branches[node] = b;
+                    r.dirty = true;
+                }
+            }
+            if (chosen != r.request.branches.end() && ImGui::MenuItem(tr("Any branch (the shortest way)"))) {
+                r.request.branches.erase(node);
+                r.dirty = true;
+            }
+        }
+        ImGui::Separator();
+        if (!r.request.via.empty() && ImGui::MenuItem(tr("Remove the last point to pass"))) {
+            r.request.via.pop_back();
+            r.dirty = true;
+        }
+        if (ImGui::MenuItem(tr("Turn the direction"))) {
+            r.request.rear_first = !r.request.rear_first;
+            r.dirty = true;
+        }
+        refresh_routing();
+        if (ImGui::MenuItem(tr("Confirm and set: train order"), nullptr, false, r.preview.ok)) confirm_routing(false);
+        if (ImGui::MenuItem(tr("Confirm and set: shunting order"), nullptr, false, r.preview.ok)) confirm_routing(true);
+        if (ImGui::MenuItem(tr("Cancel setting the route"))) r.active = false;
+    }
+    // The end, the points to pass, the chosen junctions and where it starts.
+    void draw_routing(ImDrawList* draw) const {
+        const auto& r = routing_;
+        auto& network = s_.route().network();
+        const auto dot = [&](const simulation::TrackLocation& at, const ImU32 colour, const char* text) {
+            const auto pose = network.point(at.node, at.offset);
+            if (!pose) return;
+            const auto p = map_.screen(*pose);
+            draw->AddCircleFilled(p, 9.0f, colour);
+            draw->AddCircle(p, 9.0f, IM_COL32(255, 255, 255, 255), 0, 2.0f);
+            const auto size = ImGui::CalcTextSize(text);
+            draw->AddText(ImVec2(p.x - size.x * 0.5f, p.y - size.y * 0.5f), IM_COL32(255, 255, 255, 255), text);
+        };
+        for (std::size_t i = 0; i < r.request.via.size(); ++i) dot(r.request.via[i], IM_COL32(0, 110, 255, 255), std::to_string(i + 1).c_str());
+        if (r.request.end) dot(*r.request.end, IM_COL32(220, 30, 30, 255), "K");
+        for (const auto& [node, branch] : r.request.branches) {
+            if (const auto pose = network.point(node, 0.0)) {
+                const auto p = map_.screen(*pose);
+                draw->AddRectFilled(ImVec2(p.x - 9.0f, p.y - 9.0f), ImVec2(p.x + 9.0f, p.y + 9.0f), IM_COL32(255, 150, 0, 255), 3.0f);
+                const auto text = std::to_string(branch);
+                draw->AddText(ImVec2(p.x - 4.0f, p.y - 7.0f), IM_COL32(0, 0, 0, 255), text.c_str());
+            }
+        }
+        // Where the way starts and which way.
+        if (r.preview.ok && r.preview.leg.length() > 1.0) {
+            const auto points = map_.along(r.preview.leg, 0.0, (std::min)(12.0, r.preview.leg.length()));
+            if (points.size() >= 2)
+                trackmap::draw_direction_arrow(draw, map_.screen(points.back()), map_.screen(points.front()), IM_COL32(0, 110, 255, 255),
+                                               IM_COL32(255, 255, 255, 255), 20.0f);
+        }
+    }
+
     void map_menu() {
         if (!ImGui::BeginPopup("map_menu")) return;
+        if (routing_.active) {
+            routing_menu();
+            ImGui::EndPopup();
+            return;
+        }
         auto& game = s_.game();
         auto& route = s_.route();
         std::string error;
@@ -1003,6 +1174,8 @@ private:
             } else if (ImGui::MenuItem(trf("Take it back from %s", it->owner.c_str()).c_str())) {
                 report(game.unassign(id, error), trf("train %u taken back", id), error);
             }
+            if (ImGui::MenuItem(tr("Set a route"))) start_routing(id, false);
+            if (game.route_request(id) && ImGui::MenuItem(tr("Edit the route"))) start_routing(id, true);
             if (ImGui::MenuItem(tr("Cancel the route"), nullptr, false, !game.route_junctions(id).empty() || game.route_leg(id).has_value())) {
                 report(game.cancel_route(id, error), trf("train %u's route freed", id), error);
             }
@@ -1092,7 +1265,7 @@ private:
         for (const bool facing : {to.forward, !to.forward}) {
             const simulation::TrackLocation target{to.node, to.offset, facing};
             for (const bool rear_first : {false, true}) {
-                if (game.lay_route_to(train, target, rear_first, result)) {
+                if (game.lay_free_route_to(train, target, rear_first, result)) {
                     report(true, result, {});
                     return;
                 }
@@ -1924,6 +2097,17 @@ private:
     double status_until_ = 0.0; // ImGui time it is shown until
     std::uint32_t selected_train_ = 0;
     trackmap::Pick menu_;
+    // The map's "Задать маршрут" mode: the train, what is asked so far, the
+    // way it would take (renewed when asked or every second).
+    struct RouteEdit {
+        bool active = false;
+        std::uint32_t train{};
+        GameServer::RouteRequest request;
+        GameServer::RoutePreview preview;
+        bool dirty = true;
+        double at = -10.0;
+    };
+    RouteEdit routing_;
     std::vector<std::string> consists_;
     char consist_filter_[64]{};
     int consist_ = -1;
@@ -2036,6 +2220,13 @@ bool draw_form(StartForm& form) {
     ImGui::EndDisabled();
     ImGui::TextDisabled("%s", form.discord ? tr("openRTS players' Discord profiles get \"Join\": it hands over this address (empty: the one each player connected to).")
                                            : tr("Without it the players' Discord profiles show no \"Join\"."));
+    ImGui::Checkbox(tr("Fast train positions (10 times a second)"), &form.fast_positions);
+    ImGui::TextDisabled("%s", form.fast_positions ? tr("The others' trains are seen 0.2 s behind (off: 1.75 s).")
+                                                  : tr("As in RTS: the others' trains are seen 1.75 s behind."));
+    ImGui::BeginDisabled(!form.fast_positions);
+    ImGui::Checkbox(tr("Positions by UDP (experimental)"), &form.udp_positions);
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", tr("The fast positions by UDP on the same port number where it gets through (open the UDP port too), else by TCP."));
     ImGui::TextUnformatted(tr("The server's folder (the route database it saves)"));
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##data", form.data, sizeof form.data);
@@ -2119,6 +2310,8 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
         form.admit = settings.admit;
         std::snprintf(form.password, sizeof form.password, "%s", settings.dispatcher_password.c_str());
         form.discord = settings.discord_join;
+        form.fast_positions = settings.fast_positions;
+        form.udp_positions = settings.udp_positions;
         if (settings.max_players > 0) form.places = static_cast<int>(settings.max_players);
         std::snprintf(form.address, sizeof form.address, "%s", settings.public_address.c_str());
         form.list_routes();
@@ -2186,6 +2379,8 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                 chosen.admit = form.admit;
                 chosen.dispatcher_password = form.password;
                 chosen.discord_join = form.discord;
+                chosen.fast_positions = form.fast_positions;
+                chosen.udp_positions = form.udp_positions;
                 chosen.max_players = static_cast<std::uint32_t>(form.places);
                 chosen.public_address = form.address;
                 std::string error;

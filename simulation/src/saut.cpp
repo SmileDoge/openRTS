@@ -179,6 +179,27 @@ void step(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
         s.saut_display_timer = 0.0f;
     }
     const auto kmh = kmh_of(in.speed);
+    // openRTS's service braking (saut_service_braking()), from the margin of
+    // the last redraw: on over the permitted speed, deeper every 5 s it
+    // stays over, off 3 km/h under it, standing or unpowered.
+    if (!saut_service_braking() || !u.powered || kmh == 0 || !(s.device & d::saut_on)) {
+        s.saut_service = 0.0f;
+        s.saut_service_timer = 0.0f;
+    } else if (s.saut_margin < 0.0f) {
+        if (s.saut_service <= 0.0f) {
+            s.saut_service = 0.5f;
+            s.saut_service_timer = 0.0f;
+        }
+        s.saut_service_timer += dt;
+        if (s.saut_service_timer >= 5.0f && s.saut_service < 1.5f) {
+            s.saut_service = (std::min)(s.saut_service + 0.3f, 1.5f);
+            s.saut_service_timer = 0.0f;
+        }
+    } else if (s.saut_margin >= 3.0f) {
+        s.saut_service = 0.0f;
+        s.saut_service_timer = 0.0f;
+    }
+    out.saut_service = s.saut_service;
     // Unpowered, and at every redraw: out, blank.
     if (!u.powered || s.saut_clock == 0.0f) {
         s.device &= ~d::saut_on;
@@ -414,6 +435,9 @@ void step(KlubState& s, const KlubSettings& k, const KlubInputs& in, KlubOutput&
                 s.saut_flags &= ~caught;
             } else {
                 const double margin = static_cast<double>(s.saut_shown) - static_cast<double>(kmh);
+                // Against its permitted speed itself, not the one shown (that
+                // climbs 10 km/h a second from 0 when it comes on).
+                s.saut_margin = static_cast<float>(static_cast<double>(s.saut_target) - static_cast<double>(kmh));
                 if (margin <= 3.0 && !(s.saut_flags & warned) && u.traction) {
                     s.saut_flags |= warned;
                     out.sounds.push_back(3211);

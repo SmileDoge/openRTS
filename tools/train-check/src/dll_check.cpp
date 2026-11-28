@@ -12,7 +12,8 @@
 //   1    switch 38 2          # CanSwitch + move cab switch ID 38 to state 2
 //   2    switch B_S 1         # by .sd name
 //   3    switch B_S 0
-//   0    voltage 3000         # line voltage at the pantographs (V [Hz], DC without Hz)
+//   0    voltage 3000         # line voltage at the pantographs (V [Hz], DC without Hz),
+//                             # the DLLs' and the cars'
 //   30   expect force > 10000 # fails the run when false (force, throttle,
 //                             # reverse, panto, main_switch, speed (km/h),
 //                             # pipe, mr, ur, alive)
@@ -473,7 +474,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     std::size_t player = SIZE_MAX;
     for (std::size_t i = 0; i < legacy.size(); ++i) {
         if (consist->has_dll(i)) {
-            train.set_controller(i, consist->controller(i));
+            train.set_module(i, consist->controller(i));
             if (player == SIZE_MAX) player = i;
         }
     }
@@ -795,6 +796,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             ri.traction = out->engine.throttle != 0;
             ri.aspect = bits(72);
             ri.powered = (bits(32) & 4u) != 0;
+            // САУТ powered: every SAUT_PIT on (LegacyConsist::recorder_after's).
+            ri.saut_powered = true;
+            for (const auto id : klub.saut_power)
+                ri.saut_powered = ri.saut_powered && (id < 0 || static_cast<std::size_t>(id) >= klub_switches.size() || on(id));
             ri.tskbm_on = (recorder_last_var4 & 8u) != 0;
             ri.bypass = (recorder_last_var4 & 0x200u) != 0;
             ri.ep_pressure = recorder_last_ep;
@@ -968,6 +973,9 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                         if (o.text_set && k < screen.texts.size() && (!def || (def->char_width[1] > 0.0f && def->max_length > 0))) {
                             auto ours = o.text;
                             if (def && ours.size() > def->max_length) ours.resize(def->max_length);
+                            // The acceleration's sign is openRTS's (2026-11-26; Brakes.dll
+                            // showed it without): not a difference.
+                            if (std::string_view(what) == "bil" && k == 18 && !ours.empty() && ours[0] == u'-') ours.erase(0, 1);
                             if (ours != screen.texts[k] && !own_entry) {
                                 if (shadow_printed < 30) {
                                     std::printf("%6.2f КЛУБ %s: Brakes.dll '%s', openRTS '%s'\n", now, name("text").c_str(),
@@ -1104,9 +1112,9 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         if (cut_train) parts.push_back(cut_cars);
         const bool ok = consist->reconsist(vfs, parts, host_trains());
         for (std::size_t i = 0; i < legacy.size(); ++i)
-            if (consist->has_dll(i)) train.set_controller(i, consist->controller(i));
+            if (consist->has_dll(i)) train.set_module(i, consist->controller(i));
         for (std::size_t i = 0; cut_train && i < cut_cars.size(); ++i)
-            if (consist->has_dll(1, i)) cut_train->set_controller(i, consist->controller(1, i));
+            if (consist->has_dll(1, i)) cut_train->set_module(i, consist->controller(1, i));
         player = consist->player();
         cab = consist->cab(player);
         std::printf("%6.1f %s: %zu cars, %s, the player in car %zu\n", time, what, legacy.size(),
@@ -1169,8 +1177,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             } else if (c.verb == "sounds") {
                 // sounds: the SMSObject Var1..8 the DLL set (exterior, cab)
                 // and the triggers it posted this step.
-                if (const auto* out = consist->output(player)) {
-                    std::printf("%6.1f sounds ext vars", time);
+                // sounds [car]: that car's (default: the player's).
+                const std::size_t sound_car = c.args.empty() ? player : static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
+                if (const auto* out = consist->output(sound_car)) {
+                    std::printf("%6.1f sounds car %zu ext vars", time, sound_car);
                     for (const auto v : out->sms_ext) std::printf(" %.3g", v);
                     std::printf(" | cab vars");
                     for (const auto v : out->sms_cab) std::printf(" %.3g", v);
@@ -1299,6 +1309,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             } else if (c.verb == "voltage" && !c.args.empty()) {
                 world.line_voltage = static_cast<float>(std::atof(c.args[0].c_str()));
                 world.line_frequency = c.args.size() > 1 ? static_cast<float>(std::atof(c.args[1].c_str())) : 0.0f;
+                // The cars' line too, as the viewer's electrification gives
+                // the engines it (EngineInputs::line_voltage: the compressor
+                // stands under a line its engine does not work on).
+                for (std::size_t k = 0; k < train.cars().size(); ++k) train.set_line_supply(k, world.line_voltage, world.line_frequency);
             } else if (c.verb == "cut" && !c.args.empty() && !cut_train) {
                 // cut <index>: uncouple behind car index - 1 (the car menu's way: cocks closed)
                 const auto index = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));

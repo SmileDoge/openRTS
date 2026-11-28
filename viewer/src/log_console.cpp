@@ -157,7 +157,8 @@ LogLevel classify_log_line(const std::string_view text) {
 
 #ifdef OPENRTS_HAS_IMGUI
 void draw_log_console(LogConsole& console) {
-    if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && !ImGui::GetIO().WantTextInput) {
+    // Ctrl+F2 (F2 alone saves the game, as in RTS).
+    if (ImGui::IsKeyPressed(ImGuiKey_F2, false) && ImGui::GetIO().KeyCtrl && !ImGui::GetIO().WantTextInput) {
         console.open = !console.open;
         if (console.open) ImGui::SetNextWindowFocus();
     }
@@ -172,7 +173,7 @@ void draw_log_console(LogConsole& console) {
     }
     ImGui::SetNextWindowSize({860.0f, 420.0f}, ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowPos({40.0f, 60.0f}, ImGuiCond_FirstUseEver);
-    const std::string title = std::string(tr("Console (F2): the game's messages")) + "###console";
+    const std::string title = std::string(tr("Console (Ctrl+F2): the game's messages")) + "###console";
     if (!ImGui::Begin(title.c_str(), &console.open)) {
         ImGui::End();
         return;

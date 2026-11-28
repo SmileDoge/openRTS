@@ -212,6 +212,8 @@ private:
     // only the states they leave (catch_up).
     std::vector<std::uint32_t> queued_;
     bool catching_up_ = false; // fire(): states only, no sound
+    bool activating_ = false;  // fire() from activate(): the loops found going on
+    float activated_at_ = -1.0e9f; // clock_ when the group last came on
     std::vector<std::uint32_t> restore_; // restore(): per stream, trigger + 1
     bool random_loop_phase_ = false;
     std::string trace_; // set_trace: empty, none

@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+#include <openrts/simulation/timetable.hpp>
+
 #include <openrts/simulation/dispatcher.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/speed_limits.hpp>
@@ -97,6 +99,19 @@ inline constexpr double traffic_point_margin = 1.0;
 // end of its path at FinishSpeed, signals, speed posts, the curves ahead
 // (TrafficLimitsTable, 3 km as RTS), and another train ahead on its way
 // (`trains`: the others).
+// A traffic train stopping at every platform its path passes (Track
+// control's "stops at platforms", testers 2026-11-27): its head 5 m short of
+// the platform's far end, standing `wait` s, then on; platforms under 30 m
+// (a stopping point's sign, a halt's patch) passed. The state it keeps.
+struct TrafficPlatformStops {
+    const void* route = nullptr; // the route its platforms were found on
+    std::vector<PlatformPass> passes;
+    std::size_t next = 0;
+    float wait_left = -1.0f;
+};
+// Adds the next platform's stop to `orders` (or holds it there).
+void platform_stop_orders(const Train& train, const Dispatcher& dispatcher, float wait, TrafficPlatformStops& state, TrafficOrders& orders);
+
 [[nodiscard]] TrafficOrders traffic_orders(const Train& train, Dispatcher& dispatcher, const SignalSystem* signals,
                                            const SpeedLimits& limits, TrainCategory category, const TrafficSettings& settings,
                                            float& wait_left, std::span<Train* const> trains = {});

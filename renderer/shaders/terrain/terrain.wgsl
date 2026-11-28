@@ -28,6 +28,16 @@ override hdr_output: bool = false;
 @group(0) @binding(0) var base_texture: texture_2d<f32>;
 @group(0) @binding(1) var micro_texture: texture_2d<f32>;
 @group(0) @binding(2) var terrain_sampler: sampler;
+// The ground texture's material (openRTS, docs/pbr-materials.md): its
+// normal map, ORM map and numbers; a flat map, a white one and no file
+// without one.
+struct TerrainMaterial {
+    factors: vec4<f32>, // roughness, metallic, a dielectric's F0, specular
+    extra: vec4<f32>,   // normal strength, occlusion strength, 1 a normal map, 1 a material file
+};
+@group(0) @binding(3) var normal_texture: texture_2d<f32>;
+@group(0) @binding(4) var orm_texture: texture_2d<f32>;
+@group(0) @binding(5) var<uniform> ground: TerrainMaterial;
 @group(1) @binding(0) var<uniform> draw: Draw;
 @group(1) @binding(1) var<uniform> frame: Frame;
 
@@ -78,6 +88,140 @@ fn vs_main(input: VertexIn) -> VertexOut {
         out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), frame.fog_colour.w);
     }
     return out;
+}
+
+// openRTS's grass (docs/grass.md): a blade a instance, 15 vertices (three
+// quads and the tip), bent by its lean and the wind, coloured by the ground
+// under its root (the fragment shader samples the ground texture at its
+// uv). The draw's uv_mode: the clock (s), the reach (m), 1 to grow only on
+// green ground (no .rtst), the wind's strength; uv_rect.x: the lamps' ring.
+struct GrassIn {
+    @location(6) place: vec4<f32>,  // xyz in the tile, w the height
+    @location(7) ground: vec4<f32>, // uv, seed, width
+    @builtin(vertex_index) corner: u32,
+};
+
+@vertex
+fn vs_grass(input: GrassIn) -> VertexOut {
+    var out: VertexOut;
+    out.ring = min(u32(draw.uv_rect.x), 9u);
+    let seed = input.ground.z;
+    var height = input.place.w;
+    // The ground under it, blurred (a texel alone gives a speckle): the
+    // blade's colour, and no grass on ballast, sand, tarmac or snow.
+    let ground = textureSampleLevel(base_texture, terrain_sampler, input.ground.xy, 5.0).rgb;
+    if (draw.uv_mode.z > 0.5) {
+        // Green to olive (g at least 0.88 r, over b; linear light, the
+        // textures are sRGB): not grey ballast or tarmac, brown soil, sand,
+        // nor snow.
+        let bright = max(max(ground.r, ground.g), ground.b);
+        // Soft: shorter as the ground turns less green (no hard edge).
+        let olive = smoothstep(0.86, 0.95, ground.g / max(ground.r, 1e-3));
+        let over_blue = smoothstep(0.008, 0.03, ground.g - ground.b);
+        height = height * olive * over_blue * (1.0 - smoothstep(0.6, 0.75, bright));
+    }
+    // Shorter towards the edge of its reach.
+    let root_world = input.place.xyz + draw.offset.xyz;
+    let away = length(root_world.xz - frame.fog_sun.zw);
+    height = height * (1.0 - smoothstep(draw.uv_mode.y * 0.75, draw.uv_mode.y, away));
+
+    // A tuft: three blades from one root fanning out (45 vertices), each 15:
+    // two quads and the pointed tip. A flower (width < 0): a thin stem and,
+    // in place of the other two blades, two crossed petal quads at its top.
+    let flower = input.ground.w < 0.0;
+    let blade = input.corner / 15u;
+    let c = input.corner % 15u;
+    var level = 0.0;
+    var side = 0.0;
+    var up = 0.0;
+    var k = 0u;
+    if (c >= 12u) {
+        level = select(3.0, 4.0, c == 14u);
+        side = select(-1.0, 1.0, c == 13u);
+        if (c == 14u) { side = 0.0; }
+    } else {
+        let quad = f32(c / 6u);
+        k = c % 6u;
+        // two triangles: (0,-) (0,+) (1,-) ; (1,-) (0,+) (1,+)
+        up = select(0.0, 1.0, k == 2u || k == 3u || k == 5u);
+        level = quad * 1.5 + up * 1.5; // 0, 1.5, 3 over the two quads
+        side = select(-1.0, 1.0, k == 1u || k == 4u || k == 5u);
+    }
+    let fb = f32(blade);
+    let jitter = fract(seed * (17.3 + fb * 9.1));
+    let angle = seed * 6.2831853 + fb * 2.094 + (jitter - 0.5) * 0.9;
+    let facing = vec3<f32>(cos(angle), 0.0, sin(angle));
+    let across = vec3<f32>(-facing.z, 0.0, facing.x);
+    let blade_height = height * select(0.55 + 0.45 * jitter, 1.0, blade == 0u);
+    let t = clamp(level / 4.0, 0.0, 1.0);
+    // Lean out of the tuft, and the wind: more at the top.
+    let time = draw.uv_mode.x;
+    let gust = sin(time * 1.3 + root_world.x * 0.11 + root_world.z * 0.07) * 0.5
+             + sin(time * 2.9 + root_world.x * 0.31 - root_world.z * 0.23 + seed * 6.0) * 0.25;
+    let wind = vec3<f32>(0.8, 0.0, 0.6) * gust * draw.uv_mode.w;
+    let lean = select(0.2 + 0.45 * jitter, 0.08, flower);
+    let bend = (facing * lean + wind) * t * t * blade_height;
+    let width = abs(input.ground.w) * (1.0 - t * 0.9);
+    let root = input.place.xyz + facing * 0.015;
+    var local = root + vec3<f32>(0.0, t * blade_height, 0.0) + bend + across * side * width;
+    out.normal = normalize(mix(facing, vec3<f32>(0.0, 1.0, 0.0), 0.6));
+    var petal = false;
+    if (flower && blade > 0u) {
+        // The petals: crossed quads round the stem's top (the tip collapsed).
+        // A flat star of five petals round the stem's top, nearly level:
+        // blade 1 the petals 0..2, blade 2 the petals 3..4 (a triangle each,
+        // three corners: the middle, two at the petal's tip either side),
+        // none where the stem is cut (the ground's test, the reach's edge).
+        let top = input.place.xyz + vec3<f32>(0.0, height, 0.0) + (vec3<f32>(0.08, 0.0, 0.0) + wind) * height;
+        let r = (0.03 + 0.015 * fract(seed * 3.7)) * smoothstep(0.08, 0.2, height);
+        let tri = c / 3u;
+        let corner = c % 3u;
+        let petal_index = select(tri, tri + 3u, blade == 2u);
+        local = top;
+        if (tri < 3u && petal_index < 5u && corner > 0u) {
+            let a = seed * 6.2831853 + f32(petal_index) * 1.2566371 + select(-0.38, 0.38, corner == 2u);
+            local = top + vec3<f32>(cos(a), 0.12, sin(a)) * r;
+        }
+        out.normal = vec3<f32>(0.0, 1.0, 0.0);
+        petal = true;
+    }
+    out.clip = draw.mvp * vec4<f32>(local, 1.0);
+    out.uv = input.ground.xy;
+    out.world = vec4<f32>(local + draw.offset.xyz, 1.0);
+
+    // Its colour (fs_grass): the ground's, a little greener, a blade a bit
+    // apart from the next, darker at the root among the others; a flower's
+    // petals white, yellow, blue or red.
+    let luma = dot(ground, vec3<f32>(0.3, 0.55, 0.15));
+    let greener = mix(ground, vec3<f32>(luma * 0.85, luma * 1.12, luma * 0.55), 0.45);
+    let tone = 0.85 + 0.3 * jitter;
+    out.colour = vec4<f32>(greener * tone * (0.55 + 0.55 * t), 1.0);
+    if (petal) {
+        let pick = u32(fract(seed * 13.7) * 4.0);
+        var tint = vec3<f32>(0.92, 0.92, 0.88);
+        if (pick == 1u) { tint = vec3<f32>(0.95, 0.82, 0.18); }
+        if (pick == 2u) { tint = vec3<f32>(0.45, 0.5, 0.9); }
+        if (pick == 3u) { tint = vec3<f32>(0.85, 0.2, 0.18); }
+        out.colour = vec4<f32>(tint, 1.0);
+    }
+
+    let fog_start = frame.fog_distance.x;
+    let fog_end = frame.fog_distance.y;
+    if (fog_end <= 0.0) {
+        out.fog = vec4<f32>(0.0);
+    } else if (fog_end > fog_start) {
+        let amount = clamp(frame.fog_colour.w * ((out.clip.w - fog_start) / (fog_end - fog_start)), 0.0, 1.0);
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), amount);
+    } else {
+        out.fog = vec4<f32>(fog_ring_colour(out.world.xyz, frame.fog_colour.xyz), frame.fog_colour.w);
+    }
+    return out;
+}
+
+// The grass's colour is its vertices' (vs_grass), lit as the ground is.
+@fragment
+fn fs_grass(input: VertexOut) -> @location(0) vec4<f32> {
+    return shade_experimental(input, vec4<f32>(input.colour.xyz, 1.0), normalize(input.normal), vec3<f32>(1.0, 0.85, 0.0));
 }
 
 // Water layers (RTS water.vert): lit with the normal up; UVs per patch, or
@@ -141,8 +285,12 @@ fn shoulder(c: vec3<f32>) -> vec3<f32> {
 // the further lights added, all in linear light (each light's falloff taken
 // in display space, as RTS's).
 fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
-    if (physical) {
+    // A photometric lamp (ambient.w, photometric.hpp) is physical always.
+    if (physical || light.ambient.w > 0.5) {
         let strength = physical_light(light, world, n);
+        if (strength > 0.0 && light.ambient.w > 0.5) {
+            return light.ambient.xyz * strength; // photometric: linear already
+        }
         if (strength > 0.0) {
             return to_linear(light.diffuse.xyz) * strength;
         }
@@ -155,25 +303,58 @@ fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> v
     return vec3<f32>(0.0);
 }
 
-fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
+// The ground's normal bent by its map: the frame from the screen's
+// derivatives of the place and the texture coordinates (the terrain has no
+// tangents); the map's green up the image (v down in RTS's coordinates).
+fn ground_normal(normal: vec3<f32>, world: vec3<f32>, uv: vec2<f32>, mapped: vec3<f32>) -> vec3<f32> {
+    let n = normalize(normal);
+    let dp1 = dpdx(world);
+    let dp2 = dpdy(world);
+    let duv1 = dpdx(uv);
+    let duv2 = dpdy(uv);
+    if (ground.extra.z < 0.5) {
+        return n;
+    }
+    let dp2perp = cross(dp2, n);
+    let dp1perp = cross(n, dp1);
+    let t = dp2perp * duv1.x + dp1perp * duv2.x;
+    let b = dp2perp * duv1.y + dp1perp * duv2.y;
+    let scale = max(dot(t, t), dot(b, b));
+    if (scale <= 1e-20) {
+        return n;
+    }
+    let inverse = inverseSqrt(scale);
+    var m = mapped * 2.0 - vec3<f32>(1.0);
+    m = vec3<f32>(m.xy * ground.extra.x, m.z);
+    return normalize(t * inverse * m.x - b * inverse * m.y + n * max(m.z, 0.0));
+}
+
+fn shade_experimental(input: VertexOut, texel: vec4<f32>, bent: vec3<f32>, orm: vec3<f32>) -> vec4<f32> {
     let base = to_linear(texel.xyz);
     let sun_colour = to_linear(frame.light_diffuse.xyz);
     let sky_colour = to_linear(frame.light_ambient.xyz);
-    let n = normalize(input.normal);
+    let n = bent;
+    // The material's own surface, else the ground's (frame.surface).
+    var surface_material = frame.surface;
+    if (ground.extra.w > 0.5) {
+        surface_material = vec4<f32>(clamp(ground.factors.x * orm.y, 0.03, 1.0), clamp(ground.factors.y * orm.z, 0.0, 1.0),
+                                     ground.factors.z, ground.factors.w);
+    }
+    let occluded = mix(1.0, orm.x, ground.extra.y);
     let to_sun = -normalize(frame.light_direction.xyz);
     let facing = max(dot(n, to_sun), 0.0);
     let sun_strength = clamp(dot(sun_colour, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
     // The sun's shadow and the ambient occlusion (SceneEffects).
-    let shadow = effects_shadow(input.world.xyz, n, input.clip);
+    let shadow = effects_shadow(input.world.xyz, n, input.clip) * effects_ray_sun_tint(input.clip);
     let ambient = sky_colour * (1.0 - 0.65 * sun_strength) * mix(0.55, 1.0, n.y * 0.5 + 0.5)
-        * mix(1.0, frame.shading.x, 1.0 - sun_strength) * effects_ao(input.clip);
+        * mix(1.0, frame.shading.x, 1.0 - sun_strength) * effects_ao(input.clip) * occluded;
     // Physically based light (frame.shading.w, frame_pbr(); PBR stage 1):
     // the sun and the lamps by the BRDF (shaders/common/pbr.wgsl), the ground as
     // frame.surface makes it (terrain_surface_material: as yet Lambert
     // alone); the sky light Lambert on the albedo.
     let pbr = frame.shading.w > 0.5;
-    let surface = pbr_surface(base, n, normalize(effects.eye.xyz - input.world.xyz), frame.surface);
-    let reflects = frame.surface.w > 0.0;
+    let surface = pbr_surface(base, n, normalize(effects.eye.xyz - input.world.xyz), surface_material);
+    let reflects = surface_material.w > 0.0;
     // The sky's own light (PBR stage 2, as the models'): Lambert by the
     // sky's SH9, at least the environment's at night, near the eye as open
     // as the sky round it; the reflection by the split sum.
@@ -194,7 +375,10 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
                 let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
                 lamps = lamps + lit;
                 if (pbr) {
-                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                    let way = pbr_lamp_way(scene_lights[index], input.world);
+                    let rts_shape = !physical && scene_lights[index].ambient.w <= 0.5;
+                    lamps_out = lamps_out
+                        + pbr_lit_share(surface, way, lit, pbr_lamp_share(scene_lights[index], n, way, rts_shape), reflects);
                 }
             }
         }
@@ -207,7 +391,9 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
                 let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
                 lamps = lamps + lit;
                 if (pbr) {
-                    lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                    let way = pbr_lamp_way(ring_light, input.world);
+                    let rts_shape = !physical && ring_light.ambient.w <= 0.5;
+                    lamps_out = lamps_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(ring_light, n, way, rts_shape), reflects);
                 }
             }
         }
@@ -219,7 +405,7 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
         var sky_ambient = ambient;
         var sky = PbrSkyReflection(vec3<f32>(0.0), vec3<f32>(0.0));
         if (sky_light) {
-            let occlusion = effects_ao(input.clip);
+            let occlusion = effects_ao(input.clip) * occluded;
             sky_ambient = max(effects_sky_light(n), night_light * mix(0.55, 1.0, n.y * 0.5 + 0.5)) * openness * occlusion;
             if (reflects) {
                 sky = pbr_sky_reflection(surface, occlusion, night_light);
@@ -256,11 +442,15 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>) -> vec4<f32> {
 fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let texel = textureSample(base_texture, terrain_sampler, input.uv)
         * textureSample(micro_texture, terrain_sampler, input.uv * 16.0) * 2.0;
+    // The material's maps (sampled here, in uniform control flow).
+    let mapped = textureSample(normal_texture, terrain_sampler, input.uv).xyz;
+    let orm = textureSample(orm_texture, terrain_sampler, input.uv).xyz;
+    let bent = ground_normal(input.normal, input.world.xyz, input.uv, mapped);
     if (experimental) {
         if (texel.w <= 0.0) {
             return vec4<f32>(0.0);
         }
-        return shade_experimental(input, texel);
+        return shade_experimental(input, texel, bent, orm);
     }
     var color = vec4<f32>(0.0);
     if (texel.w > 0.0) {

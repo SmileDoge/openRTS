@@ -58,8 +58,10 @@ constexpr float relay_vent = 0.080f;
 // engine's pipe is at the main reservoir in about a second, 10 cars' runs
 // 0.3 .. 0.8 atm ahead of the УР, 60 cars' 0.2 .. 0.45 and slower
 // (train_test, "I by the train's length").
-constexpr float direct_gain = 0.08f;       // m³/(s·atm)
-constexpr float direct_feed = 0.08f;       // m³·atm/s
+// 2026-11-26, twice that (testers: with the ЭП1 and 7 cars, the ЭД2Т's 8,
+// the pipe rose in I as a freight train's of 50-60 cars).
+constexpr float direct_gain = 0.16f;       // m³/(s·atm)
+constexpr float direct_feed = 0.16f;       // m³·atm/s
 constexpr float emergency_valve = 0.050f;  // VI: m³/(s·atm) to the atmosphere
 
 float car_length(const CarState& car) {

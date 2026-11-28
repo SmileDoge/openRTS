@@ -1,0 +1,16 @@
+{
+    format: "openrts-material/1",
+    base_color: "RELS_1_baseColor.ace",
+    
+    orm: "RELS_1_orm.ace",
+
+    normal: "RELS_1_n.ace",
+    normal_y: "up",
+
+    roughness: 1,
+    metallic: 1,
+
+    height: "RELS_1_h.ace",
+    height_scale: 0.02,
+    height_reference: 0.5,
+}

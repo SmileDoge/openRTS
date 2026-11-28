@@ -350,7 +350,13 @@ sprites) draws its own (`renderer::WeatherParticleRenderer`):
   reaches the box light the drops and flakes inside them in their colour,
   brightest near the lamp, softly to the cone's edge and its reach
   (`PrecipitationView::set_lamps`): a snowfall white in the headlights at
-  night.
+  night. Since 2026-11-24 (testers: the flakes under a platform's lamp
+  stayed dark) the lamps shining every way (spheres: platforms' lamps, a
+  pantograph's arc) light them too, within their radius (at most 40 m),
+  brighter towards the lamp; eight lamps and beams at most, the nearest.
+  The air in the beams has a soft edge and a faint halo past it (the snow
+  scattering the light again; from the cab the cone's side had stood as a
+  hard line), and round a lamp shining every way a ball of lit air.
 - Both lit by the scene's light, fading in near the eye and out at the
   box's edge, hidden by the cab's walls and a tunnel's roof (depth-tested);
   none fall inside the cab the eye is in. They stay in the world when the
@@ -367,3 +373,13 @@ sprites) draws its own (`renderer::WeatherParticleRenderer`):
   ends nearer, 3500 m (snow 2200 m) over 1 + 1.5 × the strength + 25 ×
   its excess over 2 squared: a blizzard's some 70 m, the land beyond white
   by day; at night its fog no darker than a dim grey (0.09).
+- **The air in the lamps' beams** (2026-11-24; the experimental path with
+  the HDR frame). While it snows or rains, the same four cones that light
+  the flakes light the air between them: the light shafts' pass
+  (`LightShaftFrame::beams`) marches each pixel's view ray from the eye to
+  what the frame shows (24 steps, closer near the eye), the air as thick as
+  the fog the precipitation makes (snow 3 / its fog's distance per metre,
+  rain 1 /), dimmed by the air between. At night a blizzard shows as a
+  bright haze in the headlights, the land past it gone; before, only the
+  flakes shone and the air between them stayed black. The pass runs for it
+  with the sun's shafts off too (the sun's part then left out).

@@ -83,6 +83,12 @@ public:
     // post shows, metres from `lead`: ahead +, behind -), by distance.
     [[nodiscard]] std::vector<std::pair<double, double>> mileposts_along(const TrackTraveller& lead, double ahead, double behind) const;
     [[nodiscard]] const std::vector<SpeedPostOnTrack>& posts() const noexcept { return posts_; }
+    // The limits of the posts on `node` from `entry` (not at it) to `exit`
+    // for travel `forward`, `at` m from the front at `entry`: appended as
+    // (m/s, m from the front) in order (a way other than the train's: the
+    // КЛУБ's map's).
+    void limits_on(std::uint32_t node, double entry, double exit, bool forward, double at, TrainCategory category,
+                   std::vector<std::pair<float, double>>& out) const;
     // The post for item `item`, if it is a limit post on the network.
     [[nodiscard]] const SpeedPostOnTrack* post(std::uint32_t item) const;
     // Whether `post` applies to travel `forward` on its node by a train of

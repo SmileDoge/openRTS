@@ -25,6 +25,7 @@ struct BrakeSettings {
     int own_klub = 1;          // own_klub: 1 openRTS's КЛУБ
     bool no_brakes_dll = true; // no_brakes_dll: not loaded where all of it is openRTS's (from the next train)
     bool klub_objects = false; // klub_objects
+    bool saut_brakes = true;   // saut_brakes: openRTS's САУТ brakes (simulation::saut_service_braking())
     bool klub_map = true;      // klub_map
     bool operator==(const BrakeSettings&) const = default;
 };

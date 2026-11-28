@@ -225,9 +225,17 @@ RecorderParameters recorder_parameters(const formats::EngineDefinition& engine) 
     const bool needle = find("sl_speed1", &p.speed1_index) && value("sl_speed1", -1.0f) > -1.0f;
     const bool kpd = find("sl_kpdspd1", &p.kpd_index) && value("sl_kpdspd1", -1.0f) > -1.0f;
     k.needle = needle;
+    // The КПД-3 runs where there is no needle (Brakes.dll: the needle first).
+    k.kpd = kpd && !needle;
+    k.kpd_mode = static_cast<std::uint32_t>(value("sl_kpdmode", 0.0f));
+    k.flip = static_cast<std::int32_t>(value("pb_flip", -1.0f));
     p.speed1 = value("sl_speed1", -1.0f);
-    p.present = needle || kpd;
-    p.own = needle && !kpd && !(k.setup & 8u);
+    p.kpd_value = value("sl_kpdspd1", -1.0f);
+    k.mu = (k.setup & 0x10u) && !needle && !kpd;
+    k.mu_speed = value("sl_muspeed", 100.0f);
+    find("sl_setup", &p.setup_index);
+    p.present = needle || kpd || k.mu;
+    p.own = p.present; // the УКБМ (SL_SETUP 8) and the МУ too, since 2026-11-24
     const auto cabs = static_cast<std::size_t>(std::clamp(static_cast<int>(value("br_numcabs", 1.0f)), 1, 8));
     for (std::size_t c = 1; c <= cabs; ++c) {
         simulation::RecorderCab cab;
@@ -247,6 +255,38 @@ RecorderParameters recorder_parameters(const formats::EngineDefinition& engine) 
         cab.pss = id("sl_pss", c);
         cab.hl = id("sl_hl", c);
         cab.pr = id("sl_pr", c);
+        cab.kpd_speed = id("sl_kpdspd", c);
+        cab.kpd_power = id("sl_kpdswp", c);
+        cab.kpd_light = id("sl_kpdswl", c);
+        cab.kpd_screen = id("sl_kpddsp", c);
+        cab.kpd_upper = id("sl_kpdd1id", c);
+        cab.kpd_lower = id("sl_kpdd2id", c);
+        cab.kpd_lamp_power = id("sl_kpdlpit", c);
+        cab.kpd_lamp_check = id("sl_kpdlkon", c);
+        cab.kpd_lamp_dark = id("sl_kpdpod", c);
+        cab.kpd_lamp_lit = id("sl_kpdsvt", c);
+        cab.kpd_texture = id("sl_kpdatch", c);
+        cab.ukbm_power = id("sl_ukbmpw", c);
+        cab.mu_l1p = id("sl_mul1p", c);
+        cab.mu_l2p = id("sl_mul2p", c);
+        cab.mu_l1p1 = id("sl_mul1p1", c);
+        cab.mu_l2p1 = id("sl_mul2p1", c);
+        for (std::size_t b = 0; b < 7; ++b) {
+            cab.mu_lamps[b] = id("sl_mu" + std::to_string(b + 1) + "lp", c);
+            cab.mu_keys[b] = id("sl_mu" + std::to_string(b + 1) + "btn", c);
+        }
+        cab.mu_power1 = id("sl_musw1p", c);
+        cab.mu_power2 = id("sl_musw2p", c);
+        cab.mu_cassette = id("sl_mukass", c);
+        cab.mu_cassette_lamp = id("sl_mukasslp", c);
+        cab.mu_pss = id("sl_mupss", c);
+        cab.mu_pss2 = id("sl_mupssp", c);
+        cab.mu_disp1 = id("sl_mu1disp", c);
+        cab.mu_disp1b = id("sl_mu1dispp", c);
+        cab.mu_disp2 = id("sl_mu2disp", c);
+        cab.mu_disp2b = id("sl_mu2dispp", c);
+        cab.mu_fast = id("sl_mumpid", c);
+        for (std::size_t b = 0; b < cab.kpd_keys.size(); ++b) cab.kpd_keys[b] = id("sl_kpd" + std::to_string(b + 1) + "btn", c);
         k.cabs.push_back(cab);
     }
     return p;

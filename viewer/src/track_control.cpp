@@ -438,8 +438,13 @@ void TrackControl::draw(TrainView& trains, simulation::SignalSystem* signals) {
         return;
     }
     focused_ = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows);
+    poll_routing();
     ImGui::BeginChild("panel", ImVec2(320.0f, 0.0f), true);
+    // Setting a route: the panel greyed under what is asked (as the server's).
+    if (routing_.active) routing_banner();
+    ImGui::BeginDisabled(routing_.active);
     draw_panel(trains, signals);
+    ImGui::EndDisabled();
     ImGui::EndChild();
     ImGui::SameLine();
     ImGui::BeginChild("map", ImVec2(0.0f, 0.0f), true, ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
@@ -585,8 +590,32 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
         map_.trains.push_back(std::move(t));
     }
     // Over it all: the edited path's start, the consist being placed, the player.
+    // A route being set: the server's way for it, its end and points.
+    if (routing_.active && routing_.preview && routing_.preview->ok) {
+        const ImU32 colour = routing_.ask.shunting ? IM_COL32(230, 230, 230, 230) : IM_COL32(0, 120, 255, 220);
+        for (const auto& s : routing_.preview->spans)
+            map_.lines.push_back({.points = map_.along(s.node, s.from, s.to), .colour = colour, .width = 6.0f});
+    }
+    if (routing_.active) {
+        for (std::size_t i = 0; i < routing_.ask.via.size(); ++i) {
+            if (const auto p = network_->point(routing_.ask.via[i].node, routing_.ask.via[i].offset))
+                map_.marks.push_back({.at = *p, .colour = IM_COL32(0, 110, 255, 255), .letter = std::to_string(i + 1),
+                                      .letter_colour = IM_COL32(255, 255, 255, 255), .radius = 9.0f});
+        }
+        if (routing_.ask.end) {
+            if (const auto p = network_->point(routing_.ask.end->node, routing_.ask.end->offset))
+                map_.marks.push_back({.at = *p, .colour = IM_COL32(220, 30, 30, 255), .letter = "K", .letter_colour = IM_COL32(255, 255, 255, 255),
+                                      .radius = 9.0f});
+        }
+        for (const auto& [node, branch] : routing_.ask.branches) {
+            if (const auto p = network_->point(node, 0.0))
+                map_.marks.push_back({.at = *p, .colour = IM_COL32(255, 150, 0, 255), .letter = std::to_string(branch),
+                                      .letter_colour = IM_COL32(0, 0, 0, 255), .radius = 9.0f});
+        }
+    }
     map_.overlay = [&](ImDrawList* draw) {
         const auto at = [&](const simulation::TrackPoint& p) { return map_.screen(p); };
+        if (routing_.active) draw_routing(draw);
         if (editing_) {
             if (const auto start = network_->point(plan_.start.node, plan_.start.offset)) {
                 const auto p = at(*start);
@@ -719,6 +748,11 @@ void TrackControl::draw_map(TrainView& trains, const simulation::SignalSystem* s
 void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signals) {
 #ifdef OPENRTS_HAS_IMGUI
     if (!ImGui::BeginPopup("track_control_menu")) return;
+    if (routing_.active) {
+        routing_menu();
+        ImGui::EndPopup();
+        return;
+    }
     const auto add_point = [&](const simulation::PlanPointKind kind) {
         simulation::PlanPoint point;
         point.kind = kind;
@@ -753,7 +787,14 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
                 network_actions_.cancel_route(id);
                 message_ = tr("route cancelled");
             }
-            if (network_actions_.route_to && !routed) ImGui::TextDisabled("%s", tr("a route: pick the train, then right-click the track"));
+            // As the server's map: the end, points to pass, junctions, the
+            // order (console_route).
+            if (network_actions_.console_route) {
+                if (ImGui::MenuItem(tr("Set a route"))) start_routing(id, false);
+                if (routed && ImGui::MenuItem(tr("Edit the route"))) start_routing(id, true);
+            } else if (network_actions_.route_to && !routed) {
+                ImGui::TextDisabled("%s", tr("a route: pick the train, then right-click the track"));
+            }
             if (network_actions_.train_form && network_actions_.set_train_form && ImGui::BeginMenu(tr("Number and name"))) {
                 if (form_train_ != id || ImGui::IsWindowAppearing()) {
                     form_train_ = id;
@@ -1043,7 +1084,7 @@ void TrackControl::draw_menu(TrainView& trains, simulation::SignalSystem* signal
                 }
             }
         }
-        if (network_actions_.route_to && selected_ != 0) {
+        if (network_actions_.route_to && !network_actions_.console_route && selected_ != 0) {
             // Points to pass first (as many as needed, in order), then the end.
             if (route_via_train_ != selected_) {
                 route_via_.clear();
@@ -1368,6 +1409,30 @@ void TrackControl::draw_panel(TrainView& trains, simulation::SignalSystem* signa
                 if (cast == 2) message_ = trains.set_role(selected->id, TrainView::Role::ai);
             }
         }
+        // A traffic train's speed and rates (its own; the scenario's keep theirs).
+        if (selected->role == TrainView::Role::ai) {
+            auto now = trains.traffic_tuning(selected->id, true);
+            float kmh = now.max_speed * 3.6f;
+            bool changed = false;
+            ImGui::SetNextItemWidth(160.0f);
+            changed |= ImGui::DragFloat(tr("Top speed, km/h##traffic"), &kmh, 0.5f, 5.0f, 300.0f, "%.0f");
+            ImGui::SetNextItemWidth(160.0f);
+            changed |= ImGui::DragFloat(tr("Speeding up, m/s2##traffic"), &now.acceleration, 0.01f, 0.05f, 3.0f, "%.2f");
+            ImGui::SetNextItemWidth(160.0f);
+            changed |= ImGui::DragFloat(tr("Slowing down, m/s2##traffic"), &now.deceleration, 0.01f, 0.05f, 3.0f, "%.2f");
+            changed |= ImGui::Checkbox(tr("Couples to cars standing on its way##traffic"), &now.couple);
+            changed |= ImGui::Checkbox(tr("Stops at every platform##traffic"), &now.stop_at_platforms);
+            if (now.stop_at_platforms) {
+                ImGui::SameLine();
+                ImGui::SetNextItemWidth(110.0f);
+                changed |= ImGui::DragFloat(tr("stands, s##traffic"), &now.platform_wait, 1.0f, 5.0f, 1800.0f, "%.0f");
+            }
+            if (changed) {
+                now.max_speed = kmh / 3.6f;
+                trains.set_traffic_tuning(selected->id, now);
+            }
+            if (ImGui::Button(tr("Defaults##traffic"))) trains.set_traffic_tuning(selected->id, {});
+        }
         if (editing_) {
             ImGui::TextWrapped(tr("Editing: right-click the track for start, waiting, reverse and end points; a junction to switch it "
                                "on the path; a point to remove it."));
@@ -1516,6 +1581,170 @@ void TrackControl::draw_electrification_panel(TrainView& trains) {
     ImGui::PopTextWrapPos();
 #else
     (void)trains;
+#endif
+}
+
+// ---- a route set on the map, as the server's (console_route) ----
+
+void TrackControl::start_routing(const std::uint64_t train, const bool edit) {
+    routing_ = {};
+    routing_.active = true;
+    routing_.train = train;
+    selected_ = train;
+    if (edit) send_routing(net::ConsoleRouteAsk::Kind::fetch);
+}
+
+void TrackControl::send_routing(const net::ConsoleRouteAsk::Kind kind) {
+    if (!network_actions_.console_route) return;
+    auto ask = routing_.ask;
+    ask.kind = kind;
+    network_actions_.console_route(routing_.train, ask);
+    routing_.dirty = false;
+#ifdef OPENRTS_HAS_IMGUI
+    routing_.asked_at = ImGui::GetTime();
+#endif
+}
+
+void TrackControl::poll_routing() {
+#ifdef OPENRTS_HAS_IMGUI
+    if (network_actions_.console_route_answer) {
+        while (auto answer = network_actions_.console_route_answer()) {
+            if (!routing_.active) {
+                if (answer->kind == net::ConsoleRouteAsk::Kind::set) message_ = net::to_utf8(answer->message);
+                continue;
+            }
+            if (answer->kind == net::ConsoleRouteAsk::Kind::set) {
+                message_ = net::to_utf8(answer->message);
+                if (answer->ok) routing_.active = false;
+                continue;
+            }
+            if (answer->kind == net::ConsoleRouteAsk::Kind::fetch && answer->request) {
+                routing_.ask = *answer->request;
+                routing_.ask.kind = net::ConsoleRouteAsk::Kind::preview;
+            }
+            routing_.preview = std::move(*answer);
+        }
+    }
+    if (!routing_.active) return;
+    // The way asked again when the request changed, and once a second (the
+    // trains move, junctions are taken).
+    if (routing_.ask.end && (routing_.dirty || ImGui::GetTime() - routing_.asked_at > 1.0)) send_routing(net::ConsoleRouteAsk::Kind::preview);
+    if (focused_ && !ImGui::GetIO().WantTextInput && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) routing_.active = false;
+#endif
+}
+
+void TrackControl::routing_banner() {
+#ifdef OPENRTS_HAS_IMGUI
+    auto& r = routing_;
+    const auto names = network_actions_.train_names ? network_actions_.train_names(r.train) : std::pair<std::string, std::string>{};
+    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.1f, 1.0f), "%s", trf("Setting a route for train %s", names.first.c_str()).c_str());
+    ImGui::TextWrapped("%s", tr("Right-click the track: the end, then points to pass; a junction: the branch to take; anywhere: confirm."));
+    ImGui::TextWrapped("%s", trf("End: %s, points to pass: %zu, junctions chosen: %zu, from: %s", r.ask.end ? tr("set") : tr("none"), r.ask.via.size(),
+                                 r.ask.branches.size(), r.ask.rear_first ? tr("the rear") : tr("the head"))
+                                 .c_str());
+    const bool ok = r.preview && r.preview->ok && r.ask.end;
+    if (ok) {
+        double length = 0.0;
+        for (const auto& s : r.preview->spans) length += s.forward ? s.to - s.from : s.from - s.to;
+        ImGui::TextUnformatted(trf("The way: %.0f m, %u junctions", length, r.preview->junctions).c_str());
+    } else if (r.ask.end && r.preview) {
+        ImGui::TextColored(ImVec4(1.0f, 0.35f, 0.3f, 1.0f), "%s", net::to_utf8(r.preview->message).c_str());
+    }
+    if (ImGui::Button(tr("Turn the direction"))) {
+        r.ask.rear_first = !r.ask.rear_first;
+        r.dirty = true;
+    }
+    ImGui::SameLine();
+    ImGui::BeginDisabled(!ok);
+    if (ImGui::Button(tr("Train order"))) {
+        r.ask.shunting = false;
+        send_routing(net::ConsoleRouteAsk::Kind::set);
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Shunting order"))) {
+        r.ask.shunting = true;
+        send_routing(net::ConsoleRouteAsk::Kind::set);
+    }
+    ImGui::EndDisabled();
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Cancel"))) r.active = false;
+    if (!message_.empty()) ImGui::TextWrapped("%s", message_.c_str());
+    ImGui::Separator();
+#endif
+}
+
+void TrackControl::routing_menu() {
+#ifdef OPENRTS_HAS_IMGUI
+    auto& r = routing_;
+    const auto spot = [](const simulation::TrackLocation& at) { return net::ConsoleRouteSpot{at.node, at.offset}; };
+    if (menu_.kind == PickKind::track) {
+        if (!r.ask.end) {
+            if (ImGui::MenuItem(tr("The route's end here"))) {
+                r.ask.end = spot(menu_.location);
+                r.dirty = true;
+            }
+        } else {
+            if (ImGui::MenuItem(tr("A point to pass here"))) {
+                r.ask.via.push_back(spot(menu_.location));
+                r.dirty = true;
+            }
+            if (ImGui::MenuItem(tr("Move the end here"))) {
+                r.ask.end = spot(menu_.location);
+                r.dirty = true;
+            }
+        }
+    } else if (menu_.kind == PickKind::junction) {
+        const auto node = menu_.junction;
+        const auto* info = network_->node(node);
+        const auto chosen = std::find_if(r.ask.branches.begin(), r.ask.branches.end(), [&](const auto& b) { return b.first == node; });
+        for (std::uint32_t b = 0; info && b < info->branch_count(); ++b) {
+            if (ImGui::MenuItem(trf("Take branch %u", b).c_str(), nullptr, chosen != r.ask.branches.end() && chosen->second == b)) {
+                if (chosen != r.ask.branches.end()) chosen->second = b;
+                else r.ask.branches.emplace_back(node, b);
+                r.dirty = true;
+            }
+        }
+        if (chosen != r.ask.branches.end() && ImGui::MenuItem(tr("Any branch (the shortest way)"))) {
+            r.ask.branches.erase(chosen);
+            r.dirty = true;
+        }
+    }
+    ImGui::Separator();
+    if (!r.ask.via.empty() && ImGui::MenuItem(tr("Remove the last point to pass"))) {
+        r.ask.via.pop_back();
+        r.dirty = true;
+    }
+    if (ImGui::MenuItem(tr("Turn the direction"))) {
+        r.ask.rear_first = !r.ask.rear_first;
+        r.dirty = true;
+    }
+    const bool ok = r.preview && r.preview->ok && r.ask.end;
+    if (ImGui::MenuItem(tr("Confirm and set: train order"), nullptr, false, ok)) {
+        r.ask.shunting = false;
+        send_routing(net::ConsoleRouteAsk::Kind::set);
+    }
+    if (ImGui::MenuItem(tr("Confirm and set: shunting order"), nullptr, false, ok)) {
+        r.ask.shunting = true;
+        send_routing(net::ConsoleRouteAsk::Kind::set);
+    }
+    if (ImGui::MenuItem(tr("Cancel setting the route"))) r.active = false;
+#endif
+}
+
+void TrackControl::draw_routing(ImDrawList* draw) {
+#ifdef OPENRTS_HAS_IMGUI
+    // Where the way starts and which way it goes.
+    const auto& r = routing_;
+    if (!r.preview || !r.preview->ok || r.preview->spans.empty()) return;
+    const auto& first = r.preview->spans.front();
+    const double run = first.forward ? first.to - first.from : first.from - first.to;
+    const double ahead = (std::min)(12.0, std::abs(run));
+    const auto from = network_->point(first.node, first.from);
+    const auto to = network_->point(first.node, first.forward ? first.from + ahead : first.from - ahead);
+    if (from && to && ahead > 1.0)
+        trackmap::draw_direction_arrow(draw, map_.screen(*to), map_.screen(*from), IM_COL32(0, 110, 255, 255), IM_COL32(255, 255, 255, 255), 20.0f);
+#else
+    (void)draw;
 #endif
 }
 

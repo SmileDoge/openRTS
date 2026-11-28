@@ -78,8 +78,11 @@ CabKey parse_cab_key(std::string_view text) {
         else if (c == '-') out.key = GLFW_KEY_MINUS;
         else if (c == '=') out.key = GLFW_KEY_EQUAL;
         else if (c == '`') out.key = GLFW_KEY_GRAVE_ACCENT;
-        else if (c == '<') { out.key = GLFW_KEY_COMMA; out.shift = true; }
-        else if (c == '>') { out.key = GLFW_KEY_PERIOD; out.shift = true; }
+        // "<" and ">" (the handbrakes' wheels) are the keys they are on, as
+        // RTS reads them: "," and "." without Shift (testers 2026-11-27:
+        // Shift+, asked here, the wheel never turned by its keys).
+        else if (c == '<') out.key = GLFW_KEY_COMMA;
+        else if (c == '>') out.key = GLFW_KEY_PERIOD;
     }
 #else
     (void)text;
@@ -115,7 +118,7 @@ std::unique_ptr<LegacyCab> LegacyCab::attach(const core::Vfs& vfs, const std::ve
     std::size_t player = SIZE_MAX;
     for (std::size_t i = 0; i < cars.size(); ++i) {
         if (!consist->has_dll(i)) continue;
-        train.set_controller(i, consist->controller(i));
+        train.set_module(i, consist->controller(i));
         if (player == SIZE_MAX) player = i;
     }
     // A train just made takes its air from Init, as in RTS.
@@ -187,7 +190,7 @@ bool LegacyCab::reconsist(const core::Vfs& vfs, const std::vector<std::vector<Le
         if ((k >> 32) == before) going_down[(static_cast<std::uint64_t>(player) << 32) | (k & 0xFFFFFFFFu)] = v;
     going_down_ = std::move(going_down);
     for (std::size_t i = 0; i < cars.size(); ++i)
-        if (consist_->has_dll(i)) train.set_controller(i, consist_->controller(i));
+        if (consist_->has_dll(i)) train.set_module(i, consist_->controller(i));
     if (player < cars.size()) bind_keys(player);
     return true;
 }
@@ -523,6 +526,48 @@ void LegacyCab::release_keys() {
     take_log();
 }
 
+void LegacyCab::return_released(const float dt) {
+    clock_ += dt;
+    if (!precise_held_.empty() && working()) {
+        for (auto it = precise_held_.begin(); it != precise_held_.end();) {
+            if (!key_held(it->first, it->second)) {
+                apply_drag(player(), it->first, 0.0f, true);
+                it = precise_held_.erase(it);
+                continue;
+            }
+            // Some 1.5 positions a second.
+            apply_drag(player(), it->first, static_cast<float>(it->second) * 1.5f * dt, false);
+            ++it;
+        }
+    }
+    if (returning_.empty()) return;
+    if (!working()) {
+        returning_.clear();
+        return;
+    }
+    const auto* out = out_of(player());
+    if (!out) return;
+    for (auto it = returning_.begin(); it != returning_.end();) {
+        const auto id = *it;
+        if (id >= out->switches.size() || key_held(id, 0)) {
+            it = returning_.erase(it);
+            continue;
+        }
+        // Held its least yet (a quick tap): back once it has been.
+        if (const auto at = pressed_at_.find(id); at != pressed_at_.end() && clock_ - at->second < min_hold) {
+            ++it;
+            continue;
+        }
+        const auto& sw = out->switches[id];
+        if (sw.set_state == sw.fixed_state) {
+            it = returning_.erase(it);
+            continue;
+        }
+        operate(id, sw.fixed_state);
+        ++it;
+    }
+}
+
 bool key_reaches(const formats::CabSwitch& control, const std::optional<glm::vec3>& eye) {
     if (!eye || (control.flags & formats::cab_check_distance) == 0 || control.radius <= 0.0f) return true;
     const glm::vec3 at{control.position[0], control.position[1], control.position[2]};
@@ -538,6 +583,14 @@ bool LegacyCab::key_held(const std::uint32_t id, const int direction) const {
 void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) {
     if (event.down) keys_down_.insert(event.key);
     else keys_down_.erase(event.key);
+    // The release's switches (pressed_by_key_), taken now: read in the loop below.
+    std::set<std::uint32_t> released;
+    if (!event.down) {
+        if (const auto held = pressed_by_key_.find(event.key); held != pressed_by_key_.end()) {
+            released = std::move(held->second);
+            pressed_by_key_.erase(held);
+        }
+    }
     if (!working() || !keyboard()) return;
     const auto* out = out_of(player());
     for (const auto& b : bindings_) {
@@ -553,11 +606,32 @@ void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) 
         // A press works only the switches within reach (a release lets go
         // of what a press took, wherever he is).
         if (event.down && !key_reaches(*spec, eye)) continue;
+        // A PRECISE switch (the handbrake's wheel, CONTROLLERX PRECISE): its
+        // keys turn it as the mouse does while held (testers 2026-11-26: "<"
+        // and ">" did nothing to any handbrake; RTS turns it by them).
+        if (spec->flags & formats::cab_precise) {
+            if (event.down) {
+                precise_held_[b.id] = b.direction != 0 ? b.direction : 1;
+            } else if (precise_held_.erase(b.id) > 0) {
+                apply_drag(player(), b.id, 0.0f, true);
+            }
+            continue;
+        }
         if (!event.down) {
             // RTS 0x414340: a NONFIXED switch returns to its FixedState when
-            // its key is let go (RTS steps there one position per key delay).
-            if (non_fixed && sw.set_state != sw.fixed_state) operate(b.id, sw.fixed_state);
+            // its key is let go (RTS steps there one position per key delay);
+            // only one this key's press moved.
+            const bool moved_by_it = released.contains(b.id);
+            if (non_fixed && moved_by_it && sw.set_state != sw.fixed_state) {
+                const auto at = pressed_at_.find(b.id);
+                if (at == pressed_at_.end() || clock_ - at->second >= min_hold) operate(b.id, sw.fixed_state);
+                returning_.insert(b.id); // a quick tap: return_released lets it go once held min_hold
+            }
             continue;
+        }
+        if (non_fixed) {
+            pressed_by_key_[event.key].insert(b.id);
+            pressed_at_[b.id] = clock_;
         }
         if (non_fixed && b.direction == 0) {
             // Held: one step up from a pressed position, else RTS's click step.

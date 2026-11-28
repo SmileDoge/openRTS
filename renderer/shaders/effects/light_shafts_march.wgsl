@@ -52,6 +52,67 @@ fn dust(p: vec3<f32>) -> f32 {
     return d;
 }
 
+// The lamps' light at a point of the air (as the snowflakes take it,
+// weather_particles.wgsl): brightest near the lamp, soft to the cone's edge
+// and its reach.
+fn beam_light(p: vec3<f32>) -> vec3<f32> {
+    var light = vec3<f32>(0.0);
+    let n = u32(shafts.beam.x);
+    for (var k = 0u; k < n; k = k + 1u) {
+        let apex = shafts.beams[k * 3u];
+        let axis = shafts.beams[k * 3u + 1u];
+        let v = p - apex.xyz;
+        if (axis.w < 0.0) {
+            // A lamp shining every way (a platform's): a glowing ball of air
+            // round it, brighter towards it.
+            let d = length(v);
+            if (d >= apex.w) { continue; }
+            let near = 1.0 - d / apex.w;
+            light = light + shafts.beams[k * 3u + 2u].xyz * near * near * 2.0;
+            continue;
+        }
+        let along = dot(v, axis.xyz);
+        if (along <= 0.0 || along >= apex.w) { continue; }
+        let off = length(v - axis.xyz * along) / max(along * axis.w, 1e-3);
+        // The cone's core, softly out to its edge, and the light the snow
+        // scatters again round it (2026-11-24: from the cab the cone's side
+        // stood as a hard line): a faint halo falling off past the edge.
+        let core = 1.0 - smoothstep(0.3, 1.0, off);
+        let halo = 0.22 * exp(-max(off - 0.7, 0.0) * 1.6);
+        let reach = 1.0 - along / apex.w;
+        light = light + shafts.beams[k * 3u + 2u].xyz * max(core, halo) * reach * reach * (6.0 / (1.0 + along * 0.12));
+    }
+    return light;
+}
+
+// Snow or rain in the lamps' beams: the light they scatter towards the eye
+// (a weak forward phase: an even scatter, times pi as the sun's), dimmed by
+// the air between, out to what the frame shows (2026-11-24: at night a
+// blizzard showed only its flakes, the air between them black).
+fn beams_in_air(eye: vec3<f32>, dir: vec3<f32>, nearest: f32, jitter: f32) -> vec3<f32> {
+    let sigma = shafts.beam.y;
+    if (shafts.beam.x < 0.5 || sigma <= 0.0) { return vec3<f32>(0.0); }
+    var reach = 0.0;
+    let n = u32(shafts.beam.x);
+    for (var k = 0u; k < n; k = k + 1u) {
+        reach = max(reach, distance(eye, shafts.beams[k * 3u].xyz) + shafts.beams[k * 3u].w);
+    }
+    let end = min(nearest * 0.98, reach);
+    if (end <= 0.0) { return vec3<f32>(0.0); }
+    let steps = 24u;
+    var light = vec3<f32>(0.0);
+    for (var i = 0u; i < steps; i = i + 1u) {
+        let a = (f32(i) + jitter) / f32(steps);
+        let t = end * a * a;
+        let dt = end * (2.0 * f32(i) + 1.0) / f32(steps * steps);
+        light = light + beam_light(eye + dir * t) * exp(-sigma * t) * sigma * dt;
+    }
+    // 0.4 until v0.39.6: beside the lit flakes near the eye the haze from
+    // the lamps to them hardly showed, the beam seemed to start where the
+    // flakes do, metres off its lamp (testers 2026-11-24).
+    return light * 1.0;
+}
+
 @fragment
 fn fs_march(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     // The nearest of the four full-size texels under this one.
@@ -63,10 +124,12 @@ fn fs_march(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
         nearest = min(nearest, distance_at(texel));
     }
     let count = u32(effects.shadow.x);
-    if (count == 0u || shafts.march.z <= 0.0) { return vec4<f32>(0.0, 0.0, 0.0, nearest); }
     let uv = (vec2<f32>(base) + vec2<f32>(1.0)) / shafts.sizes.zw;
     let eye = shafts.eye.xyz;
     let dir = normalize(world_at(uv, 1.0) - eye);
+    let jitter = fract(52.9829189 * fract(dot(floor(position.xy), vec2<f32>(0.06711056, 0.00583715))));
+    let lamps = beams_in_air(eye, dir, nearest, jitter);
+    if (count == 0u || shafts.march.z <= 0.0) { return vec4<f32>(min(lamps, vec3<f32>(16.0)), nearest); }
     // Henyey-Greenstein (g 0.7) and a little of an even scatter, times pi:
     // the scene lights a surface with its albedo x the sun (no 1 / pi), so
     // the air's light is weighed the same way.
@@ -74,9 +137,8 @@ fn fs_march(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let g = 0.7;
     let hg = (1.0 - g * g) / (12.566371 * pow(max(1.0 + g * g - 2.0 * g * c, 1e-4), 1.5));
     let phase = 3.14159265 * (0.85 * hg + 0.15 / 12.566371);
-    // Interleaved gradient noise: each pixel's steps start apart (the blur
-    // joins them).
-    let jitter = fract(52.9829189 * fract(dot(floor(position.xy), vec2<f32>(0.06711056, 0.00583715))));
+    // Interleaved gradient noise (jitter above): each pixel's steps start
+    // apart (the blur joins them).
     let steps = 32u;
     let near_end = min(nearest * 0.98, shafts.march.x);
     var light = 0.0;
@@ -103,6 +165,6 @@ fn fs_march(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
             optical = optical + sigma * dt;
         }
     }
-    let colour = effects.sun_colour.rgb * (phase * light * effects.shadow.y * shafts.march.z);
+    let colour = effects.sun_colour.rgb * (phase * light * effects.shadow.y * shafts.march.z) + lamps;
     return vec4<f32>(min(colour, vec3<f32>(16.0)), nearest);
 }

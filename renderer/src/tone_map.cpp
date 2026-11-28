@@ -23,7 +23,9 @@ struct SettingsUniform {
     float shafts = 0.0f;
     float linear_scene = 0.0f;
     float auto_exposure = 0.0f;
-    float pad[3]{};
+    float hdr_scale = 0.0f; // paper white / 80 nits: scRGB out (0: SDR)
+    float hdr_peak = 0.0f;  // the peak over the paper white
+    float pad = 0.0f;
 };
 static_assert(sizeof(SettingsUniform) == 48);
 
@@ -158,7 +160,9 @@ void ToneMapper::render(const WGPUCommandEncoder encoder, const WGPUTextureView 
                                    .bloom = bloom ? (std::max)(tone.bloom, 0.0f) : 0.0f,
                                    .shafts = shafts && tone.shafts ? 1.0f : 0.0f,
                                    .linear_scene = tone.linear_scene ? 1.0f : 0.0f,
-                                   .auto_exposure = tone.auto_exposure && exposure ? 1.0f : 0.0f};
+                                   .auto_exposure = tone.auto_exposure && exposure ? 1.0f : 0.0f,
+                                   .hdr_scale = tone.paper_white > 0.0f ? tone.paper_white / 80.0f : 0.0f,
+                                   .hdr_peak = tone.paper_white > 0.0f ? (std::max)(tone.peak / tone.paper_white, 1.0f) : 1.0f};
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.settings, 0, &settings, sizeof(settings));
         wgpuQueueRelease(queue);

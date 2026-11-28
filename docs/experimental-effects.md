@@ -91,6 +91,25 @@ traffic and rain (the cab by day differs by the light in the cab, added the
 same day). The bindings and the textures of each scene are the same in
 either encoding; the GPU's time did not change beyond its run-to-run spread.
 
+### HDR output (2026-11-26)
+
+To a monitor with HDR on in Windows: the launcher's "HDR output" (with
+HDR, DirectX 12; `--hdr-output`). The swap chain is RGBA16Float, which
+DirectX 12 presents as scRGB (linear Rec.709, 1 = 80 nits). The tone curve
+writes light there instead of an 8-bit picture: an ordinary white (the
+SDR picture's 1) at the **paper white** (200 nits by default), the
+highlights (the sun, lamps, the bloom) rolled off by Khronos PBR Neutral to
+the **monitor's peak** (1000 nits by default) rather than cut at the white;
+AgX and the night as the SDR picture at the paper white. The panels are
+drawn into an 8-bit texture of their own and laid over at the paper white
+(`renderer/hdr_output.hpp`, `UiCompositor`). Both brightnesses in the
+launcher and live in the game's tone settings (`--hdr-paper-white`,
+`--hdr-peak`). The "HDR calibration" button (by them in the game) shows
+two patterns: the peak (a square at the peak set on a field at 10 000
+nits: gone once it is the display's own) and the white (greys at the
+paper white, a bar at the peak). Not on Vulkan or OpenGL (their float swap chain stays SDR),
+in VR or in a capture.
+
 ### Physically based light (2026-11-16, PBR stage 1)
 
 In the linear HDR frame the experimental path lights a surface by a
@@ -1069,6 +1088,100 @@ the cab's frame and the clouds stand in the air as beams of sunlight:
   outside by the car a mean of 0.019, at most 0.23, 14 % of the pixels
   over 0.05 (the sky's third 0.043); in the cab a mean of 0.006 to 0.013,
   at most 0.10 to 0.20. The march 0.08 to 0.1 ms.
+
+### Temporal anti-aliasing (TAA, 2026-11-25)
+
+Graphics panel, "Temporal anti-aliasing (TAA)"; `--effects ...,taa`. Off
+by default. The experimental path's HDR frame, not in VR.
+
+- Over the MSAA, not instead of it: alpha to coverage (foliage, fences)
+  stays as it is; TAA smooths the resolved frame. With TAA a weak video
+  card may take MSAA 2x or 1x.
+- Each frame is drawn a sub-pixel apart (Halton 2 / 3, 8 frames) and
+  blended with the frames before (a tenth of the new one), found where
+  they were: the point from the camera's depth pre-pass (drawn for TAA too)
+  through the last frame's view, both without the jitter.
+- The trains (ModelRenderer::set_train; not switch blades or crossing
+  gates) get a depth of their own, in a depth slot of their own; their
+  points are taken as moving by the player's train's move (in the cab as
+  the eye; round a standing train with F3, not at all). Another train
+  passing is not followed; there, as everywhere, the history is clipped
+  to the colours round the pixel (YCoCg, towards the box's centre), with
+  more of the new frame.
+- The new frame's share: 5 % where the history and the frame agree (still
+  things stay still, thin wires do not flicker), up to 15 % where they
+  differ, more on fast motion and on trains.
+- Labels on the screen and the mouse's picking take the projection without
+  the jitter.
+- "TAA shows" (the panel): the result, the motion, the depth it reads,
+  the history alone, the history let go; never written into the history.
+- The history is read by Catmull-Rom (it does not soften frame by frame).
+  A jump of the camera over 50 m drops it.
+- Cost: one full-screen pass (9 reads and the history) and the moving
+  models' depth, some 0.2..0.5 ms on a GTX 10xx at 1080p; the depth
+  pre-pass is shared with GTAO and the bloom.
+- Motion vectors of every model (their last frame's matrices) are not made
+  yet: the base for DLSS / FSR later.
+
+### Motion vectors and the alpha by noise (2026-11-25)
+
+- The screen's motion is a pass of its own (renderer/motion_vectors.hpp):
+  an rgba16f texture, xy the motion to where the pixel was (texture
+  coordinates), z 1 a train's, w 1 where there is a last frame. The
+  temporal AA and DLSS read it; the jitter lives there too.
+- Without MSAA (1x) under TAA or DLAA an alpha test's edge is drawn by
+  noise moved every frame (ModelRenderer::set_stochastic_alpha), which
+  they blend into a soft edge as alpha to coverage gives under MSAA.
+  MSAA 2x and up keep alpha to coverage; 1x without them the test at its
+  cut, as before.
+
+### NVIDIA DLSS: DLAA and upscaling (2026-11-25)
+
+Graphics panel, "NVIDIA DLSS" (`--effects ...,dlaa` or `dlss1`..`dlss5`):
+off, DLAA (the frame's own size), Quality (67 % a side), Balanced (58 %),
+Performance (50 %), Ultra Performance (33 %), instead of the temporal AA.
+An RTX video card, wgpu on Vulkan or Direct3D 12, openRTS's wgpu-native
+(v27.0.4.0-openrts.4 or later) and the Streamline SDK's DLLs beside the
+game (LICENSE-EXCEPTIONS.md); without them the panel says why and TAA stays.
+
+- Build: `-DOPENRTS_STREAMLINE_ROOT=<the Streamline SDK release unpacked>`
+  on the build with openRTS's wgpu-native; the four DLLs are copied beside
+  the executables. sl.interposer.dll is checked for NVIDIA's signature,
+  loaded at run time; no updates over the network.
+- The scene is drawn at DLSS's internal size (slDLSSGetOptimalSettings;
+  DLAA the window's): its own depth and MSAA targets, the HDR frame
+  resolved straight into a texture shared with a D3D11 device of its own
+  (as VR's), MotionVectors drawn straight into another, the depth turned
+  into R32_FLOAT (D3D11 reads no wgpu depth); no other copies. Every pass
+  before DLSS (shadows, GTAO, bloom, shafts, auto exposure) at the
+  internal size; the tone curve, the panels and the captures at the
+  window's (the bloom and the shafts are read by the screen's fraction).
+- DLSS on the D3D11 device (Streamline, manual hooking, the engine
+  "custom" with openRTS's project id); a hidden 1 x 1 swapchain presents
+  once a frame for Streamline's bookkeeping.
+- Matrices without the jitter, the jitter apart: the picture's shift in
+  the motion vectors' axes (x right, y down; OPENRTS_DLSS_JITTER_FLIP the
+  opposite, to check); its phases 8 times the ratio squared (DLSS's guide);
+  depth reversed, motion in texture coordinates; DLSS's own auto exposure.
+- Upscaling: every model texture's LOD bias log2(internal / window)
+  (ModelRenderer::set_texture_lod_bias), as sharp as at the window's size.
+  The ground's textures keep theirs (their sampler's anisotropy).
+- In step: one fence shared by wgpu's queue and D3D11 (the fork's
+  wgpuQueueSignal/WaitSharedFence: D3D12's fence, or on Vulkan a timeline
+  semaphore importing it through VK_KHR_external_semaphore_win32); nobody
+  waits on the CPU (without the extension the CPU waits for wgpu, then for
+  D3D11). 1280 x 720, RTX 4070 Ti SUPER: DX12 TAA 2.55 ms, DLAA 2.92,
+  Quality 2.87, Performance 2.93 (there bound by the CPU); Vulkan TAA 2.43,
+  DLAA 3.04 (4.95 with the CPU waiting), Quality 2.78.
+- TAAU (2026-11-25, any video card): under TAA, "Render resolution" 100 /
+  77 / 67 / 58 / 50 % (`--effects ...,taa,taauN`). The scene in a frame
+  of its own at that size (its depth and MSAA too), the TAA's history at
+  the window's: each output pixel reads the scene where it lies without
+  the jitter (Catmull-Rom), its neighbours, depth and motion from the
+  scene's pixels round it, the new frame's share smaller the fewer and
+  farther the samples. Jitter phases and the textures' LOD bias as for
+  DLSS. 1280 x 720, MSAA 4x, RTX 4070 Ti SUPER, GPU: 100 % 1.98 ms, 67 %
+  1.55, 50 % 1.37; 67 % looks close to the full size, 50 % softer.
 
 ### Trains' textures without DXT1's blocks (BC7, 2026-11-16)
 

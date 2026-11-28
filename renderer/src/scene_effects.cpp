@@ -1,4 +1,5 @@
 #include <openrts/renderer/scene_effects.hpp>
+#include <openrts/renderer/ray_scene.hpp>
 #include <openrts/renderer/gpu_pass_timer.hpp>
 
 #include <openrts/core/profile.hpp>
@@ -35,6 +36,11 @@ constexpr std::uint32_t cluster_x = 16;
 constexpr std::uint32_t cluster_y = 9;
 constexpr std::uint32_t cluster_z = 24;
 constexpr std::uint32_t cluster_capacity = 64; // lights a cluster holds at most
+// The ray shadows' mask (effects/ray_shadow), packed: r the light (0..255)
+// of the sun (bits 0-7) and of the three lamps traced (8-15, 16-23, 24-31);
+// g the first two lamps (their index in the light list + 1, 16 bits each),
+// b the third.
+constexpr WGPUTextureFormat ray_mask_format = WGPUTextureFormat_RGBA32Uint;
 constexpr std::uint32_t cluster_count = cluster_x * cluster_y * cluster_z;
 constexpr WGPUTextureFormat shadow_format = WGPUTextureFormat_Depth32Float;
 constexpr WGPUTextureFormat ao_format = WGPUTextureFormat_R32Float;
@@ -281,7 +287,7 @@ std::optional<ExtraLightCone> extra_light_cone(const ModelExtraLight& light) {
     const glm::vec3 axis = glm::normalize(along);
     glm::vec3 apex{to_world[3]};
     float back = 0.0f;
-    if (kind == 1 && light.size.w > 0.0f) {
+    if ((kind == 1 || kind == 4) && light.size.w > 0.0f) {
         if (tangent < 1e-4f) return std::nullopt; // a cylinder
         back = light.size.w / tangent;
     }
@@ -291,7 +297,13 @@ std::optional<ExtraLightCone> extra_light_cone(const ModelExtraLight& light) {
 
 
 WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 14> entries{};
+    std::array<WGPUBindGroupLayoutEntry, 15> entries{};
+    const std::uint32_t entry_count = 15;
+    // The sun's shadows by rays, a value a pixel (effects/ray_shadow; ray_scene.hpp).
+    entries[14].binding = 14;
+    entries[14].visibility = WGPUShaderStage_Fragment;
+    entries[14].texture.sampleType = WGPUTextureSampleType_Uint;
+    entries[14].texture.viewDimension = WGPUTextureViewDimension_2D;
     entries[0].binding = 0;
     entries[0].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[0].buffer.type = WGPUBufferBindingType_Uniform;
@@ -343,7 +355,7 @@ WGPUBindGroupLayout create_scene_effects_layout(const WGPUDevice device) {
     entries[13].visibility = WGPUShaderStage_Fragment;
     entries[13].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
     entries[13].buffer.minBindingSize = sky_light_buffer_size;
-    const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
+    const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entry_count, .entries = entries.data()};
     return wgpuDeviceCreateBindGroupLayout(device, &descriptor);
 }
 
@@ -387,6 +399,8 @@ struct SceneEffects::Impl {
     Texture lamp_shadow;     // a layer a lamp throwing shadows (or a 1 x 1 stand-in)
     std::array<WGPUTextureView, max_lamp_shadows> lamp_layers{};
     Texture depth;           // the camera's pre-pass
+    Texture moving_depth;    // the moving models' alone (temporal_aa)
+    bool moving_wanted = false;
     // Its view depth (prefilter_wgsl): the frame's size and three smaller
     // levels; `view` all of them, `view_levels` each.
     static constexpr std::uint32_t view_depth_levels = 4;
@@ -395,6 +409,9 @@ struct SceneEffects::Impl {
     std::uint32_t view_level_count = 0;
     Texture ao_raw;          // the frame's size, or half of it (ao_half)
     Texture ao;              // blurred, read by the main pass (or a 1 x 1 stand-in)
+    Texture ray_mask;        // the sun's shadows by rays at the frame's size (with the pre-pass), blurred
+    Texture ray_raw;         // the rays' own, before the blur
+    Texture ray_stand_in;    // 1 x 1, all lit (no mask: the binding's)
     bool ao_is_real = false;
     bool ao_half = false;    // ao_raw at half the size: the low quality's pipelines
 
@@ -403,6 +420,16 @@ struct SceneEffects::Impl {
     WGPUBindGroup blur_group = nullptr;
     WGPUBindGroup cluster_group = nullptr;
     WGPUBindGroup prefilter_group = nullptr;
+    // The sun's shadows by rays (ray_scene.hpp): the pre-pass depth, the
+    // TLAS, the mask written.
+    WGPUBindGroupLayout ray_layout = nullptr;
+    WGPUComputePipeline ray_pipeline = nullptr;
+    WGPUBindGroup ray_group = nullptr;
+    // Its depth-aware blur (effects/ray_shadow_blur): ray_raw -> ray_mask.
+    WGPUBindGroupLayout ray_blur_layout = nullptr;
+    WGPUComputePipeline ray_blur = nullptr;
+    WGPUBindGroup ray_blur_group = nullptr;
+    bool rays_this_frame = false;
     bool groups_stale = true;
 
     EffectsUniform frame{};
@@ -496,7 +523,10 @@ struct SceneEffects::Impl {
     static constexpr std::uint32_t still_slot = lamp_slot + max_lamp_shadows;
     static constexpr std::uint32_t still_pieces = 8; // a cascade's pieces a frame at most
     static constexpr std::uint32_t check_slot = still_slot + max_cascades * still_pieces;
-    static_assert(check_slot + max_cascades == ModelRenderer::depth_slots, "the renderers' depth slots");
+    // The trains' depth for the temporal AA: the last slot (a slot keeps one
+    // list of instances a frame; another pass's would be lost).
+    static constexpr std::uint32_t moving_slot = check_slot + max_cascades;
+    static_assert(moving_slot + 1 == ModelRenderer::depth_slots, "the renderers' depth slots");
     struct StillCache {
         bool valid = false;
         std::uint64_t generation = 0;
@@ -618,6 +648,7 @@ struct SceneEffects::Impl {
 
     ~Impl() {
         release_groups();
+        ray_stand_in.release();
         for (auto& layer : shadow_layers) {
             if (layer) wgpuTextureViewRelease(layer);
         }
@@ -639,6 +670,7 @@ struct SceneEffects::Impl {
         }
         lamp_shadow.release();
         depth.release();
+        moving_depth.release();
         release_view_depth();
         ao_raw.release();
         ao.release();
@@ -660,7 +692,7 @@ struct SceneEffects::Impl {
     }
 
     void release_groups() {
-        for (auto* group : {&main_group, &gtao_group, &blur_group, &cluster_group, &prefilter_group}) {
+        for (auto* group : {&main_group, &gtao_group, &blur_group, &cluster_group, &prefilter_group, &ray_group, &ray_blur_group}) {
             if (*group) wgpuBindGroupRelease(*group);
             *group = nullptr;
         }
@@ -783,9 +815,12 @@ struct SceneEffects::Impl {
         if (!wanted) {
             if (ao.texture && !ao_is_real) return;
             depth.release();
+            moving_depth.release();
             release_view_depth();
             ao_raw.release();
             ao.release();
+            ray_mask.release();
+            ray_raw.release();
             ao = make_texture(device, ao_format, WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst, 1, 1, 1,
                               WGPUTextureViewDimension_2D);
             const float one = 1.0f;
@@ -803,10 +838,21 @@ struct SceneEffects::Impl {
         }
         if (ao_is_real && ao.width == width && ao.height == height && ao_half == half) return;
         depth.release();
+        moving_depth.release();
         ao_raw.release();
         ao.release();
+        ray_mask.release();
+        ray_raw.release();
+        if (ray_pipeline) {
+            ray_mask = make_texture(device, ray_mask_format, WGPUTextureUsage_StorageBinding | WGPUTextureUsage_TextureBinding, width, height,
+                                    1, WGPUTextureViewDimension_2D);
+            ray_raw = make_texture(device, ray_mask_format, WGPUTextureUsage_StorageBinding | WGPUTextureUsage_TextureBinding, width, height,
+                                   1, WGPUTextureViewDimension_2D);
+        }
         depth = make_texture(device, depth_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, width, height, 1,
                              WGPUTextureViewDimension_2D);
+        moving_depth = make_texture(device, depth_format, WGPUTextureUsage_RenderAttachment | WGPUTextureUsage_TextureBinding, width,
+                                    height, 1, WGPUTextureViewDimension_2D);
         make_view_depth(width, height);
         const auto usage = WGPUTextureUsage_StorageBinding | WGPUTextureUsage_TextureBinding;
         ao_half = half;
@@ -821,7 +867,9 @@ struct SceneEffects::Impl {
         if (!groups_stale) return;
         release_groups();
         {
-            std::array<WGPUBindGroupEntry, 14> entries{};
+            std::array<WGPUBindGroupEntry, 15> entries{};
+            const std::uint32_t entry_count = 15;
+            entries[14] = {.binding = 14, .textureView = ray_mask.view ? ray_mask.view : ray_stand_in.view};
             entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
             entries[1] = {.binding = 1, .textureView = shadow.view};
             entries[8] = {.binding = 8, .textureView = cloud_view ? cloud_view : cloud_stand_in.view};
@@ -837,7 +885,7 @@ struct SceneEffects::Impl {
             entries[4] = {.binding = 4, .buffer = lights, .size = sizeof(detail::GpuLight) * max_lights};
             entries[5] = {.binding = 5, .buffer = counts, .size = sizeof(std::uint32_t) * cluster_count};
             entries[6] = {.binding = 6, .buffer = indices, .size = sizeof(std::uint32_t) * cluster_count * cluster_capacity};
-            const WGPUBindGroupDescriptor descriptor{.layout = main_layout, .entryCount = entries.size(), .entries = entries.data()};
+            const WGPUBindGroupDescriptor descriptor{.layout = main_layout, .entryCount = entry_count, .entries = entries.data()};
             main_group = wgpuDeviceCreateBindGroup(device, &descriptor);
         }
         if (ao_is_real && depth.view && view_depth.view && view_level_count == view_depth_levels && ao_raw.view && ao.view) {
@@ -857,6 +905,35 @@ struct SceneEffects::Impl {
             entries[2] = {.binding = 2, .textureView = ao_raw.view};
             const WGPUBindGroupDescriptor descriptor{.layout = gtao_layout, .entryCount = entries.size(), .entries = entries.data()};
             gtao_group = wgpuDeviceCreateBindGroup(device, &descriptor);
+#ifdef OPENRTS_HAS_RAY_QUERY
+            if (ray_layout && ray_mask.view && depth.view) {
+                if (const auto tlas = detail::RayScene::get().tlas(device)) {
+                    WGPUBindGroupEntryAccelerationStructure rays{
+                        .chain = {.sType = static_cast<WGPUSType>(WGPUSType_BindGroupEntryAccelerationStructure)}, .tlas = tlas};
+                    auto& rays_scene = detail::RayScene::get();
+                    std::array<WGPUBindGroupEntry, 10> ray_entries{};
+                    ray_entries[7] = {.binding = 7, .textureView = rays_scene.masks()};
+                    ray_entries[8] = {.binding = 8, .buffer = rays_scene.uvs(), .size = WGPU_WHOLE_SIZE};
+                    ray_entries[9] = {.binding = 9, .buffer = rays_scene.table(), .size = WGPU_WHOLE_SIZE};
+                    ray_entries[4] = {.binding = 4, .buffer = lights, .size = sizeof(detail::GpuLight) * max_lights};
+                    ray_entries[5] = {.binding = 5, .buffer = counts, .size = sizeof(std::uint32_t) * cluster_count};
+                    ray_entries[6] = {.binding = 6, .buffer = indices, .size = sizeof(std::uint32_t) * cluster_count * cluster_capacity};
+                    ray_entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
+                    ray_entries[1] = {.binding = 1, .textureView = depth.view};
+                    ray_entries[2] = {.nextInChain = &rays.chain, .binding = 2};
+                    ray_entries[3] = {.binding = 3, .textureView = ray_raw.view};
+                    const WGPUBindGroupDescriptor ray_descriptor{.layout = ray_layout, .entryCount = ray_entries.size(), .entries = ray_entries.data()};
+                    ray_group = wgpuDeviceCreateBindGroup(device, &ray_descriptor);
+                    std::array<WGPUBindGroupEntry, 4> blur_entries{};
+                    blur_entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
+                    blur_entries[1] = {.binding = 1, .textureView = depth.view};
+                    blur_entries[2] = {.binding = 2, .textureView = ray_raw.view};
+                    blur_entries[3] = {.binding = 3, .textureView = ray_mask.view};
+                    const WGPUBindGroupDescriptor blur_descriptor{.layout = ray_blur_layout, .entryCount = blur_entries.size(), .entries = blur_entries.data()};
+                    ray_blur_group = wgpuDeviceCreateBindGroup(device, &blur_descriptor);
+                }
+            }
+#endif
             std::array<WGPUBindGroupEntry, 4> blur_entries{};
             blur_entries[0] = {.binding = 0, .buffer = uniform, .size = sizeof(EffectsUniform)};
             blur_entries[1] = {.binding = 1, .textureView = view_depth.view};
@@ -1058,6 +1135,54 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
     }
     const std::string header = detail::shader_code("common/effects_struct");
     impl.gtao = make_compute(device, impl.gtao_layout, header + detail::shader_code("effects/gtao"), "gtao");
+#ifdef OPENRTS_HAS_RAY_QUERY
+    if (ray_queries()) {
+        WGPUBindGroupLayoutEntryAccelerationStructure rays{
+            .chain = {.sType = static_cast<WGPUSType>(WGPUSType_BindGroupLayoutEntryAccelerationStructure)}};
+        std::array<WGPUBindGroupLayoutEntry, 10> entries{};
+        // The lamps (4), their clusters' counts (5) and lists (6): the lamp
+        // a pixel's ray goes to; the cut-outs' UVs (8) and table (9).
+        for (const std::uint32_t k : {4u, 5u, 6u, 8u, 9u}) {
+            entries[k].binding = k;
+            entries[k].visibility = WGPUShaderStage_Compute;
+            entries[k].buffer.type = WGPUBufferBindingType_ReadOnlyStorage;
+        }
+        // The cut-outs' alpha masks (RayScene).
+        entries[7].binding = 7;
+        entries[7].visibility = WGPUShaderStage_Compute;
+        entries[7].texture.sampleType = WGPUTextureSampleType_Float;
+        entries[7].texture.viewDimension = WGPUTextureViewDimension_2DArray;
+        entries[0].binding = 0;
+        entries[0].visibility = WGPUShaderStage_Compute;
+        entries[0].buffer.type = WGPUBufferBindingType_Uniform;
+        entries[0].buffer.minBindingSize = sizeof(EffectsUniform);
+        entries[1].binding = 1;
+        entries[1].visibility = WGPUShaderStage_Compute;
+        entries[1].texture.sampleType = WGPUTextureSampleType_Depth;
+        entries[1].texture.viewDimension = WGPUTextureViewDimension_2D;
+        entries[2].nextInChain = &rays.chain;
+        entries[2].binding = 2;
+        entries[2].visibility = WGPUShaderStage_Compute;
+        entries[3].binding = 3;
+        entries[3].visibility = WGPUShaderStage_Compute;
+        entries[3].storageTexture.access = WGPUStorageTextureAccess_WriteOnly;
+        entries[3].storageTexture.format = ray_mask_format;
+        entries[3].storageTexture.viewDimension = WGPUTextureViewDimension_2D;
+        const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
+        impl.ray_layout = wgpuDeviceCreateBindGroupLayout(device, &descriptor);
+        impl.ray_pipeline = make_compute(device, impl.ray_layout,
+                                         header + detail::shader_code("common/light_shapes") + detail::shader_code("effects/ray_shadow"), "ray_shadow");
+        // The blur's: the raw mask read, the mask written.
+        entries[2] = {};
+        entries[2].binding = 2;
+        entries[2].visibility = WGPUShaderStage_Compute;
+        entries[2].texture.sampleType = WGPUTextureSampleType_Uint;
+        entries[2].texture.viewDimension = WGPUTextureViewDimension_2D;
+        const WGPUBindGroupLayoutDescriptor blur_descriptor{.entryCount = 4, .entries = entries.data()};
+        impl.ray_blur_layout = wgpuDeviceCreateBindGroupLayout(device, &blur_descriptor);
+        impl.ray_blur = make_compute(device, impl.ray_blur_layout, header + detail::shader_code("effects/ray_shadow_blur"), "ray_shadow_blur");
+    }
+#endif
     impl.blur = make_compute(device, impl.blur_layout, header + detail::shader_code("effects/gtao_blur"), "blur");
     impl.gtao_low = make_compute(device, impl.gtao_layout, header + detail::shader_code("effects/gtao"), "gtao",
                                  {{.key = name("slices"), .value = 1.0},
@@ -1175,6 +1300,18 @@ SceneEffects::SceneEffects(const WGPUDevice device) : impl_(std::make_unique<Imp
     impl.ensure_shadow(false);
     impl.ensure_lamp_shadow(false);
     impl.ensure_ao(false, 1, 1);
+    // The mask's stand-in: everything lit, no lamp traced.
+    impl.ray_stand_in = make_texture(device, ray_mask_format, WGPUTextureUsage_TextureBinding | WGPUTextureUsage_CopyDst, 1, 1, 1,
+                                     WGPUTextureViewDimension_2D);
+    if (impl.ray_stand_in.texture) {
+        const std::uint32_t lit[4] = {0xFFFFFFFFu, 0u, 0u, 0u};
+        const auto queue = wgpuDeviceGetQueue(device);
+        const WGPUTexelCopyTextureInfo target{.texture = impl.ray_stand_in.texture};
+        const WGPUTexelCopyBufferLayout layout{.bytesPerRow = 16, .rowsPerImage = 1};
+        const WGPUExtent3D extent{.width = 1, .height = 1, .depthOrArrayLayers = 1};
+        wgpuQueueWriteTexture(queue, &target, lit, sizeof(lit), &layout, &extent);
+        wgpuQueueRelease(queue);
+    }
     impl.ensure_groups();
 }
 
@@ -1222,7 +1359,14 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     impl.ensure_shadow(active && s.shadows);
     impl.ensure_still(active && s.shadows && s.cache_far_cascades);
     impl.ensure_lamp_shadow(active && s.lamp_shadows > 0);
-    impl.ensure_ao(active && (s.ambient_occlusion || s.bloom || s.light_shafts), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
+    // OPENRTS_RAY_SHADOWS=0: the maps alone (a check beside them).
+    static const bool rays_refused = [] {
+        const char* value = std::getenv("OPENRTS_RAY_SHADOWS");
+        return value && value[0] == '0';
+    }();
+    const bool rays = active && s.shadows && s.ray_shadows && ray_queries() && impl.ray_pipeline && !rays_refused;
+    ray_shadows_wanted() = rays;
+    impl.ensure_ao(active && (s.ambient_occlusion || s.bloom || s.light_shafts || s.temporal_aa || rays), (std::max)(view.width, 1u), (std::max)(view.height, 1u),
                    s.occlusion_low);
     impl.ensure_groups();
 
@@ -1300,7 +1444,9 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
     }
     frame.flags[0] = active && s.clustered_lights ? 1u : 0u;
     frame.flags[1] = active && s.ambient_occlusion && impl.ao_is_real ? (s.show_occlusion ? 2u : 1u) : 0u;
-    impl.camera_depth_wanted = active && (s.ambient_occlusion || s.bloom || s.light_shafts) && impl.ao_is_real && impl.depth.view;
+    impl.camera_depth_wanted =
+        active && (s.ambient_occlusion || s.bloom || s.light_shafts || s.temporal_aa || rays) && impl.ao_is_real && impl.depth.view;
+    impl.moving_wanted = impl.camera_depth_wanted && s.temporal_aa && impl.moving_depth.view;
     frame.flags[2] = active && s.aerial_perspective ? 1u : 0u;
     frame.flags[3] = impl.light_count;
     impl.lamp_shadows_wanted = active && s.lamp_shadows > 0 && !impl.packed_lights.empty() && impl.lamp_layers[0];
@@ -1351,6 +1497,8 @@ void SceneEffects::begin_frame(const SceneEffectView& view, const ModelLighting&
                                std::clamp(s.sky_reflection_indoors, 0.0f, 1.0f), 0.0f};
     frame.views = glm::vec4{static_cast<float>(std::clamp(s.material_view, 0, 6)), s.parallax ? std::clamp(s.parallax_distance, 0.0f, 200.0f) : 0.0f,
                             static_cast<float>(std::clamp(s.parallax_steps, 8, 64)), 0.0f};
+    impl.rays_this_frame = ray_shadows_wanted() && impl.camera_depth_wanted && impl.ray_mask.view;
+    frame.views.w = impl.rays_this_frame ? 1.0f + static_cast<float>(impl.frame_index % 1024u) : 0.0f;
 
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.uniform, 0, &frame, sizeof(frame));
@@ -1439,6 +1587,8 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
     constexpr glm::vec3 luma{0.2126f, 0.7152f, 0.0722f};
     for (std::uint32_t i = 0; i < packed_lights.size(); ++i) {
         const auto& light = packed_lights[i];
+        // ORTSNoShadow: it lights, a shadow map goes to another.
+        if ((static_cast<int>(light.kind) & 64) != 0) continue;
         const glm::vec3 position{glm::inverse(light.to_light)[3]};
         const int kind = static_cast<int>(light.kind) & 31;
         const bool inside = glm::distance(position, centre) < radius * 1.3f;
@@ -1456,6 +1606,10 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         }
         float score = strength * glm::dot(glm::vec3(light.diffuse), luma);
         if (score < 0.01f) continue;
+        // Its priority (ORTSShadowPriority): each step doubles its claim, so
+        // a floodlight (5) a quarter as bright here as an ordinary lamp still
+        // wins, one a twentieth does not; 0 never (skipped above).
+        score *= static_cast<float>(1u << (std::clamp<int>(light.shadow_priority, 1, 5) - 1));
         for (const auto& kept : lamp_shadow_kept) {
             if (glm::distance(kept, position) < 0.1f) {
                 score *= 1.5f;
@@ -1782,7 +1936,7 @@ void SceneEffects::Impl::record_still(const WGPUCommandEncoder encoder, const st
         wgpuRenderPassEncoderSetScissorRect(pass, piece.x, piece.y, piece.width, piece.height);
         wgpuRenderPassEncoderSetPipeline(pass, fill_far);
         wgpuRenderPassEncoderDraw(pass, 3, 1, 0, 0);
-        if (draw) draw(pass, still_slot + i * still_pieces + static_cast<std::uint32_t>(k), piece.matrix, DepthPassKind::shadow, DepthCasters::still);
+        if (draw) draw(pass, still_slot + i * still_pieces + static_cast<std::uint32_t>(k), piece.matrix, DepthPassKind::sun_shadow, DepthCasters::still);
     }
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
@@ -1810,12 +1964,12 @@ void SceneEffects::Impl::record_working(const WGPUCommandEncoder encoder, const 
     wgpuRenderPassEncoderSetPipeline(pass, unwrap);
     wgpuRenderPassEncoderSetBindGroup(pass, 0, unwrap_group, 0, nullptr);
     wgpuRenderPassEncoderDraw(pass, 3, 1, 0, i);
-    if (draw) draw(pass, i, cascade_matrices[i], DepthPassKind::shadow, DepthCasters::moving);
+    if (draw) draw(pass, i, cascade_matrices[i], DepthPassKind::sun_shadow, DepthCasters::moving);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
     if (check_on && whole_layers[i]) {
         const auto checked = begin(whole_layers[i], std::nullopt);
-        if (draw) draw(checked, check_slot + i, cascade_matrices[i], DepthPassKind::shadow, DepthCasters::all);
+        if (draw) draw(checked, check_slot + i, cascade_matrices[i], DepthPassKind::sun_shadow, DepthCasters::all);
         wgpuRenderPassEncoderEnd(checked);
         wgpuRenderPassEncoderRelease(checked);
     }
@@ -1843,7 +1997,7 @@ void SceneEffects::Impl::record_depth(const WGPUCommandEncoder encoder, const WG
     const auto timestamps = render_pass_timestamps(timed);
     const WGPURenderPassDescriptor descriptor{.depthStencilAttachment = &attachment, .timestampWrites = timestamps ? &*timestamps : nullptr};
     const auto pass = wgpuCommandEncoderBeginRenderPass(encoder, &descriptor);
-    if (draw) draw(pass, slot, matrix, DepthPassKind::shadow, DepthCasters::all);
+    if (draw) draw(pass, slot, matrix, timed == GpuPass::sun_shadows ? DepthPassKind::sun_shadow : DepthPassKind::shadow, DepthCasters::all);
     wgpuRenderPassEncoderEnd(pass);
     wgpuRenderPassEncoderRelease(pass);
 }
@@ -1868,6 +2022,24 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
         if (draw) draw(pass, max_cascades, view.projection * view.view, DepthPassKind::camera, DepthCasters::all);
         wgpuRenderPassEncoderEnd(pass);
         wgpuRenderPassEncoderRelease(pass);
+        // The moving models alone (the trains), for the temporal AA's motion.
+        if (moving_wanted) {
+            const WGPURenderPassDepthStencilAttachment moving_attachment{
+                .view = moving_depth.view,
+                .depthLoadOp = WGPULoadOp_Clear,
+                .depthStoreOp = WGPUStoreOp_Store,
+                .depthClearValue = depth_clear_value,
+                .depthReadOnly = false,
+                .stencilLoadOp = WGPULoadOp_Undefined,
+                .stencilStoreOp = WGPUStoreOp_Undefined,
+                .stencilReadOnly = true,
+            };
+            const WGPURenderPassDescriptor moving_descriptor{.depthStencilAttachment = &moving_attachment};
+            const auto moving = wgpuCommandEncoderBeginRenderPass(encoder, &moving_descriptor);
+            if (draw) draw(moving, moving_slot, view.projection * view.view, DepthPassKind::camera, DepthCasters::trains);
+            wgpuRenderPassEncoderEnd(moving);
+            wgpuRenderPassEncoderRelease(moving);
+        }
 
         // The occlusion at ao_raw's size (half the frame's at low), the blur
         // at the frame's: a compute pass each, so each has its GPU time.
@@ -1882,6 +2054,7 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
             wgpuComputePassEncoderEnd(compute);
             wgpuComputePassEncoderRelease(compute);
         };
+        // The sun's shadows by rays: a ray a pixel from the pre-pass's depth.
         if (frame.flags[1] != 0u && prefilter_group) {
             // The view depth's levels, then GTAO: one pass (its time the two's).
             const auto writes = compute_pass_timestamps(GpuPass::occlusion);
@@ -1905,6 +2078,21 @@ void SceneEffects::Impl::record_camera(const WGPUCommandEncoder encoder, const D
         wgpuComputePassEncoderSetPipeline(compute, cluster);
         wgpuComputePassEncoderSetBindGroup(compute, 0, cluster_group, 0, nullptr);
         wgpuComputePassEncoderDispatchWorkgroups(compute, (cluster_count + 63) / 64, 1, 1);
+        wgpuComputePassEncoderEnd(compute);
+        wgpuComputePassEncoderRelease(compute);
+    }
+    // The ray shadows after the clusters (a pixel's lamp is one of its cluster's).
+    if (rays_this_frame && ray_group && ray_blur_group) {
+        // The rays and their blur in one pass (its time the two's).
+        const auto writes = compute_pass_timestamps(GpuPass::ray_shadows);
+        const WGPUComputePassDescriptor compute_descriptor{.timestampWrites = writes ? &*writes : nullptr};
+        const auto compute = wgpuCommandEncoderBeginComputePass(encoder, &compute_descriptor);
+        wgpuComputePassEncoderSetPipeline(compute, ray_pipeline);
+        wgpuComputePassEncoderSetBindGroup(compute, 0, ray_group, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(compute, (ray_mask.width + 7) / 8, (ray_mask.height + 7) / 8, 1);
+        wgpuComputePassEncoderSetPipeline(compute, ray_blur);
+        wgpuComputePassEncoderSetBindGroup(compute, 0, ray_blur_group, 0, nullptr);
+        wgpuComputePassEncoderDispatchWorkgroups(compute, (ray_mask.width + 7) / 8, (ray_mask.height + 7) / 8, 1);
         wgpuComputePassEncoderEnd(compute);
         wgpuComputePassEncoderRelease(compute);
     }
@@ -2019,6 +2207,10 @@ float SceneEffects::shadow_range() const noexcept {
 
 WGPUTextureView SceneEffects::camera_depth() const noexcept {
     return impl_->camera_depth_wanted ? impl_->depth.view : nullptr;
+}
+
+WGPUTextureView SceneEffects::moving_depth() const noexcept {
+    return impl_->moving_wanted ? impl_->moving_depth.view : nullptr;
 }
 
 bool SceneEffects::wants_depth() const noexcept {

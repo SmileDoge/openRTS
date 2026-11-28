@@ -20,7 +20,10 @@ fn physical_light(light: Light, world: vec4<f32>, normal: vec3<f32>) -> f32 {
         if (p.z <= 0.0) { return 0.0; }
         let x = p.x / light.size[0];
         let y = p.y / light.size[1];
-        d = sqrt(x * x + y * y) / p.z;
+        // openRTS: its source's radius (size.w) widens it from the lamp on,
+        // as a spotlight's (the cone starting as a disc, not a point).
+        let source = light.size[3] / max(0.5 * (light.size[0] + light.size[1]), 1e-3);
+        d = max(sqrt(x * x + y * y) - source, 0.0) / p.z;
     } else if (kind == 2) { // sphere: 1 at its ellipsoid
         let x = p.x * light.size[2] / light.size[0];
         let y = p.y * light.size[2] / light.size[1];
@@ -38,6 +41,10 @@ fn physical_light(light: Light, world: vec4<f32>, normal: vec3<f32>) -> f32 {
     var towards = -p.xyz / distance;
     if (kind == 3) {
         towards = vec3<f32>(0.0, 0.0, -1.0); // parallel light: no distance falloff
+    } else if (light.ambient.w > 0.5) {
+        // A photometric lamp (photometric.hpp): the inverse square, its
+        // light at 1 m in ambient.rgb (lamp_light); no nearer than 10 cm.
+        falloff = 1.0 / max(distance * distance, 0.01);
     } else {
         let reference = max(light.size[2] * light.attenuation[1], 0.01);
         falloff = min(reference * reference / (distance * distance), 8.0);

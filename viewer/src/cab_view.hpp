@@ -30,6 +30,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/dllhost/protocol.hpp>
 #include <openrts/formats/cab_description.hpp>
+#include <openrts/simulation/car_components.hpp>
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/shape_binary.hpp>
 #include <openrts/renderer/model_renderer.hpp>
@@ -89,6 +90,8 @@ private:
     // Each triangle once in the cells the segment a-b passes over (x, z).
     template <class F> void visit_segment(const glm::vec3& a, const glm::vec3& b, F&& f) const;
     std::vector<Triangle> triangles_;
+    // node -> its triangles (node_points every frame for the wipers).
+    std::vector<std::uint32_t> node_start_, node_items_;
     glm::vec3 lower_{}, upper_{};
     glm::vec2 origin_{};
     int columns_ = 0, rows_ = 0;
@@ -175,8 +178,9 @@ public:
         if (!screens_) return;
         // A screen display blinks too (DisplayFade, RTS 0x525DB0).
         std::vector<bool> off(cab_.displays.size(), false);
-        for (std::size_t i = 0; i < off.size() && i < blink_clock_.size(); ++i)
-            off[i] = cab_.displays[i].blink > 0.0f && blink_clock_[i] > cab_.displays[i].blink;
+        const auto& clock = state_->blink_clock;
+        for (std::size_t i = 0; i < off.size() && i < clock.size(); ++i)
+            off[i] = cab_.displays[i].blink > 0.0f && clock[i] > cab_.displays[i].blink;
         screens_->build(state, elapsed, out, &off, planes);
     }
     // The SCREEN labels the last screens() call laid out (CabScreens::labels_seen); null: no screens.
@@ -187,6 +191,16 @@ public:
     // AnimTime x (positions - 1) frames (the positions if that is 0), its
     // keys spread over them. 0: no animated node.
     [[nodiscard]] float switch_frames_per_state(std::size_t index) const noexcept;
+
+    // Cars as entities, step 3 (docs/car-architecture.md): the cab's state
+    // (its doors and windows, the displays' blinking, the FreeAnimations) is
+    // the car's (simulation::CarCab). bind_state: this view draws and works
+    // the car's; a car seen for the first time takes the .sd's starting
+    // states. Unbound (a view of no car of the world: a test, a preview) it
+    // keeps its own. unbind_state: the car is gone, the view keeps a copy.
+    void bind_state(simulation::CarCab& state);
+    void unbind_state();
+    [[nodiscard]] bool bound_to(const simulation::CarCab* state) const noexcept { return state_ == state; }
 
     // The engineer on foot: the surfaces once they are read (null before),
     // the doors, and where a control is (its .sd Position, else its node).
@@ -209,12 +223,12 @@ public:
     // before the shape's nodes are read: as it was left).
     [[nodiscard]] float door_openness(std::size_t door) const noexcept {
         if (door >= doors_.size()) return 0.0f;
-        if (!geometry_) return doors_[door].target ? 1.0f : 0.0f;
-        return doors_[door].node < 0 ? 1.0f : doors_[door].open;
+        if (!geometry_) return door_state(door).target ? 1.0f : 0.0f;
+        return doors_[door].node < 0 ? 1.0f : door_state(door).open;
     }
     // Where it is going: open or shut.
     [[nodiscard]] bool door_wanted(std::size_t door) const noexcept {
-        return door < doors_.size() && doors_[door_root(door)].target;
+        return door < doors_.size() && door_state(door_root(door)).target;
     }
     // The door a door follows through ParentObject (itself when it follows
     // none): working a following one works that one.
@@ -223,7 +237,7 @@ public:
     // Sends a door open or shut (it moves over its AnimTime): the train's
     // passenger doors (InteriorDoors with a GlobalID).
     void set_door(std::size_t door, bool open) {
-        if (door < doors_.size()) doors_[door_root(door)].target = open;
+        if (door < doors_.size()) door_state(door_root(door)).target = open;
     }
     void open_door(std::size_t door);
     void step_doors(float elapsed);
@@ -285,13 +299,19 @@ private:
         // Matrices, hierarchy and animations, to pose the controls' nodes for picking.
         std::shared_ptr<const formats::ShapeModel> rig;
     };
+    // How a door or window is drawn (its state: door_state / window_state).
     struct Door {
         std::int32_t node = -1;
         float last_frame{};
-        float open{};      // 0 closed .. 1 open
-        bool target = false;
         std::vector<std::int32_t> nodes; // the door's node and its children
     };
+    // The state this view draws: the car's (bind_state), else its own.
+    simulation::CarCab own_;
+    simulation::CarCab* state_ = &own_;
+    // Sized as the .sd's lists (bind_state, create, poll).
+    void size_state();
+    [[nodiscard]] simulation::CabOpening& door_state(std::size_t door) const noexcept { return state_->doors[door]; }
+    [[nodiscard]] simulation::CabOpening& window_state(std::size_t window) const noexcept { return state_->windows[window]; }
     void rebuild_skip();
     void build_owners();
     // Doors that follow another (ParentObject) take its state.
@@ -335,7 +355,6 @@ private:
     std::vector<glm::vec3> switch_lower_, switch_upper_;
     std::unique_ptr<CabScreens> screens_;
     std::vector<std::vector<std::int32_t>> state_nodes_; // a DISPLAY's StateNodes, by display
-    std::vector<float> blink_clock_;                     // by display (RTS display +72)
 public:
     // The wipers running (the FreeAnimations' surfaces) where they are drawn
     // now, in shape coordinates: some of their corners (the raindrops'
@@ -349,6 +368,7 @@ private:
     // go, a RETURNS one finishes the round back to frame 0, another stops
     // where it is (a pneumatic wiper with its cock shut: the ВЛ80Т's, the
     // ЧС7's; testers 2026-11-21: the wipers sounded and stood still).
+    // Its state (phase, way, moving): the car's CarCab::animations, by position.
     struct FreeAnim {
         std::vector<std::int32_t> nodes;
         std::vector<float> last; // each node's last key frame
@@ -356,9 +376,6 @@ private:
         bool returns = false;
         bool continuous = false; // CONTINUOUS: rounds while running; else to its end and back
         bool loop = false;       // LOOP: a CONTINUOUS one starts again at frame 0; else it goes back (ts.h's "goes down")
-        bool down = false;       // going back towards frame 0
-        float phase = 0.0f;      // 0..1 of a round
-        bool moving = false;
     };
     std::vector<FreeAnim> free_anims_;
     mutable std::vector<std::uint8_t> free_anim_running_; // as the DLL left them (adjustments)

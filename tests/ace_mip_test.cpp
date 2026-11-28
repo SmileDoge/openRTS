@@ -24,12 +24,17 @@ void check(const bool condition, const std::string& what) {
 }
 
 void test_build() {
-    // 2x2 -> 1x1, rounded: (10 + 20 + 30 + 41 + 2) / 4 = 25.
+    // 2x2 -> 1x1, opaque, rounded: (10 + 20 + 30 + 41 + 2) / 4 = 25.
+    const std::vector<std::uint8_t> opaque{10, 0, 0, 255, 20, 0, 0, 255, 30, 0, 0, 255, 41, 0, 0, 255};
+    const auto solid = formats::build_rgba_mipmaps(2, 2, opaque);
+    check(solid.size() == 1 && solid[0].size() == 4 && solid[0][0] == 25 && solid[0][3] == 255, "box filter rounds");
+    // The colour weighted by the alpha: the see-through texels' colour (30,
+    // 41 under alpha 0) is left out, (10 + 20) / 2 = 15; the alpha averaged.
     const std::vector<std::uint8_t> square{10, 0, 0, 255, 20, 0, 0, 255, 30, 0, 0, 0, 41, 0, 0, 0};
     const auto one = formats::build_rgba_mipmaps(2, 2, square);
     check(one.size() == 1 && one[0].size() == 4, "2x2 has one level, 1x1");
     if (one.size() == 1) {
-        check(one[0][0] == 25, "box filter rounds");
+        check(one[0][0] == 15, "the colour weighted by the alpha");
         check(one[0][3] == 128, "alpha is averaged too");
     }
 

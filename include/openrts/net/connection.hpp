@@ -64,8 +64,25 @@ public:
     [[nodiscard]] bool connected() const noexcept { return connected_; }
     void close();
 
+    // openRTS's positions by UDP (net/datagram.hpp, experimental): a UDP
+    // socket to the server's host on `port`, saying hello with `token` once
+    // a second; the packages it brings come with receive()'s.
+    bool open_datagrams(std::uint64_t token, std::uint16_t port);
+    // One package by UDP while the server answers (false: not open or
+    // silent for 3 s: send it by TCP).
+    bool send_datagram(std::uint16_t id, ByteView body);
+    [[nodiscard]] bool datagrams_live() const noexcept;
+
 private:
     void read_loop();
+    void datagram_loop();
+    void close_datagrams();
+    std::string host_; // the server's, as connected to
+    std::uintptr_t udp_;
+    std::uint64_t token_{};
+    std::atomic<bool> udp_running_ = false;
+    std::atomic<long long> heard_ms_ = -1000000; // the server's last datagram (steady clock)
+    std::thread udp_reader_;
 
     std::uintptr_t socket_;
     std::atomic<bool> connected_ = false;

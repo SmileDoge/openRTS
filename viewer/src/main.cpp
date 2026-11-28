@@ -434,6 +434,10 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_board.push_back(static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str())));
         } else if (flags[i] == "--capture-passage" && has_value) {
             options.capture_passage = static_cast<std::size_t>(std::atoi(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--vr") {
+            options.vr = true;
+        } else if (flags[i] == "--vr-scale" && has_value) {
+            options.vr_scale = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--fps-background") {
             options.fps_background = true;
         } else if (flags[i] == "--shadow-cache-check") {
@@ -468,6 +472,12 @@ int run_window(std::string_view mode, std::string_view path, const std::vector<s
             options.capture_camera = c;
         } else if (flags[i] == "--hdr") {
             options.hdr = true;
+        } else if (flags[i] == "--hdr-output") {
+            options.hdr_output = true;
+        } else if (flags[i] == "--hdr-paper-white" && has_value) {
+            options.hdr_paper_white = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
+        } else if (flags[i] == "--hdr-peak" && has_value) {
+            options.hdr_peak = static_cast<float>(std::atof(std::string(flags[++i]).c_str()));
         } else if (flags[i] == "--hdr-encoding" && has_value) {
             const auto value = flags[++i];
             if (value != "linear" && value != "gamma") {

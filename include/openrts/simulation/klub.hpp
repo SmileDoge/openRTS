@@ -117,6 +117,11 @@ struct KlubSettings {
     bool block_mode = false;     // BLOCK_MODE (the БЛОК's whistle codes)
     std::uint32_t screen_type = 0;  // KLUB_BILTYPE (2: the ЭП2К's screen)
     bool block_scale_150 = false;   // BLOCK_MODE 1: the БЛОК's bars to 150 km/h (else 300)
+    // openRTS: the top of the screen's own speed arcs (its "Скорость красная"
+    // SECTOR's ValuesRange), 0 none: Brakes.dll's 150 / 300 then. The ЭП2Д's
+    // screen goes to 140 while Brakes.dll counts to 150, so its red arc stood
+    // 10 km/h under the permitted speed (testers 2026-11-27).
+    float block_arc_scale = 0.0f;
 };
 
 // What the КЛУБ gets this step.
@@ -278,7 +283,24 @@ struct KlubState {
     std::uint32_t saut_coefficient = 33;  // Engine +120 (Flags): Init's 33, 67 in the 162 km/h mode
     bool saut_started = false;
     bool saut_braking = false;            // its braking (kept between its redraws)
+    // openRTS's САУТ service braking (saut_service_braking(); not Brakes.dll's,
+    // which only cuts traction): the speed's margin under the permitted one
+    // at its last redraw (km/h; 99 none), the УР's reduction asked (atm), how
+    // long it has been asked at that depth (s).
+    float saut_margin = 99.0f;
+    float saut_service = 0.0f;
+    float saut_service_timer = 0.0f;
 };
+
+// openRTS's САУТ brakes as the real САУТ-ЦМ does (testers 2026-11-26: it
+// only cut traction, as Brakes.dll's): over the permitted speed a service
+// application of 0.5 atm, 0.3 more every 5 s it stays over (1.5 at most),
+// released 3 km/h under it. False: as Brakes.dll (traction alone). Read
+// each step.
+inline bool& saut_service_braking() {
+    static bool on = true;
+    return on;
+}
 
 // The ЭК mode: a track entered and the map (when there is one) has it.
 [[nodiscard]] inline bool klub_ek(const KlubState& s) noexcept { return (s.track & 0x7F) != 0 && !s.ek_off; }
@@ -292,6 +314,8 @@ struct KlubOutput {
     bool epk_bit_written = false;
     bool safety_powered = false;  // var + 32 bit 4
     bool saut_braking = false;    // САУТ's braking (the train's DLLs cut traction)
+    // openRTS's САУТ service braking: the УР's reduction asked, atm (0: none).
+    float saut_service = 0.0f;
     // САУТ's displays this step, a cab's each (openRTS's САУТ).
     std::vector<SautScreen> saut_screens;
     std::vector<std::uint16_t> sounds; // its SMS triggers (56 / 57, 3192 .. 3199)

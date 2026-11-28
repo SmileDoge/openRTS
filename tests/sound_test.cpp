@@ -512,6 +512,142 @@ Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCa
     check(sink.seeks.contains(hum) && sink.seeks[hum] >= 30 && sink.seeks[hum] <= 50, "the hum resumes where it was");
 }
 
+// A DLL posting its pairs' codes every step while the exterior group is
+// off (the engineer in the cab): the fan turned off and on there sounds
+// outside when he steps out (testers 2026-11-25, the ВЛ60ПК: the repeats
+// filled the 96-code queue and pushed the fan's On out of it).
+void test_pairs_queued_in_cab() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( CabCam ( ) )
+    DiscreteTriggerPairs ( 2 Pair ( On ( 1 200 ) Off ( 1 201 ) ) Pair ( On ( 1 214 ) Off ( 1 215 ) ) )
+    Streams ( 2
+    Stream ( Triggers ( 2 Discrete_Trigger ( 200 StartLoop ( 1 File ( "fan.wav" -1 ) ) ) Discrete_Trigger ( 201 ReleaseLoopRelease ( ) ) ) )
+    Stream ( Triggers ( 2 Discrete_Trigger ( 214 StartLoop ( 1 File ( "phase.wav" -1 ) ) ) Discrete_Trigger ( 215 ReleaseLoopRelease ( ) ) ) ) ) ) )"));
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips;
+    for (const char* name : {"fan.wav", "phase.wav"}) clips[name] = test_clip(1000);
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 0;
+    std::vector<std::uint32_t> step{200, 214};
+    inputs.discrete = std::span(step);
+    sound.update(0.01f, inputs, sink);
+    inputs.camera = audio::SoundCamera::cab;
+    sound.update(0.01f, inputs, sink);
+    check(!sound.active(), "in the cab: the exterior group is off");
+    // The fan off for a while, then on; the phase splitter's On every step.
+    step = {201, 214};
+    inputs.discrete = std::span(step);
+    for (int i = 0; i < 100; ++i) sound.update(0.01f, inputs, sink);
+    step = {200, 214};
+    inputs.discrete = std::span(step);
+    for (int i = 0; i < 100; ++i) sound.update(0.01f, inputs, sink);
+    inputs.camera = audio::SoundCamera::external;
+    step = {};
+    inputs.discrete = {};
+    sound.update(0.01f, inputs, sink);
+    bool fan = false;
+    for (const auto& [id, voice] : sink.voices)
+        if (voice.clip == clips["fan.wav"] && sink.playing(id)) fan = true;
+    check(fan, "outside again: the fan turned on in the cab sounds");
+}
+
+// A StartLoopRelease's loop (its file's start, then its loop region round
+// and round) taken off with the group and back: it goes on inside its
+// region, the start not played again (testers 2026-11-23: the ChS7's fans
+// started anew on coming back into the cab from the outside view, when they
+// had played past the file's length).
+void test_region_round_trip() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( CabCam ( ) ) Deactivation ( ExternalCam ( ) ) Streams ( 1
+    Stream ( Triggers ( 1 Discrete_Trigger ( 100 StartLoopRelease ( 1 File ( "vent.wav" -1 ) ) ) ) ) ) ) ))"));
+    auto vent = std::make_shared<audio::AudioClip>();
+    vent->channels = 1;
+    vent->sample_rate = 1000;
+    vent->frames = 100;
+    vent->samples.assign(100, 0.0f);
+    vent->loop_start = 40; // 0 .. 40 its start (the fans spinning up)
+    vent->loop_end = 80;
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string&) { return std::shared_ptr<const audio::AudioClip>(vent); }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs[SoundVariable::distance] = 0;
+    const std::uint32_t start = 100;
+    inputs.discrete = std::span(&start, 1);
+    sound.update(0.01f, inputs, sink);
+    inputs.discrete = {};
+    sound.update(0.11f, inputs, sink); // 0.12 s: 120 frames, past the file's 100
+    inputs.camera = audio::SoundCamera::external;
+    sound.update(0.01f, inputs, sink);
+    check(!sound.active(), "outside: the cab group is off");
+    const auto before = sink.voices.size();
+    inputs.camera = audio::SoundCamera::cab;
+    sound.update(0.01f, inputs, sink);
+    const auto again = static_cast<audio::VoiceId>(before + 1);
+    check(sink.voices.size() == before + 1 && sink.seeks.contains(again), "back in the cab: the fans' loop goes on");
+    check(sink.seeks.contains(again) && sink.seeks[again] >= 40 && sink.seeks[again] < 80,
+          "inside its loop region, its start not again");
+}
+
+// A group coming on with the train already running (the engineer into the
+// cab on the move): its Speed_Inc_Past loops start as if the speed had risen
+// from standing, its one-shots do not (testers 2026-11-23: the ChS7's
+// 3СЛ-2М silent on the move).
+void test_speed_on_the_move() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( CabCam ( ) ) Deactivation ( ExternalCam ( ) ) Streams ( 2
+    Stream ( Triggers ( 2
+        Variable_Trigger ( Speed_Inc_Past 1.38 StartLoop ( 1 File ( "sl.wav" -1 ) ) )
+        Variable_Trigger ( Speed_Dec_Past 1.38 ReleaseLoopRelease ( ) ) ) )
+    Stream ( Triggers ( 1 Variable_Trigger ( Speed_Inc_Past 2 PlayOneShot ( 1 File ( "click.wav" -1 ) ) ) ) ) ) ) ))"));
+    std::map<std::string, std::shared_ptr<const audio::AudioClip>> clips{{"sl.wav", test_clip()}, {"click.wav", test_clip()}};
+    const auto playing = [&](RecordingSink& sink, const std::string& name) {
+        for (const auto& [id, voice] : sink.voices)
+            if (voice.clip == clips.at(name) && sink.playing(id) && !voice.released) return true;
+        return false;
+    };
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train,
+                               [&](const std::string& name) { return clips.at(name); }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::cab;
+    inputs[SoundVariable::distance] = 0;
+    inputs[SoundVariable::speed] = 10.0f;
+    sound.update(0.01f, inputs, sink);
+    check(playing(sink, "sl.wav"), "on the move into the cab: the speed's loop starts");
+    check(!playing(sink, "click.wav"), "its one-shot does not");
+    std::size_t clicks = 0;
+    for (const auto& [id, voice] : sink.voices) clicks += voice.clip == clips.at("click.wav") ? 1 : 0;
+    check(clicks == 0, "no one-shot started at all");
+}
+
+// RTS (0x4A8284, 0x4A78A0): a stream's Volume is where its volume starts;
+// SetStreamVolume replaces it, not multiplies it. The ED4M / ED9M motor
+// cars' gear streams (Volume 0.1, SetStreamVolume 0.3 by the speed) were
+// 0.03 for it, all but silent.
+void test_set_stream_volume_replaces() {
+    auto script = std::make_shared<formats::SoundScript>(formats::parse_sound_script(R"(
+Tr_SMS ( ScalabiltyGroup ( 7 Activation ( ExternalCam ( ) ) Deactivation ( Distance ( 300 ) ) Volume ( 1 ) Streams ( 1
+    Stream ( Volume ( 0.1 ) Triggers ( 2
+        Initial_Trigger ( StartLoop ( 1 File ( "gear.wav" -1 ) ) )
+        Variable_Trigger ( Speed_Inc_Past 1 SetStreamVolume ( 0.3 ) ) ) ) ) ) ))"));
+    const auto clip = test_clip();
+    audio::SoundInstance sound(script, script->groups.at(0), formats::SoundOwner::player_train, [&](const std::string&) { return clip; }, 3);
+    RecordingSink sink;
+    audio::SoundInputs inputs;
+    inputs.camera = audio::SoundCamera::external;
+    inputs[SoundVariable::distance] = 0;
+    sound.update(0.01f, inputs, sink);
+    check(!sink.voices.empty() && std::abs(sink.voices.begin()->second.volume - 0.1f) < 1e-4f, "standing: the stream's Volume");
+    inputs[SoundVariable::speed] = 2.0f;
+    sound.update(0.01f, inputs, sink);
+    check(std::abs(sink.voices.begin()->second.volume - 0.3f) < 1e-4f, "SetStreamVolume replaces the Volume (0.3, not 0.03)");
+}
+
 // Codes that came while the group was off are taken as states only: a horn
 // blown in the cab does not sound outside when the engineer steps out; a
 // loop started there is on, one started and released is not.
@@ -848,26 +984,30 @@ void test_ambient_runner() {
 
     inputs[SoundVariable::variable1] = 12;
     for (int i = 0; i < 25; ++i) tick();
-    check(sink.voices.size() == 2, "enabled random trigger fires every second");
-    check(sink.voices[1].clip == clips["a.wav"] && sink.voices[2].clip == clips["b.wav"], "sequential selection");
+    // Fires every second; a one-shot of files in order plays them one after
+    // another (RTS 0x4A7C64), each fire from the first: a, b, a, b.
+    check(sink.voices.size() == 4, "enabled random trigger fires every second");
+    check(sink.voices[1].clip == clips["a.wav"] && sink.voices[2].clip == clips["b.wav"] && sink.voices[3].clip == clips["a.wav"]
+              && sink.voices[4].clip == clips["b.wav"],
+          "sequential selection: the files one after another");
     check(sink.voices[1].space == audio::VoiceSpace::flat && sink.voices[1].playback == audio::VoicePlayback::once,
           "environment one-shot is not positioned");
     check(near(sink.voices[2].volume, 0.5), "Volume_Min_Max");
 
     inputs[SoundVariable::variable1] = 4;
     for (int i = 0; i < 30; ++i) tick();
-    check(sink.voices.size() == 2, "TriggerActions disabled the random trigger");
+    check(sink.voices.size() == 4, "TriggerActions disabled the random trigger");
 
     const std::uint32_t on[] = {45, 45};
     inputs.discrete = on;
     tick();
-    check(sink.voices.size() == 3, "trigger pair passes only the first 'on'");
+    check(sink.voices.size() == 5, "trigger pair passes only the first 'on'");
     tick();
-    check(sink.voices.size() == 3, "repeated 'on' without 'off' is dropped");
+    check(sink.voices.size() == 5, "repeated 'on' without 'off' is dropped");
     const std::uint32_t off_on[] = {46, 45};
     inputs.discrete = off_on;
     tick();
-    check(sink.voices.size() == 4, "'off' re-arms the pair");
+    check(sink.voices.size() == 6, "'off' re-arms the pair");
 }
 
 // Minimal PCM16 WAV with an optional smpl loop or cue points.
@@ -1268,6 +1408,10 @@ int main(int argc, char** argv) {
     test_one_shot_fade();
     test_day_night();
     test_cab_round_trip();
+    test_pairs_queued_in_cab();
+    test_region_round_trip();
+    test_speed_on_the_move();
+    test_set_stream_volume_replaces();
     test_past_codes();
     test_world_fade();
     test_trigger_pairs();

@@ -63,6 +63,11 @@ void set_forest_clearance_axes(std::shared_ptr<const ForestClearance> axes) {
     setting_axes = std::move(axes);
 }
 
+std::shared_ptr<const ForestClearance> forest_clearance_axes() {
+    const std::lock_guard lock(setting_mutex);
+    return setting_axes;
+}
+
 void set_forest_clearance_distance(const float metres) {
     const std::lock_guard lock(setting_mutex);
     setting_distance = (std::max)(metres, 0.0f);

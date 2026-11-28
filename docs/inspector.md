@@ -31,12 +31,79 @@ windows:
     and last number (a hundred animated pieces of four textures read as 301
     rows before); above them the textures and the parts counted.
 
+## Lamps (openRTS)
+
+The chosen car's lights or the chosen object's lamps, changed live
+(paused too), the first step of a car editor (`viewer/src/inspector_lamps.cpp`).
+- **A car:** the lights of its type (every car of that file changes at
+  once): type (glow, spotlight, sphere, box, cone), the conditions
+  (headlight, place in the train, control, service, time of day, weather),
+  fades, and each State's position, azimuth, elevation, reach, half angle,
+  source radius, colour (alpha: brightness), duration; the fall-off and the
+  focus (SpotExponent). A light removed keeps its place (no states: off),
+  since DLLs switch lights by their index.
+- **A world object:** its shape's lamps (ESD_LightSources; every object of
+  that shape): kind (cone, sphere, box), POSITIONAL, RUNNING, NIGHT_AUTO,
+  NIGHT_ONLY, position, points-to, radius, colour, fall-off, focus, source
+  radius, distance, AutoWhenWorldLit, fade, a row (LightArray).
+- **Held on:** the chosen lamp burns full while chosen, by day and paused
+  too, to set it.
+- **The gizmo:** every lamp of the chosen car or object is a diamond in the
+  world; a click on one chooses it. The chosen one: its cone or sphere (to
+  25 m) and handles, dragged with the left button:
+  - the arrows (x red, y green, z blue: the car's or shape's axes) move it
+    along them; its own diamond moves it in the view's plane;
+  - the diamond at the beam's end aims it (a car's Azimuth and Elevation, a
+    shape's PointsTo at the same distance);
+  - the green one by the lamp: its source's radius (SourceRadius), the cone
+    starting as a disc of it, not a point (a cone's too, since 2026-11-24);
+  - the one on the cone's rim opens or closes it (a car's half angle, a
+    shape's radii in proportion); on a sphere or a glow, its size.
+  The handle under the mouse turns white.
+- **Save to the route** (a route's own shape, from `ROUTES/`): the same
+  file beside the shape in the route's folder, `<shape>.s.openrts`, to go
+  with the route to everyone who has it. A mod's copy is above the route's
+  and wins; the status says so.
+- **A label** (openRTS's only, `ORTSName ( "..." )` in the Light or
+  LightSource block; RTS skips it): shown in the list, to tell the lamps
+  apart.
+- **Undo and redo:** the buttons, Ctrl+Z and Ctrl+Y (Ctrl+Shift+Z) while
+  the inspector has the keyboard: a field dragged, a lamp added or taken
+  out, a handle dragged, back to the files, each one step (200 kept; the
+  selection changed, they go).
+- **Photometric (PBR / HDR):** ORTSCandela (cd on its axis), ORTSLumens
+  (its flux, spread over its cone or every way when there is no candela),
+  ORTSKelvin (its colour; 0: its own colour). The experimental path then
+  lights by them: 1 / d², the scene's light being lux over "Lux a unit of
+  the scene's light" (20 by default, `renderer/photometric.hpp`). The RTS
+  path keeps the lamp's colour and fall-off. Written in the same blocks
+  (Light, LightSource); RTS skips them.
+- **Shadow priority:** ORTSShadowPriority ( 0..5 ), which lamps get the
+  few lamp shadow maps (Graphics, up to 8). 0 never (it lights but throws
+  no shadow: a gantry's small side lamps), 1 ordinary (not written), 2 a
+  station lamp whose shadow falls into the cab, 5 a floodlight over most of
+  the station. The maps go to the lamps lighting most around the player,
+  each step doubling a lamp's claim: a floodlight a quarter as bright there
+  as an ordinary lamp still wins. The older ORTSNoShadow ( 1 ) reads as 0.
+  A lamp outside the cab or salon the eye is in (by more than 0.3 m) and
+  without a shadow there (no map, no ray) does not light the room inside:
+  it would through the walls. So a station lamp meant to light the cab
+  through its windows wants priority 2 or more.
+- **Kept in the mod** (the inspector's mod field): a car's lights in its
+  companion `<file>.eng.openrts` / `.wag.openrts` (a `Lights` block with
+  every light by LightID and an empty `RTSLights`, its other entries kept);
+  a shape's lamps in its override `<shape>.openrts` (a `LightSources`
+  block in the .sd's syntax). "As in the files" / "As in the .sd" goes
+  back.
+
 ## FullBright made ordinary, per shape
 
 MSTS's FullBright surfaces (light material -8) take neither the sun nor the
-lamps. The panel's "Light FullBright as ordinary surfaces" lights all of
-them; a platform drawn FullBright is better lit as an ordinary surface, a
-sign or a lamp's glass is not. In the inspector a FullBright material has a
+lamps. A platform drawn FullBright is better lit as an ordinary surface, a
+sign, a lamp's glass or a gauge's backlight is not, so this is chosen per
+shape (the panel's "Light FullBright as ordinary surfaces" for all of them,
+which put out the cabs' backlights at night, is gone since v0.45.1). In the
+inspector a FullBright material has a
 "Lit as ordinary" tick: the change shows at once (the shape is reloaded),
 "Save to the mod" keeps it.
 

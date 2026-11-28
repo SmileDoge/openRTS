@@ -49,6 +49,13 @@ folders, each with its own `zdsLoco_chs7-6A.ace`).
 - Layered as a texture's file: the general ones, then the folders', then
   the one beside the texture, each over the one before.
 - The folder is listed again when the VFS changes (hot reload).
+- Not for a season's own image (`WINTER`, `SNOW`, ... beside the texture):
+  it keeps its look, the snow on it (since 2026-11-26). `NIGHT` images take
+  them.
+- openRTS's own `openrts-rails` pack (`packs/rails`) dresses the track this
+  way: `rels_1` (the rails, the sleepers, their fastenings) and `shpal_2`
+  (the ballast) on every route drawing them, the routes' own versions too
+  (Novokuznetsk, Stepy Priazovya, Uspensk).
 
 ## How a part's material is made
 
@@ -112,13 +119,37 @@ map with no factor anywhere takes 1; without a map nothing glows.
 | `height_scale` | 0..0.1 | the relief's depth, metres (0.01 default) |
 | `height_reference` | 0..1 | the map's level the model's surface lies at (1 default: white) |
 | `snow` | a file | snow lying on the model: its colour (gamma 2.2), alpha where it lies (below) |
-| `alpha_mode`, `alpha_cutoff`, `double_sided`, `wet` | | read, not applied yet (a warning says so) |
+| `alpha_cutoff` | 0..1 | a cut-out's alpha a texel is kept over (below) |
+| `shadow_mode` | `"auto"`, `"opaque"`, `"mask"`, `"transmission"`, `"none"` | how it casts the shadows by rays (below) |
+| `shadow_transmission` | [r, g, b], 0..1 | `transmission`'s light let by (0.8 grey by default) |
+| `alpha_mode` | `"opaque"`, `"mask"`, `"blend"` | the ray shadows' only so far (a warning says so) |
+| `double_sided`, `wet` | | read, not applied yet (a warning says so) |
 
 Files are relative to the material file's folder (no absolute paths, no
 drive letters), PNG or ACE. An unknown key, a value out of range or of the
 wrong type: a warning in the log, the field left out. A file that does not
 parse: an error in the log; if it was read well before in this run (hot
 reload), that reading stays.
+
+**Compressed maps** (since 2026-11-26). openRTS compresses PNG maps
+itself when it loads them (BC7, normals BC5, heights BC4; cached on disk
+after the first start). For a smaller mod, convert the maps to openRTS's
+ACE of blocks and name the `.ace` files in the material:
+
+```
+openrts-ace to-ace body_baseColor.png --format bc7
+openrts-ace to-ace body_orm.png --format bc7
+openrts-ace to-ace body_n.png --format bc5
+openrts-ace to-ace body_h.png --format bc4
+```
+
+Such a map goes to the GPU as it is, neither decoded nor compressed again.
+That holds for colour, emission and snow maps of any block format, for
+heights of any format, for a normal map in BC5 or BC7 with `normal_y: "up"`,
+and for one packed ORM map (`orm`, no separate maps) in BC7. Other maps
+are decoded and compressed as PNG ones. A rail mod (two textures,
+2048 px): 26 MB of PNG, 15 MB of ACE. Keep the PNGs for editing: hot reload
+follows the files the material names.
 
 ### Packed maps
 
@@ -134,7 +165,7 @@ Trainz's PBR materials (`m.pbrmetal`, `m.pbrmetalmasked`) keep a `_p` map of
 R metallic, G roughness, B occlusion: `orm: "body_p.png", layout: "mrao"`. Named as
 `roughness_map` and `metallic_map` instead, both take its red (metallic, mostly
 0) and the surface becomes a mirror; a roughness map whose red is 0 all over
-while its other channels are not gets a warning in the log (the console, F2).
+while its other channels are not gets a warning in the log (the console, Ctrl+F2).
 
 Substance Painter's "Unreal Engine 4 (Packed)" preset writes the same
 channels as ORM (R occlusion, G roughness, B metallic) but its normal map is
@@ -302,11 +333,66 @@ your own elsewhere is never changed (the mod's copy wins over it).
   seam) is split. Triangles without texture area get no normal map (a
   message counts them).
 - Hot reload: the material files and maps are the model's dependencies.
+  A changed map is uploaded again. Until 2026-11-26 the reloaded model took
+  the old one from the GPU cache, so a PNG changed showed nothing.
+
+## The ground (TERRTEX, 2026-11-25)
+
+A ground texture takes a material file as a model's texture does, by its
+name: `ROUTES/<route>/TERRTEX/grass.material.json5` beside `grass.ace`,
+over it the season's (`TERRTEX/SNOW/grass.material.json5` when the snow's
+texture is drawn), under them `MATERIALS/grass.material.json5`.
+
+- Read: `normal` (`normal_y`, `normal_strength`), the ORM maps (`orm` and
+  its `layout`, or `ao_map`, `roughness_map`, `metallic_map`; occlusion by
+  `ao_strength`), `roughness`, `metallic`, `reflectance`, `specular`.
+- The maps lie over the ground texture as it does (the same coordinates;
+  the microtexture is not under them).
+- The ground's own is Lambert alone (no reflection). A file that does not
+  give `specular` makes it 1: the surface reflects as its roughness says.
+- Drawn by openRTS's lighting (the experimental path); RTS's lighting draws
+  the ground as before. The normal map's frame comes from the screen (the
+  terrain has no tangents).
+- Not read for the ground: `base_color`, `emissive`, `height`, `snow`.
+- Read once, when the texture is first drawn (no hot reload).
+
+## Cut-outs and the shadows by rays
+
+One cut-off a surface for its drawing, its depth (the depth pre-pass and the
+shadow maps) and the shadows by rays (`docs/ray-tracing.md`): a texel is kept
+with its alpha over it, as RTS's alpha test (`GL_GREATER`): alpha 0.3 is cut,
+77 / 255 kept.
+
+- RTS's alpha-tested surfaces: RTS's 0.3, on both renderers (the
+  experimental one cut at 0.5 before, and the depth passes at 0.5 too).
+- A blended one written to depth (`BlendATexDiff` without its alpha test,
+  drawn see-through): 0.9 for its depth and its ray shadows, its nearly
+  opaque part (a car's body round its glass).
+- `alpha_cutoff` in a material: that instead.
+
+How a surface casts the shadows by rays, `shadow_mode`:
+
+- `auto` (the default): `alpha_mode` `opaque` solid, `mask` its texture's
+  alpha over the cut-off; without `alpha_mode`, as RTS's data has it: an
+  alpha-tested or blended surface a mask, **none** when its texture's alpha
+  never reaches 0.9 (glass, a lamp's shade, a shadow drawn under a car: a
+  dark plane of alpha 0.8 at most), the rest solid;
+- `opaque`: solid, its texture not read;
+- `mask`: its texture's alpha over the cut-off, whatever the texture;
+- `transmission`: lets light by, `mix(1, shadow_transmission, alpha)` where
+  its texture's alpha is `alpha` (glass: its clear part lets all by, its
+  tinted or dirty part less, coloured). The sun's light keeps the colour,
+  a lamp's takes its brightness. A ray goes on through up to 4 of them,
+  each an instance's geometry once (a pane's two faces, a car's windows on
+  both sides darken once); a fifth, or less than 2 % left, blocks it. Drawn
+  without depth too (glass usually is); none by default: give it to a
+  glass's texture or primitive;
+- `none`: no shadow by rays (the shadow maps still have it as drawn).
 
 ## Not yet
 
-- `alpha_mode`, `alpha_cutoff`, `double_sided` (the pipelines are RTS's).
+- `alpha_mode` for the drawing, `double_sided` (the pipelines are RTS's).
 - Wetness (`wet`): the rain's darkening and gloss.
 - DDS maps (an ACE of openRTS's block formats is read, `docs/reverse/ace.md`).
-- Materials of the ground (terrain), and of transfers and forests.
+- Materials of transfers and forests; the ground's height and snow maps.
 - glTF back into a shape (export only).

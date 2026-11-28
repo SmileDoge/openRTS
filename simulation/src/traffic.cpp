@@ -236,6 +236,46 @@ TrafficOrders traffic_orders(const Train& train, Dispatcher& dispatcher, const S
     return orders;
 }
 
+void platform_stop_orders(const Train& train, const Dispatcher& dispatcher, const float wait, TrafficPlatformStops& state,
+                          TrafficOrders& orders) {
+    if (orders.hold || !train.network()) return;
+    const auto id = train.id();
+    const auto* progress = dispatcher.progress(id);
+    const auto* route = dispatcher.route(id);
+    if (!progress || !route || !progress->on_route || progress->finished) return;
+    if (state.route != route) {
+        state.route = route;
+        state.passes = platform_passes(*train.network(), *route);
+        state.next = 0;
+        state.wait_left = -1.0f;
+    }
+    constexpr double margin = 5.0, shortest = 30.0;
+    const double head = progress->head;
+    // Behind it (or too short to be a platform): passed.
+    while (state.next < state.passes.size()) {
+        const auto& p = state.passes[state.next];
+        if (p.length < shortest || p.leg < progress->leg || (p.leg == progress->leg && p.far - margin < head - 2.0)) {
+            ++state.next;
+            state.wait_left = -1.0f;
+            continue;
+        }
+        break;
+    }
+    if (state.next >= state.passes.size() || state.passes[state.next].leg != progress->leg) return;
+    const double to_stop = state.passes[state.next].far - margin - head;
+    orders.targets.push_back({0.0f, to_stop});
+    if (to_stop < 15.0 && std::abs(train.speed()) < 0.05) {
+        if (state.wait_left < 0.0f) state.wait_left = wait;
+        state.wait_left -= static_cast<float>(train_step);
+        orders.hold = true;
+        if (state.wait_left <= 0.0f) {
+            ++state.next;
+            state.wait_left = -1.0f;
+            orders.hold = false;
+        }
+    }
+}
+
 TrafficSettings default_traffic_settings(const Train& train, const float route_limit) {
     TrafficSettings settings;
     float top = 0.0f;

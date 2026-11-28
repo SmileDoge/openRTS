@@ -27,6 +27,20 @@
 namespace openrts::simulation {
 
 class TrackNetwork;
+struct TrainRoute;
+
+// A platform the route passes: where its end met last is (the leg and its
+// distance on it), and its length (timetable stops, traffic stopping at
+// platforms).
+struct PlatformPass {
+    std::size_t leg{};
+    double far{};    // leg distance of that end
+    double length{};
+    std::uint32_t far_item{};
+};
+[[nodiscard]] std::vector<PlatformPass> platform_passes(const TrackNetwork& network, const TrainRoute& route);
+
+class TrackNetwork;
 
 struct TimetableStop {
     std::string station;     // the scenario's name; once found, the platform's spelling

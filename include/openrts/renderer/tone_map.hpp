@@ -38,6 +38,11 @@ struct ToneSettings {
     // The exposure times the auto exposure's factor (render's `exposure`,
     // AutoExposure::state(); PBR stage 3).
     bool auto_exposure = false;
+    // HDR output (hdr_output.hpp): the output is scRGB (linear, 1 = 80
+    // nits); a white the SDR picture shows at 1 comes out at `paper_white`
+    // nits and the highlights roll off to `peak` nits. 0: SDR output.
+    float paper_white = 0.0f;
+    float peak = 1000.0f;
 };
 
 // The HDR scene (scene_hdr(): drawn into hdr_format, gamma 2.2 encoded as

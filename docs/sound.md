@@ -168,8 +168,8 @@ The action of a trigger is the first keyword found in this order:
   - `…WithJump`: from (data length − the place reached), or from the loop
     start when that is past it; with the loop alone, from the place reached;
     on to the end of the file.
-- **Each update** (`0x4A78A0`): volume = `Volume` × the volume curve ×
-  `SetStreamVolume` × the object's volume × `Attenuation` by distance
+- **Each update** (`0x4A78A0`): volume = the stream's volume × the volume
+  curve × the object's volume × `Attenuation` by distance
   (unless the curve is distance-controlled), × the fades, to the buffer as
   `log10(volume) × 3000` hundredths of a dB (floor −10000). Frequency: the
   curve's value in Hz (100 000 at most); below 100 Hz the sound is silent.
@@ -184,6 +184,14 @@ The action of a trigger is the first keyword found in this order:
 - **A stream plays one sound at a time.** It has one sound buffer and is
   busy while that plays.
   - `PlayOneShot` on a busy stream is ignored.
+  - **CONFIRMED 2026-11-28** (`0x4A8C00` case 2, `0x4A7C64`): a
+    `PlayOneShot` of several files selected in order plays them one after
+    another, from the first each time, the stream busy till the last has
+    played (a missing file ends it); selected at random, one file. The
+    САВПЭ's announcements are made so (`Usavp.sms`: "следующая", the
+    station, "двери закрываются"); openRTS played one file a trigger, the
+    next one the next time, until 2026-11-28 (testers: the station names
+    lost, later in a jumble).
   - `StartLoop` / `StartLoopRelease`: ignored while the stream's loop is
     looping. If the stream is busy otherwise (a one-shot, or a released
     loop playing out), that sound is stopped and the loop starts anew.
@@ -326,6 +334,12 @@ car's sound is made.
     again and the loops a DLL had started were lost after a trip into the
     cab.
 - The free camera of the viewer counts as `ExternalCam`.
+- **A margin going off** (openRTS, 2026-11-24): an active group whose
+  deactivation distance is not beyond its activation one goes off only 5 %
+  (at least 2 m) past it. RTS tests the
+  same distance every frame (`0x44AB7C`) without one; the ЭР9П's motor
+  cars (`Activation` and `Deactivation` 50 m) stood at the edge and their
+  TED came and went every few frames.
 - **Deactivation distance below the activation distance** (four installed
   groups: the ED4M, ED9M and EP2D `engMotor` scripts, 1000 / 300 m):
   deactivation wins. Between the two distances the group stays silent
@@ -445,8 +459,13 @@ car's sound is made.
 
 ### Volume, pitch and position
 
-- **Volume:** group volume × stream `Volume` × `SetStreamVolume` × volume
-  curve × random volume × fade.
+- **Volume:** group volume × the stream's volume × volume curve × fade.
+  The stream's volume (RTS stream state +36) starts as its `Volume`;
+  `SetStreamVolume` and a random trigger's `Volume_Min_Max` replace it
+  (`0x4A8284`, `0x4A7C64`), they do not multiply it. Until 2026-11-23
+  openRTS multiplied them: the ЭД4М / ЭД9М motor cars' gear streams
+  (`Volume ( 0.1 )`, `SetStreamVolume ( 0.3 )` by the speed) were all but
+  silent.
 - **Curves:** `VolumeCurve` / `FrequencyCurve` are linear between points and
   clamped at the ends. `Granularity` is not used.
 - **Frequency:** the frequency curve gives Hz; pitch = Hz / the file's sample

@@ -276,13 +276,16 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 #include <utility>
 
 #include <openrts/formats/ace_file.hpp>
+#include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
 
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/scene_effects.hpp>
+#include <openrts/renderer/ray_scene.hpp>
 
 #include "rts_light_shapes.hpp"
 #include "shader_code.hpp"
+#include "terrain_grass.hpp"
 
 namespace openrts::renderer {
 namespace {
@@ -323,6 +326,13 @@ struct FrameUniform {
     // roughness, metallic, a dielectric's F0, its specular factor. Last:
     // the water's and the depth passes' Frame end before it.
     float surface[4];
+};
+
+// A ground texture's material (TerrainMaterial in terrain.wgsl): its
+// numbers, which maps it has.
+struct GroundMaterialUniform {
+    float factors[4]{1.0f, 0.0f, 0.04f, 0.0f}; // roughness, metallic, a dielectric's F0, specular
+    float extra[4]{};                          // normal strength, occlusion strength, 1 normal map, 1 a material file
 };
 
 [[nodiscard]] WGPUStringView wgsl_name(const char* name) {
@@ -445,6 +455,9 @@ struct TerrainRenderer::Impl {
         WGPUBuffer surface_vertices = nullptr; // the openRTS water
         WGPUBuffer surface_indices = nullptr;
         std::uint32_t surface_index_count = 0;
+#ifdef OPENRTS_HAS_RAY_QUERY
+        WGPUBlas blas = nullptr; // the ground's, for the ray scene (ray_scene.hpp)
+#endif
     };
 
     // An openRTS water draw render() prepared for render_water().
@@ -480,6 +493,19 @@ struct TerrainRenderer::Impl {
     };
 
     WGPUDevice device = nullptr;
+    // The ground textures' materials (load_terrain_material), by the texture's path.
+    struct GroundMaterial {
+        std::future<TerrainMaterialAsset> loading;
+        WgpuTextureUploadResult normal, orm;
+        WGPUTextureView normal_view = nullptr, orm_view = nullptr;
+        WGPUBuffer uniform = nullptr;
+        bool ready = false;
+    };
+    std::map<std::string, GroundMaterial> ground_materials;
+    WgpuTextureUploadResult flat;  // no normal map: straight up
+    WgpuTextureUploadResult white; // no ORM map: the factors alone
+    WGPUTextureView flat_view = nullptr, white_view = nullptr;
+    WGPUBuffer plain_material = nullptr; // no material file
     WGPUBindGroupLayout material_layout = nullptr;
     WGPUBindGroupLayout frame_layout = nullptr;
     WGPURenderPipeline pipeline = nullptr;
@@ -542,8 +568,18 @@ struct TerrainRenderer::Impl {
     std::map<TileKey, bool> failed_tiles;
     std::map<std::string, GpuTexture> textures; // by virtual path key
     std::map<std::pair<std::string, std::string>, WGPUBindGroup> materials;
+    // openRTS's grass: the blades near the eye, their buffer, its pipelines
+    // ([experimental] as the terrain's; the RTS path draws none).
+    detail::GrassField grass;
+    WGPUBuffer grass_buffer = nullptr;
+    std::uint64_t grass_capacity = 0; // blades it holds
+    std::uint32_t grass_count = 0;
+    WGPURenderPipeline grass_pipeline = nullptr;
+    std::size_t grass_drawn = 0;
 
     ~Impl() {
+        if (grass_buffer) wgpuBufferRelease(grass_buffer);
+        if (grass_pipeline) wgpuRenderPipelineRelease(grass_pipeline);
         for (auto& [_, job] : tile_jobs) {
             if (job.valid()) job.wait();
         }
@@ -551,6 +587,18 @@ struct TerrainRenderer::Impl {
             if (texture.decoding.valid()) texture.decoding.wait();
         }
         release_materials();
+        for (auto& [_, ground] : ground_materials) {
+            if (ground.loading.valid()) ground.loading.wait();
+            if (ground.normal_view) wgpuTextureViewRelease(ground.normal_view);
+            if (ground.orm_view) wgpuTextureViewRelease(ground.orm_view);
+            if (ground.uniform) wgpuBufferRelease(ground.uniform);
+        }
+        if (flat_view) wgpuTextureViewRelease(flat_view);
+        if (white_view) wgpuTextureViewRelease(white_view);
+        if (plain_material) wgpuBufferRelease(plain_material);
+#ifdef OPENRTS_HAS_RAY_QUERY
+        detail::RayScene::get().remove_adder(this);
+#endif
         for (auto& [_, tile] : tiles) release_tile(tile);
         for (auto& [_, texture] : textures) {
             if (texture.view) wgpuTextureViewRelease(texture.view);
@@ -594,6 +642,9 @@ struct TerrainRenderer::Impl {
         return bytes;
     }
     static void release_tile(GpuTile& tile) {
+#ifdef OPENRTS_HAS_RAY_QUERY
+        if (tile.blas) wgpuBlasRelease(tile.blas);
+#endif
         terrain_tile_bytes -= tile_bytes(tile);
         if (tile.surface_indices) wgpuBufferRelease(tile.surface_indices);
         if (tile.surface_vertices) wgpuBufferRelease(tile.surface_vertices);
@@ -646,19 +697,66 @@ struct TerrainRenderer::Impl {
         return std::nullopt;
     }
 
+    // A ground texture's material once loaded (nullptr while it loads; one
+    // with nothing for a texture that is not found or has no file).
+    [[nodiscard]] const GroundMaterial* ground_material(const std::string& name) {
+        static const GroundMaterial none{.ready = true};
+        if (name.empty()) return &none;
+        const auto path = resolve_terrain_texture(*vfs, route, name, season, weather);
+        if (!path) return &none;
+        auto [it, inserted] = ground_materials.try_emplace(path->key());
+        auto& ground = it->second;
+        if (inserted) ground.loading = std::async(std::launch::async, [vfs = vfs, path = *path] { return load_terrain_material(*vfs, path); });
+        if (ground.ready) return &ground;
+        if (!is_ready(ground.loading)) return nullptr;
+        const auto asset = ground.loading.get();
+        ground.ready = true;
+        if (!asset.found) return &ground;
+        const auto upload = [&](const std::shared_ptr<const formats::AceDecodeResult>& image, WgpuTextureUploadResult& texture,
+                                WGPUTextureView& view, const char* what) {
+            if (!image || !image->ok()) return;
+            texture = upload_rgba8_texture(device,
+                                           {.width = image->image->width, .height = image->image->height, .pixels = &image->image->pixels,
+                                            .mips = &image->image->mips},
+                                           std::string(path->filename()) + what);
+            if (texture.ok()) view = wgpuTextureCreateView(texture.texture.get(), nullptr);
+        };
+        upload(asset.normal, ground.normal, ground.normal_view, " normal");
+        upload(asset.orm, ground.orm, ground.orm_view, " orm");
+        const auto& m = asset.material;
+        GroundMaterialUniform u;
+        u.factors[0] = m.roughness;
+        u.factors[1] = m.metallic;
+        u.factors[2] = m.reflectance;
+        u.factors[3] = m.specular;
+        u.extra[0] = m.normal_strength;
+        u.extra[1] = m.ao_strength;
+        u.extra[2] = ground.normal_view ? 1.0f : 0.0f;
+        u.extra[3] = 1.0f;
+        ground.uniform = create_buffer(device, WGPUBufferUsage_Uniform, sizeof(u), &u);
+        return &ground;
+    }
+
     // A water layer's material: its texture and the neutral grey detail.
     [[nodiscard]] WGPUBindGroup water_material(const WaterLayer& layer) {
         const auto key = std::pair{std::string("water:") + (layer.texture ? layer.texture->key() : std::string()), std::string()};
         if (const auto it = materials.find(key); it != materials.end()) return it->second;
         const auto base = texture_view_at(layer.texture, black_view);
         if (!base) return nullptr;
-        std::array<WGPUBindGroupEntry, 3> entries{};
+        std::array<WGPUBindGroupEntry, 6> entries{};
         entries[0].binding = 0;
         entries[0].textureView = *base;
         entries[1].binding = 1;
         entries[1].textureView = grey_view;
         entries[2].binding = 2;
         entries[2].sampler = sampler;
+        entries[3].binding = 3;
+        entries[3].textureView = flat_view;
+        entries[4].binding = 4;
+        entries[4].textureView = white_view;
+        entries[5].binding = 5;
+        entries[5].buffer = plain_material;
+        entries[5].size = sizeof(GroundMaterialUniform);
         const WGPUBindGroupDescriptor descriptor{.layout = material_layout, .entryCount = entries.size(), .entries = entries.data()};
         const auto binding = wgpuDeviceCreateBindGroup(device, &descriptor);
         materials.emplace(key, binding);
@@ -672,14 +770,23 @@ struct TerrainRenderer::Impl {
         const auto base = texture_view(patch.texture, black_view);
         const auto micro = texture_view(patch.microtexture, grey_view);
         if (!base || !micro) return nullptr; // still decoding
+        const auto* ground = ground_material(patch.texture);
+        if (!ground) return nullptr; // its material still loading
 
-        std::array<WGPUBindGroupEntry, 3> entries{};
+        std::array<WGPUBindGroupEntry, 6> entries{};
         entries[0].binding = 0;
         entries[0].textureView = *base;
         entries[1].binding = 1;
         entries[1].textureView = *micro;
         entries[2].binding = 2;
         entries[2].sampler = sampler;
+        entries[3].binding = 3;
+        entries[3].textureView = ground->normal_view ? ground->normal_view : flat_view;
+        entries[4].binding = 4;
+        entries[4].textureView = ground->orm_view ? ground->orm_view : white_view;
+        entries[5].binding = 5;
+        entries[5].buffer = ground->uniform ? ground->uniform : plain_material;
+        entries[5].size = sizeof(GroundMaterialUniform);
         const WGPUBindGroupDescriptor descriptor{
             .layout = material_layout,
             .entryCount = entries.size(),
@@ -734,11 +841,46 @@ struct TerrainRenderer::Impl {
             failed_tiles[key] = true;
             return;
         }
+        grass.add_tile(mesh);
         GpuTile tile;
-        tile.vertices = create_buffer(device, WGPUBufferUsage_Vertex, mesh.vertices.size() * sizeof(TerrainVertex),
+        WGPUBufferUsage rays = WGPUBufferUsage_None;
+#ifdef OPENRTS_HAS_RAY_QUERY
+        if (ray_queries()) rays = WGPUBufferUsage_BlasInput;
+#endif
+        tile.vertices = create_buffer(device, WGPUBufferUsage_Vertex | rays, mesh.vertices.size() * sizeof(TerrainVertex),
                                       mesh.vertices.data());
-        tile.indices = create_buffer(device, WGPUBufferUsage_Index, mesh.indices.size() * sizeof(std::uint32_t),
+        tile.indices = create_buffer(device, WGPUBufferUsage_Index | rays, mesh.indices.size() * sizeof(std::uint32_t),
                                      mesh.indices.data());
+#ifdef OPENRTS_HAS_RAY_QUERY
+        // The ground in the ray scene: the tile's whole mesh, built now.
+        if (rays && tile.vertices && tile.indices && mesh.indices.size() >= 3) {
+            const WGPUBlasTriangleGeometrySize size{
+                .vertexFormat = WGPUVertexFormat_Float32x3,
+                .vertexCount = static_cast<std::uint32_t>(mesh.vertices.size()),
+                .indexFormat = WGPUIndexFormat_Uint32,
+                .indexCount = static_cast<std::uint32_t>(mesh.indices.size()),
+                .flags = WGPUAccelerationStructureGeometryFlag_Opaque,
+            };
+            const WGPUBlasDescriptor descriptor{
+                .label = {.data = "terrain tile", .length = WGPU_STRLEN},
+                .flags = WGPUAccelerationStructureFlag_PreferFastTrace,
+                .updateMode = WGPUAccelerationStructureUpdateMode_Build,
+                .geometryCount = 1,
+                .geometries = &size,
+            };
+            tile.blas = wgpuDeviceCreateBlas(device, &descriptor);
+            if (tile.blas) {
+                const WGPUBlasTriangleGeometry geometry{
+                    .size = size,
+                    .vertexBuffer = tile.vertices,
+                    .firstVertex = 0,
+                    .vertexStride = sizeof(TerrainVertex),
+                    .indexBuffer = tile.indices,
+                };
+                detail::RayScene::get().build_blas(device, {.blas = tile.blas, .geometryCount = 1, .geometries = &geometry});
+            }
+        }
+#endif
         tile.patches = std::move(mesh.patches);
         if (!mesh.water.empty()) {
             tile.water = create_buffer(device, WGPUBufferUsage_Vertex, mesh.water.size() * sizeof(TerrainWaterVertex), mesh.water.data());
@@ -787,16 +929,21 @@ struct TerrainRenderer::Impl {
 namespace {
 
 [[nodiscard]] WGPUBindGroupLayout create_material_layout(const WGPUDevice device) {
-    std::array<WGPUBindGroupLayoutEntry, 3> entries{};
-    for (std::uint32_t i = 0; i < 2; ++i) {
+    std::array<WGPUBindGroupLayoutEntry, 6> entries{};
+    for (std::uint32_t i : {0u, 1u, 3u, 4u}) {
         entries[i].binding = i;
-        entries[i].visibility = WGPUShaderStage_Fragment;
+        entries[i].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment; // the grass tests its ground in the vertex shader
         entries[i].texture.sampleType = WGPUTextureSampleType_Float;
         entries[i].texture.viewDimension = WGPUTextureViewDimension_2D;
     }
     entries[2].binding = 2;
-    entries[2].visibility = WGPUShaderStage_Fragment;
+    entries[2].visibility = WGPUShaderStage_Vertex | WGPUShaderStage_Fragment;
     entries[2].sampler.type = WGPUSamplerBindingType_Filtering;
+    // The ground's material (normal map 3, ORM 4, its numbers 5).
+    entries[5].binding = 5;
+    entries[5].visibility = WGPUShaderStage_Fragment;
+    entries[5].buffer.type = WGPUBufferBindingType_Uniform;
+    entries[5].buffer.minBindingSize = sizeof(GroundMaterialUniform);
     const WGPUBindGroupLayoutDescriptor descriptor{.entryCount = entries.size(), .entries = entries.data()};
     return wgpuDeviceCreateBindGroupLayout(device, &descriptor);
 }
@@ -907,6 +1054,59 @@ namespace {
             .buffers = &vertex_layout,
         },
         .primitive = {.topology = WGPUPrimitiveTopology_TriangleList},
+        .depthStencil = &depth,
+        .multisample = scene_multisample(),
+        .fragment = &fragment,
+    };
+    return wgpuDeviceCreateRenderPipeline(device, &descriptor);
+}
+
+// The grass (docs/grass.md): the terrain's fragment shader, its blades from
+// an instance buffer (GrassInstance), both faces drawn.
+[[nodiscard]] WGPURenderPipeline create_grass_pipeline(const WGPUDevice device, const WGPUPipelineLayout layout,
+                                                       const WGPUShaderModule shader, const WGPUTextureFormat target_format) {
+    const std::array<WGPUVertexAttribute, 2> attributes{{
+        {.format = WGPUVertexFormat_Float32x4, .offset = 0, .shaderLocation = 6},
+        {.format = WGPUVertexFormat_Float32x4, .offset = 16, .shaderLocation = 7},
+    }};
+    const WGPUVertexBufferLayout vertex_layout{
+        .stepMode = WGPUVertexStepMode_Instance,
+        .arrayStride = sizeof(detail::GrassInstance),
+        .attributeCount = attributes.size(),
+        .attributes = attributes.data(),
+    };
+    constexpr WGPUStencilFaceState keep_stencil{
+        .compare = WGPUCompareFunction_Always,
+        .failOp = WGPUStencilOperation_Keep,
+        .depthFailOp = WGPUStencilOperation_Keep,
+        .passOp = WGPUStencilOperation_Keep,
+    };
+    const WGPUDepthStencilState depth{
+        .format = depth_format,
+        .depthWriteEnabled = WGPUOptionalBool_True,
+        .depthCompare = depth_nearer_or_equal,
+        .stencilFront = keep_stencil,
+        .stencilBack = keep_stencil,
+        .stencilReadMask = ~0u,
+        .stencilWriteMask = ~0u,
+    };
+    const WGPUColorTargetState target{.format = target_format, .writeMask = WGPUColorWriteMask_All};
+    const std::array<WGPUConstantEntry, 2> constants{{
+        {.key = wgsl_name("experimental"), .value = 1.0},
+        {.key = wgsl_name("hdr_output"), .value = scene_hdr() ? 1.0 : 0.0},
+    }};
+    const WGPUFragmentState fragment{
+        .module = shader,
+        .entryPoint = wgsl_name("fs_grass"),
+        .constantCount = constants.size(),
+        .constants = constants.data(),
+        .targetCount = 1,
+        .targets = &target,
+    };
+    const WGPURenderPipelineDescriptor descriptor{
+        .layout = layout,
+        .vertex = {.module = shader, .entryPoint = wgsl_name("vs_grass"), .bufferCount = 1, .buffers = &vertex_layout},
+        .primitive = {.topology = WGPUPrimitiveTopology_TriangleList, .cullMode = WGPUCullMode_None},
         .depthStencil = &depth,
         .multisample = scene_multisample(),
         .fragment = &fragment,
@@ -1059,6 +1259,23 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
                                  const int radius)
     : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
+#ifdef OPENRTS_HAS_RAY_QUERY
+    // The ground's tiles in each build of the ray scene, as they are then.
+    if (ray_queries()) {
+        detail::RayScene::get().set_adder(impl_.get(), [impl = impl_.get()](detail::RayScene& scene) {
+            if (!ray_shadows_wanted()) return;
+            constexpr double size = formats::route_tile_size;
+            for (const auto& [key, tile] : impl->tiles) {
+                if (!tile.blas) continue;
+                glm::mat4 place{1.0f};
+                place[3] = glm::vec4{static_cast<float>((key.first - impl->origin.tile_x) * size - impl->origin.x),
+                                     static_cast<float>(-impl->origin.y),
+                                     static_cast<float>((key.second - impl->origin.tile_z) * size - impl->origin.z), 1.0f};
+                scene.add(tile.blas, place);
+            }
+        });
+    }
+#endif
     impl_->vfs = std::move(vfs);
     impl_->route = std::move(route);
     impl_->origin = origin;
@@ -1085,10 +1302,20 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     impl_->grey = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &grey_pixel}, "terrain-grey");
     if (impl_->black.ok()) impl_->black_view = wgpuTextureCreateView(impl_->black.texture.get(), nullptr);
     if (impl_->grey.ok()) impl_->grey_view = wgpuTextureCreateView(impl_->grey.texture.get(), nullptr);
+    static const std::vector<std::uint8_t> flat_pixel{128, 128, 255, 255};
+    static const std::vector<std::uint8_t> white_pixel{255, 255, 255, 255};
+    impl_->flat = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &flat_pixel}, "terrain-flat");
+    impl_->white = upload_rgba8_texture(device, {.width = 1, .height = 1, .pixels = &white_pixel}, "terrain-white");
+    if (impl_->flat.ok()) impl_->flat_view = wgpuTextureCreateView(impl_->flat.texture.get(), nullptr);
+    if (impl_->white.ok()) impl_->white_view = wgpuTextureCreateView(impl_->white.texture.get(), nullptr);
+    {
+        const GroundMaterialUniform plain;
+        impl_->plain_material = create_buffer(device, WGPUBufferUsage_Uniform, sizeof(plain), &plain);
+    }
 
     // One module for both paths (the `experimental` override): both read
     // the effects (group 2), so both layouts have it.
-    const auto shader_code = std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::shader_code("common/fog_ring") + detail::shader_code("common/pbr") + detail::shader_code("terrain/terrain");
+    const auto shader_code = std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::ray_shadow_code() + detail::shader_code("common/fog_ring") + detail::shader_code("common/pbr") + detail::shader_code("terrain/terrain");
     const WGPUShaderSourceWGSL source{
         .chain = {.sType = WGPUSType_ShaderSourceWGSL},
         .code = {.data = shader_code.data(), .length = shader_code.size()},
@@ -1104,6 +1331,8 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     const auto pipeline_layout = wgpuDeviceCreatePipelineLayout(device, &layout_descriptor);
     impl_->pipeline = create_pipeline(device, pipeline_layout, shader, target_format, false);
     impl_->experimental_pipeline = create_pipeline(device, pipeline_layout, shader, target_format, true);
+    impl_->grass_pipeline = create_grass_pipeline(device, pipeline_layout, shader, target_format);
+    impl_->grass.set_settings(formats::load_route_grass(*impl_->vfs, impl_->route));
     for (int experimental = 0; experimental < 2; ++experimental) {
         for (int blended = 0; blended < 2; ++blended) {
             impl_->water_pipelines[experimental][blended] =
@@ -1117,7 +1346,7 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     // uniforms and the effects.
     {
         const auto water_code =
-            std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::shader_code("common/fog_ring") + detail::shader_code("terrain/water");
+            std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::ray_shadow_code() + detail::shader_code("common/fog_ring") + detail::shader_code("terrain/water");
         const WGPUShaderSourceWGSL water_source{
             .chain = {.sType = WGPUSType_ShaderSourceWGSL},
             .code = {.data = water_code.data(), .length = water_code.size()},
@@ -1253,11 +1482,33 @@ void TerrainRenderer::update(const formats::RoutePosition& camera) {
     for (auto it = impl.tiles.begin(); it != impl.tiles.end();) {
         if (std::abs(it->first.first - camera.tile_x) > keep || std::abs(it->first.second - camera.tile_z) > keep) {
             Impl::release_tile(it->second);
+            impl.grass.remove_tile(it->first.first, it->first.second);
             it = impl.tiles.erase(it);
         } else {
             ++it;
         }
     }
+
+    // The grass near the eye (the experimental path; docs/grass.md).
+    const bool grass_on = impl.shading == ShadingPath::experimental && impl.grass_pipeline;
+    if (impl.grass.update(camera, impl.season, impl.weather, grass_reach(), grass_on ? grass_density() : 0.0f)) {
+        const auto& blades = impl.grass.instances();
+        impl.grass_count = static_cast<std::uint32_t>(blades.size());
+        if (!blades.empty()) {
+            if (!impl.grass_buffer || impl.grass_capacity < blades.size()) {
+                if (impl.grass_buffer) wgpuBufferRelease(impl.grass_buffer);
+                impl.grass_capacity = (std::max<std::uint64_t>)(blades.size() + blades.size() / 2, 4096);
+                impl.grass_buffer = create_buffer(impl.device, WGPUBufferUsage_Vertex, impl.grass_capacity * sizeof(detail::GrassInstance), nullptr);
+            }
+            const auto queue = wgpuDeviceGetQueue(impl.device);
+            wgpuQueueWriteBuffer(queue, impl.grass_buffer, 0, blades.data(), blades.size() * sizeof(detail::GrassInstance));
+            if (queue) wgpuQueueRelease(queue);
+        }
+    }
+}
+
+std::size_t TerrainRenderer::grass_blades() const noexcept {
+    return impl_->grass_drawn;
 }
 
 void TerrainRenderer::prepare_depth() {
@@ -1292,7 +1543,7 @@ void TerrainRenderer::render_depth(const WGPURenderPassEncoder pass, const std::
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.depth_buffer, base, uniforms.data(), uniforms.size());
     if (queue) wgpuQueueRelease(queue);
-    wgpuRenderPassEncoderSetPipeline(pass, kind == DepthPassKind::shadow ? impl.shadow_pipeline : impl.camera_depth_pipeline);
+    wgpuRenderPassEncoderSetPipeline(pass, kind != DepthPassKind::camera ? impl.shadow_pipeline : impl.camera_depth_pipeline);
     const auto frustum = Frustum::from_view_projection(view_projection);
     index = 0;
     for (auto& [key, tile] : impl.tiles) {
@@ -1360,7 +1611,10 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         water_tiles += tile.water_vertices > 0 ? 1 : 0;
         surface_tiles += tile.surface_index_count > 0 ? 1 : 0;
     }
-    const std::size_t draws = impl.tiles.size() + (native ? surface_tiles : water_tiles * impl.water_layers.size());
+    const bool grass_on = impl.shading == ShadingPath::experimental && impl.grass_pipeline && impl.grass_buffer && impl.grass_count > 0;
+    const auto& grass_groups = impl.grass.groups();
+    const std::size_t draws = impl.tiles.size() + (native ? surface_tiles : water_tiles * impl.water_layers.size())
+        + (grass_on ? grass_groups.size() : 0);
     impl.ensure_draw_capacity(draws);
     if (!impl.frame_binding) return;
 
@@ -1459,6 +1713,32 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
         }
     }
 
+    // The grass groups' (docs/grass.md): their tile's place, the clock, the
+    // reach, the colour test (no .rtst), the wind; the lamps' ring.
+    const std::size_t first_grass_draw = index;
+    if (grass_on) {
+        for (const auto& group : grass_groups) {
+            const auto offset = glm::vec3{
+                static_cast<float>((group.tile.first - impl.origin.tile_x) * tile_size - impl.origin.x),
+                static_cast<float>(-impl.origin.y),
+                static_cast<float>((group.tile.second - impl.origin.tile_z) * tile_size - impl.origin.z),
+            };
+            glm::mat4 model{1.0f};
+            model[3] = glm::vec4{offset, 1.0f};
+            DrawUniform uniform{.mvp = view_projection * model, .offset = {offset.x, offset.y, offset.z, 0.0f}};
+            const auto tile = impl.tiles.find(group.tile);
+            const auto* patch = tile != impl.tiles.end() && group.patch < tile->second.patches.size() ? &tile->second.patches[group.patch] : nullptr;
+            uniform.uv_rect[0] = patch ? static_cast<float>(lighting.light_rings.ring_for(offset + glm::vec3{patch->center[0], patch->center[1], patch->center[2]}, patch->radius))
+                                       : 0.0f;
+            uniform.uv_mode[0] = static_cast<float>(std::fmod(impl.water_clock, 3600.0));
+            uniform.uv_mode[1] = grass_reach();
+            uniform.uv_mode[2] = group.test_colour ? 1.0f : 0.0f;
+            uniform.uv_mode[3] = 0.35f;
+            std::memcpy(uniforms.data() + index * draw_uniform_stride, &uniform, sizeof(uniform));
+            ++index;
+        }
+    }
+
     FrameUniform frame{};
     copy_vec4(frame.light_diffuse, lighting.sun_diffuse);
     copy_vec4(frame.light_ambient, lighting.sun_ambient + lighting.flash);
@@ -1516,6 +1796,25 @@ void TerrainRenderer::render(const WGPURenderPassEncoder pass,
             // The patch's ring of further lights (RTS 0x4A2AD4) as the first instance.
             const auto ring = rings.ring_for(tile_offset + glm::vec3{patch.center[0], patch.center[1], patch.center[2]}, patch.radius);
             wgpuRenderPassEncoderDrawIndexed(pass, patch.index_count, 1, patch.first_index, 0, ring);
+        }
+    }
+
+    // The grass over the ground.
+    impl.grass_drawn = 0;
+    if (grass_on) {
+        wgpuRenderPassEncoderSetPipeline(pass, impl.grass_pipeline);
+        wgpuRenderPassEncoderSetVertexBuffer(pass, 0, impl.grass_buffer, 0, WGPU_WHOLE_SIZE);
+        std::size_t g = first_grass_draw;
+        for (const auto& group : grass_groups) {
+            const auto offset = static_cast<std::uint32_t>(g++ * draw_uniform_stride);
+            const auto tile = impl.tiles.find(group.tile);
+            if (tile == impl.tiles.end() || group.patch >= tile->second.patches.size()) continue;
+            const auto material = impl.material(tile->second.patches[group.patch]);
+            if (!material) continue;
+            wgpuRenderPassEncoderSetBindGroup(pass, 0, material, 0, nullptr);
+            wgpuRenderPassEncoderSetBindGroup(pass, 1, impl.frame_binding, 1, &offset);
+            wgpuRenderPassEncoderDraw(pass, 45, group.count, 0, group.first);
+            impl.grass_drawn += group.count;
         }
     }
 

@@ -24,6 +24,8 @@ struct ShaftUniform {
     glm::vec4 room_upper{};
     glm::vec4 sizes{};
     glm::vec4 march{};
+    glm::vec4 beams[12]{}; // each: apex + reach, axis + tangent, colour
+    glm::vec4 beam{};      // x: beams, y: the air's scattering (per metre)
 };
 
 constexpr WGPUTextureFormat shaft_format = WGPUTextureFormat_RGBA16Float;
@@ -212,6 +214,14 @@ WGPUTextureView LightShaftRenderer::render(const WGPUCommandEncoder encoder, con
     u.sizes = glm::vec4{static_cast<float>(half_w), static_cast<float>(half_h), static_cast<float>(frame.width),
                         static_cast<float>(frame.height)};
     u.march = glm::vec4{(std::max)(frame.shadow_distance, 10.0f), 1500.0f, strength > 0.0f ? 1.0f : 0.0f, 0.0f};
+    const auto beams = (std::min)(frame.beams.count, static_cast<std::uint32_t>(frame.beams.beams.size()));
+    for (std::uint32_t k = 0; k < beams; ++k) {
+        const auto& b = frame.beams.beams[k];
+        u.beams[k * 3] = glm::vec4{b.apex, b.reach};
+        u.beams[k * 3 + 1] = glm::vec4{b.axis, b.tangent};
+        u.beams[k * 3 + 2] = glm::vec4{b.colour, 0.0f};
+    }
+    u.beam = glm::vec4{frame.beams.air > 0.0f ? static_cast<float>(beams) : 0.0f, frame.beams.air, 0.0f, 0.0f};
     if (const auto queue = wgpuDeviceGetQueue(impl.device)) {
         wgpuQueueWriteBuffer(queue, impl.uniform, 0, &u, sizeof(u));
         wgpuQueueRelease(queue);

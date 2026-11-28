@@ -14,12 +14,14 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/track_database.hpp>
 #include <openrts/formats/track_sections.hpp>
+#include <openrts/net/datagram.hpp>
 #include <openrts/net/connection.hpp>
 #include <openrts/net/packages.hpp>
 #include <openrts/net/placement.hpp>
@@ -681,6 +683,33 @@ void game() {
             answered = n && n->train == 1 && !n->found && n->routes.empty();
         }
         check(answered, "a console's console_next answered");
+        // A route set on the console's map (console_route): a preview with
+        // no end is answered, not set.
+        game.received(6, P(Package::console_route), net::encode_console_route_ask({.kind = net::ConsoleRouteAsk::Kind::preview, .train = 1}));
+        bool route_answered = false;
+        for (const auto& g : take(rec, 6)) {
+            if (g.id != P(Package::console_route_reply)) continue;
+            const auto a = net::decode_console_route_answer(g.body);
+            route_answered = a && a->train == 1 && a->kind == net::ConsoleRouteAsk::Kind::preview && !a->ok && a->spans.empty();
+        }
+        check(route_answered, "a console's console_route answered");
+        {
+            net::ConsoleRouteAsk ask{.kind = net::ConsoleRouteAsk::Kind::set, .train = 4, .rear_first = true, .shunting = true};
+            ask.end = net::ConsoleRouteSpot{12, 34.5};
+            ask.via.push_back({7, 1.25});
+            ask.branches.emplace_back(99, 1);
+            const auto m = net::decode_console_route_ask(net::encode_console_route_ask(ask));
+            check(m && m->kind == net::ConsoleRouteAsk::Kind::set && m->train == 4 && m->rear_first && m->shunting && m->end && m->end->node == 12 &&
+                      m->end->offset == 34.5 && m->via.size() == 1 && m->via[0].offset == 1.25 && m->branches.size() == 1 && m->branches[0].second == 1,
+                  "console_route's ask both ways");
+            net::ConsoleRouteAnswer answer{.kind = net::ConsoleRouteAsk::Kind::fetch, .train = 4, .ok = true, .message = u"маршрут", .junctions = 2};
+            answer.spans.push_back({.node = 5, .forward = false, .from = 30.0, .to = 2.0});
+            answer.request = ask;
+            const auto b = net::decode_console_route_answer(net::encode_console_route_answer(answer));
+            check(b && b->ok && b->kind == net::ConsoleRouteAsk::Kind::fetch && b->message == u"маршрут" && b->junctions == 2 && b->spans.size() == 1 &&
+                      !b->spans[0].forward && b->spans[0].from == 30.0 && b->request && b->request->end && b->request->end->node == 12,
+                  "console_route's answer both ways");
+        }
         {
             // The segments after the trains (2026-11-21); a state without them still reads.
             net::ConsoleState s;
@@ -757,6 +786,69 @@ void game() {
     check(words.size() == 4 && words[1] == "ED9M-0032 8 vag", "quoted words keep their spaces");
     check(server::parse_time_of_day("06:30") == 6.5 * 3600.0 && !server::parse_time_of_day("25:00"), "times of day");
     static_cast<void>(quit);
+}
+
+// Fast positions (2026-11-26): the hello's answer says so; a PLAYER
+// train's motion (0x45EE) goes to the other openRTS players; switched off,
+// the players are told and it goes nowhere.
+void fast_positions() {
+    auto network = switch_track();
+    const auto car = car_definition();
+    Recorder rec;
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.description = server::game_description("TestRoute", 1);
+    server::GameServer game(rec, options, *network, nullptr);
+    std::string error;
+    double now = 0.0;
+    game.tick(now);
+    const auto hello = net::encode_openrts_hello();
+    const auto features_of = [&](const server::ConnectionId c) -> std::optional<std::uint16_t> {
+        std::optional<std::uint16_t> out;
+        for (const auto& g : take(rec, c))
+            if (g.id == P(Package::openrts_hello)) out = net::decode_openrts_hello(g.body);
+        return out;
+    };
+    game.connected(1, "127.0.0.1:1");
+    game.received(1, P(Package::login), login(u"Alice"));
+    take_reply(rec, 1);
+    game.received(1, P(Package::openrts_hello), hello);
+    const auto alice_features = features_of(1);
+    check(alice_features && (*alice_features & net::openrts_feature_fast_positions) != 0, "fast positions: on by default, in the hello's answer");
+    check(game.add_train(new_train(car, 1, 45.0, 101), error) == 1u, "fast positions: train 1: " + error);
+    check(game.assign(1, "Alice", error), "fast positions: train 1 to Alice: " + error);
+    game.received(1, P(Package::snapshot), {});
+    rec.out[1].clear();
+    game.connected(2, "127.0.0.1:2");
+    game.received(2, P(Package::login), login(u"Bob"));
+    take_reply(rec, 2);
+    game.received(2, P(Package::openrts_hello), hello);
+    game.received(2, P(Package::snapshot), {});
+    rec.out[2].clear();
+    net::OpenrtsMotion m{.train = 1, .sent_ms = 1234, .node = 1, .offset = 50.0f, .direction = 0, .speed = 12.5f, .acceleration = 0.3f};
+    const auto body = net::encode_openrts_motion(m);
+    const auto back = net::decode_openrts_motion(body);
+    check(back && back->train == 1 && back->sent_ms == 1234 && back->node == 1 && back->offset == 50.0f && back->speed == 12.5f &&
+              back->acceleration == 0.3f && body.size() == 25,
+          "fast positions: the motion's 25 bytes read back");
+    check(!net::decode_openrts_motion(net::Bytes(body.begin(), body.begin() + 20)), "fast positions: a short motion is refused");
+    game.received(1, P(Package::openrts_train_motion), body);
+    check(ids(take(rec, 2)) == std::vector<std::uint16_t>{P(Package::openrts_train_motion)} && take(rec, 1).empty(),
+          "fast positions: Alice's train's motion reaches Bob, not her");
+    m.train = 99;
+    game.received(1, P(Package::openrts_train_motion), net::encode_openrts_motion(m));
+    check(take(rec, 2).empty(), "fast positions: a train the server does not have goes nowhere");
+    // Off: both told at once; a motion goes nowhere.
+    game.set_fast_positions(false);
+    const auto alice_off = features_of(1);
+    const auto bob_off = features_of(2);
+    check(alice_off && bob_off && (*alice_off & net::openrts_feature_fast_positions) == 0 && (*bob_off & net::openrts_feature_fast_positions) == 0,
+          "fast positions off: the players are told");
+    game.received(1, P(Package::openrts_train_motion), body);
+    check(take(rec, 2).empty(), "fast positions off: the motion is dropped");
+    game.set_fast_positions(true);
+    const auto bob_on = features_of(2);
+    check(bob_on && (*bob_on & net::openrts_feature_fast_positions) != 0, "fast positions on again: told");
 }
 
 // RTS's hand route from a console (0x4619): laid along the junctions as they
@@ -1090,6 +1182,117 @@ void over_tcp() {
         check(asked, "the dispatcher's train reaches the player");
         const auto read = net::read_snapshot(world.data());
         check(ended && read.ok() && read.snapshot.trains.size() == 1 && read.snapshot.trains[0].mine(), "the world comes whole with its train");
+    }
+    client.close();
+    done = true;
+    pump.join();
+    tcp.stop();
+}
+
+// The positions by UDP (experimental, net/datagram.hpp): on the loopback
+// the server offers a token, the player's hellos are answered, a motion
+// goes up and down by UDP, and without answers the player is back on TCP.
+void over_udp() {
+    {
+        const auto d = net::make_datagram(net::DatagramKind::package, 0x0123456789ABCDEFull, net::Bytes{1, 2, 3});
+        const auto back = net::read_datagram(d);
+        check(back && back->kind == net::DatagramKind::package && back->token == 0x0123456789ABCDEFull && back->payload.size() == 3 &&
+                  back->payload[2] == 3,
+              "a datagram written and read back");
+        check(!net::read_datagram(net::Bytes{'x', 'R', 'U', '1', 1, 0, 0, 0, 0, 0, 0, 0, 0}), "a stranger's datagram refused");
+        const auto offer = net::decode_openrts_udp_offer(net::encode_openrts_udp_offer({.token = 77, .port = 800}));
+        check(offer && offer->token == 77 && offer->port == 800, "the offer written and read back");
+    }
+    auto network = switch_track();
+    server::TcpServer tcp;
+    std::string error;
+    if (!tcp.listen(0, error, true)) {
+        check(false, "listen: " + error);
+        return;
+    }
+    check(tcp.datagram_port() == tcp.port(), "UDP on the TCP port's number");
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.description = server::game_description("TestRoute", 2);
+    options.counts = {20, 0, 0, 0};
+    options.udp_positions = true;
+    server::GameServer game(tcp, options, *network, nullptr);
+    std::atomic<bool> done = false;
+    std::mutex seen_mutex;
+    std::vector<net::Bytes> motions; // 0x45EE as the server took them
+    // The game is the pump's: the player's connection read there, UDP off asked of it.
+    std::atomic<server::ConnectionId> connection = 0;
+    std::atomic<bool> udp_off = false;
+    std::thread pump([&] {
+        const auto start = std::chrono::steady_clock::now();
+        while (!done) {
+            for (auto& e : tcp.take_events()) {
+                if (e.kind == server::NetEvent::Kind::connected) {
+                    connection = e.connection; // the one player
+                    game.connected(e.connection, e.address);
+                }
+                if (e.kind == server::NetEvent::Kind::package) {
+                    if (e.id == 0x45EE) {
+                        std::lock_guard lock(seen_mutex);
+                        motions.push_back(e.body);
+                        continue;
+                    }
+                    game.received(e.connection, e.id, e.body);
+                }
+                if (e.kind == server::NetEvent::Kind::closed) game.closed(e.connection);
+            }
+            if (udp_off.exchange(false)) game.set_udp_positions(false);
+            game.tick(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
+    net::RtsConnection client;
+    const auto result = client.connect("127.0.0.1:" + std::to_string(tcp.port()), u"Udper", 5000);
+    check(result.ok(), "the player logs in: " + result.error);
+    if (result.ok()) {
+        client.send(P(Package::openrts_hello), net::encode_openrts_hello());
+        std::optional<net::OpenrtsUdpOffer> offer;
+        const auto until = [](const double seconds) { return std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds); };
+        for (auto end = until(5.0); !offer && std::chrono::steady_clock::now() < end;) {
+            for (auto& package : client.receive())
+                if (package.id == P(Package::openrts_udp_offer)) offer = net::decode_openrts_udp_offer(package.body);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(offer && offer->token != 0 && offer->port == tcp.port(), "the server offers its UDP after the hello");
+        if (offer) {
+            check(client.open_datagrams(offer->token, offer->port), "the player's UDP socket");
+            for (auto end = until(5.0); !client.datagrams_live() && std::chrono::steady_clock::now() < end;)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            check(client.datagrams_live(), "the hello answered");
+            // Up: the server takes the motion by UDP.
+            const net::Bytes body{9, 8, 7, 6};
+            check(client.send_datagram(0x45EE, body), "a motion sent by UDP");
+            bool up = false;
+            for (auto end = until(3.0); !up && std::chrono::steady_clock::now() < end;) {
+                {
+                    std::lock_guard lock(seen_mutex);
+                    up = !motions.empty() && motions.front() == body;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(up, "the server takes it");
+            // Down: the server's to this player by UDP.
+            net::WireWriter frame;
+            frame.frame(0x45EE, net::Bytes{5, 4});
+            check(connection != 0 && tcp.send_datagram(connection, frame.data()), "the server sends one by UDP");
+            bool down = false;
+            for (auto end = until(3.0); !down && std::chrono::steady_clock::now() < end;) {
+                for (auto& package : client.receive()) down = down || (package.id == 0x45EE && package.body == net::Bytes{5, 4});
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(down, "the player takes it with the TCP ones");
+            // Off: no answers, back to TCP in 3 s.
+            udp_off = true;
+            for (auto end = until(5.0); client.datagrams_live() && std::chrono::steady_clock::now() < end;)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            check(!client.datagrams_live() && !client.send_datagram(0x45EE, body), "without answers the player is on TCP again");
+            check(!tcp.send_datagram(connection, frame.data()), "and the server too");
+        }
     }
     client.close();
     done = true;
@@ -1456,11 +1659,47 @@ void content(const std::filesystem::path& root) {
             check(got.size() == 1 && got[0].id == P(Package::junction) && got[0].body[4] == selected, "who gets its state back");
             break;
         }
+        // The map's request to the same end: previewed, set as a shunting
+        // order (the train's signal mode SHUNT, its signals held), freed.
+        const auto old_leg = game.route_leg(*id);
         check(game.cancel_route(*id, error) && game.route_junctions(*id).empty() && !game.cancel_route(*id, error), "the route freed once");
         bool closed = true;
         for (const auto u : opened) closed = closed && signals->unit_mode(u) == simulation::UnitMode::manual;
         check(closed, "cancelled: its signals closed (manual again)");
         take(rec, 1);
+        check(old_leg.has_value() && !old_leg->spans.empty(), "the signal route's leg for the map's request");
+        if (old_leg && !old_leg->spans.empty()) {
+            const auto& last = old_leg->spans.back();
+            server::GameServer::RouteRequest request;
+            request.end = simulation::TrackLocation{last.node, last.to, last.forward};
+            const auto preview = game.preview_route(*id, request);
+            check(preview.ok && std::abs(preview.leg.length() - old_leg->length()) < 50.0,
+                  "the map's request previewed (" + std::to_string(preview.ok ? preview.leg.length() : -1.0) + " m of " +
+                      std::to_string(old_leg->length()) + "): " + preview.error);
+            check(game.route_junctions(*id).empty(), "a preview sets nothing");
+            // A facing junction's other branch chosen: another way, or none.
+            for (const auto& j : preview.leg.junctions) {
+                const auto* node = route->network().node(j.junction);
+                if (!j.facing || !node || node->branch_count() < 2) continue;
+                auto other = request;
+                other.branches[j.junction] = 1 - (j.branch % 2);
+                const auto changed = game.preview_route(*id, other);
+                bool takes = false;
+                for (const auto& k : changed.leg.junctions) takes = takes || (k.junction == j.junction && k.branch == other.branches[j.junction]);
+                check(!changed.ok || takes, "a chosen branch is taken (or no way)");
+                break;
+            }
+            request.shunting = true;
+            std::string result;
+            check(game.set_requested_route(*id, request, result) && result.find("shunting order") != std::string::npos,
+                  "set as a shunting order: " + result);
+            check(game.route_request(*id).has_value() && game.route_request(*id)->shunting, "its request kept for editing");
+            const auto sim_train = game.train_sim_id(*id);
+            check(sim_train && signals->train_settings(*sim_train).mode == simulation::SignalMode::shunt, "the train's signal mode SHUNT");
+            check(game.cancel_route(*id, error), "the shunting order freed");
+            check(!sim_train || signals->train_settings(*sim_train).mode == simulation::SignalMode::normal, "back to NORMAL");
+            take(rec, 1);
+        }
     }
     // Station routes (RoutePoints, TrainRoutes, TrainPaths) and the
     // dispatcher's segments of a train's route.
@@ -1971,6 +2210,72 @@ void placement_format() {
     check(net::placement_from_line(payload) == text, "the upload's text back");
 }
 
+// Cars as entities, step 1 (docs/car-architecture.md): the server's world
+// gives each car a CarId; a coupling, a cut in the middle and the coupling
+// back keep every car's id and order; a train deleted retires its cars' ids
+// (found no more, never given again).
+void car_identity() {
+    auto network = switch_track();
+    const auto car = car_definition();
+    Recorder rec;
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.description = server::game_description("TestRoute", 1);
+    server::GameServer game(rec, options, *network, nullptr);
+    std::string error;
+    game.tick(0.0);
+    const auto& cars = game.car_registry();
+    // Both on node 1 (100 m), 16 m cars: train 1 ahead (front at 90 m),
+    // train 2 8 m behind its rear.
+    check(game.add_train(new_train(car, 1, 90.0, 101), error) == 1u, "ids: train 1: " + error);
+    check(game.add_train(new_train(car, 1, 50.0, 102), error) == 2u, "ids: train 2: " + error);
+    const auto a = game.car_ids(1), b = game.car_ids(2);
+    check(a.size() == 2 && b.size() == 2 && cars.size() == 4, "ids: each car has one");
+    std::set<std::uint32_t> distinct;
+    for (const auto& list : {a, b})
+        for (const auto id : list) distinct.insert(id.value);
+    check(distinct.size() == 4 && !distinct.contains(0), "ids: four, all valid, all different");
+    // Where train 1 stood, a train that cannot be placed: no id taken.
+    check(!game.add_train(new_train(car, 1, 85.0, 199), error), "ids: not placed over train 1");
+    error.clear();
+    check(cars.size() == 4 && cars.last() == 6u && !cars.alive(simulation::CarId{5}) && !cars.alive(simulation::CarId{6}),
+          "ids: the unplaced train's two ids retired, not alive");
+
+    check(game.couple(1, 2, error), "ids: coupled: " + error);
+    const auto joined = game.car_ids(1);
+    auto ahead = b;
+    ahead.insert(ahead.end(), a.begin(), a.end()); // train 2 ahead of train 1's front
+    auto behind = a;
+    behind.insert(behind.end(), b.begin(), b.end());
+    check(joined.size() == 4 && (joined == ahead || joined == behind), "ids: the coupled train holds both trains' cars in order");
+    check(game.car_ids(2).empty() && cars.size() == 4, "ids: train 2 gone into train 1, its cars alive");
+
+    // A cut in the middle (before car 2), then the server couples them back.
+    check(game.cut(1, 2, error), "ids: cut in the middle: " + error);
+    std::uint32_t part = 0;
+    for (const auto& t : game.trains())
+        if (t.id != 1) part = t.id;
+    const auto head = game.car_ids(1), tail = game.car_ids(part);
+    check(head == std::vector<simulation::CarId>(joined.begin(), joined.begin() + 2) &&
+              tail == std::vector<simulation::CarId>(joined.begin() + 2, joined.end()),
+          "ids: the cut: each part keeps its cars' ids, in order");
+    check(game.couple(1, part, error), "ids: coupled back: " + error);
+    check(game.car_ids(1) == joined, "ids: coupled back: the same ids in the same order");
+    check(cars.size() == 4, "ids: still four cars");
+
+    // Deleted: its ids are found no more, and new cars never get them.
+    const auto before = cars.last();
+    check(game.remove_train(1, error), "ids: train 1 deleted: " + error);
+    bool any_alive = false;
+    for (const auto id : joined) any_alive = any_alive || cars.alive(id);
+    check(!any_alive && cars.size() == 0, "ids: a deleted train's cars are found no more");
+    check(game.add_train(new_train(car, 1, 90.0, 103), error).has_value(), "ids: a new train: " + error);
+    bool reused = false;
+    for (const auto id : game.car_ids(game.trains().front().id))
+        for (const auto old : joined) reused = reused || id == old || id.value <= before;
+    check(!reused, "ids: a new train's cars never take an old id");
+}
+
 int main(int argc, char** argv) {
     if (argc > 1) {
         content(argv[1]);
@@ -1982,9 +2287,12 @@ int main(int argc, char** argv) {
     placement_format();
     game();
     helpers();
+    fast_positions();
+    car_identity();
     station_segments();
     hand_route();
     over_tcp();
+    over_udp();
     if (failures == 0) std::cout << "server: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

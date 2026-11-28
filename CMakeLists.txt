@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.39.1
+    VERSION 0.51.2
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 if(WIN32)
@@ -278,6 +278,15 @@ if(OPENRTS_BUILD_VIEWER)
             "${OPENRTS_WGPU_INCLUDE_DIR}")
         target_compile_definitions(openrts_imgui PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_WGPU=1)
         target_link_libraries(openrts_imgui PUBLIC glfw openrts_wgpu_native)
+        # ImGuizmo (MIT): the inspector's lamp gizmo, rings to turn and
+        # arrows to move (viewer/src/inspector_lamps.cpp).
+        FetchContent_Declare(imguizmo
+            GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+            GIT_TAG 5b473bc30438dc128520b90b688745bca85c4a91
+            SOURCE_SUBDIR openrts-no-cmake)
+        FetchContent_MakeAvailable(imguizmo)
+        target_sources(openrts_imgui PRIVATE "${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp")
+        target_include_directories(openrts_imgui SYSTEM PUBLIC "${imguizmo_SOURCE_DIR}/src")
         add_subdirectory(ui)
         add_subdirectory(trackmap)
         # The server's window (server/src/server_window.cpp: its start form and
@@ -310,8 +319,10 @@ if(BUILD_TESTING)
 endif()
 
 # openRTS's own packs (docs/vfs.md, "openRTS's own packs"): packs/thunder,
-# packs/stock (the stock rules in Luau, docs/scripting.md) and packs/snow (the
-# bodies' snow masks in MATERIALS, docs/pbr-materials.md)
+# packs/stock (the stock rules in Luau, docs/scripting.md), packs/snow (the
+# bodies' snow masks in MATERIALS, docs/pbr-materials.md), packs/rails (the
+# track's PBR materials in MATERIALS) and packs/cargo (openRTS's own cargo
+# kinds and their textures, docs/cargo.md)
 # packed by openrts-pack into PACKS beside the game and the viewer, on every
 # build (a second).
 if(OPENRTS_BUILD_TOOLS AND TARGET openrts_pack)
@@ -333,7 +344,13 @@ if(OPENRTS_BUILD_TOOLS AND TARGET openrts_pack)
                     --kind trains
             COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/snow" --as MATERIALS
                     -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-snow.zip" --method deflate --name openrts-snow
-                    --kind trains)
+                    --kind trains
+            COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/rails" --as MATERIALS
+                    -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-rails.zip" --method deflate --name openrts-rails
+                    --kind global
+            COMMAND $<TARGET_FILE:openrts_pack> pack "${CMAKE_SOURCE_DIR}/packs/cargo"
+                    -o "$<TARGET_FILE_DIR:${program}>/PACKS/openrts-cargo.zip" --method deflate --name openrts-cargo
+                    --kind global)
     endforeach()
     if(openrts_pack_commands)
         add_custom_target(openrts_own_packs ALL ${openrts_pack_commands} VERBATIM)

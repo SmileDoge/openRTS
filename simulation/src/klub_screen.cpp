@@ -317,7 +317,8 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         kind = message;
         what = message_value;
     }
-    const float block_scale = k.block_scale_150 ? 150.0f : 300.0f; // its bars: BLOCK_MODE 1 to 150 km/h, else 300
+    // Its arcs: the screen's own top, else BLOCK_MODE 1 to 150 km/h, else 300.
+    const float block_scale = k.block_arc_scale > 0.0f ? k.block_arc_scale : k.block_scale_150 ? 150.0f : 300.0f;
     if (block) {
         // Its start: the picture 0 for 20 s after power-on, nothing else.
         if (s.powered_time < 20.0f) {
@@ -461,7 +462,12 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         const auto h = t / 3600, m = std::abs((t % 3600) / 60), sec = std::abs(t - 3600 * h - 60 * m);
         text(b[26], ascii(block ? "%02d:%02d:%02d" : "%02d.%02d.%02d", static_cast<int>(h), static_cast<int>(m), static_cast<int>(sec)));
     }
-    text(b[18], ascii("%0.1f", static_cast<double>(std::abs(in.acceleration))));
+    // With its sign (Brakes.dll showed it without: -0.2 read 0.2; testers
+    // 2026-11-26); -0.0 shown as 0.0.
+    {
+        const double a = std::round(static_cast<double>(in.acceleration) * 10.0) / 10.0;
+        text(b[18], ascii("%0.1f", a == 0.0 ? 0.0 : a));
+    }
     if ((k.setup & 1) && in.saut_coefficient >= 0.0f && in.working_cab) text(b[19], ascii("%0.2f", static_cast<double>(in.saut_coefficient)));
     else if (block) text(b[19], u"0.67");
     if (in.working_cab || block) {

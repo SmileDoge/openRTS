@@ -1023,13 +1023,23 @@ CloudShadow NativeSky::cloud_shadow() const noexcept {
     // pass), or before and read where it was drawn: the eye and the clouds
     // have moved on in the field since.
     const bool usable = impl.shadow_drawn || impl.shadow_due;
-    const float darkness = std::clamp(cloud_shadow_darkness(), 0.0f, 1.0f);
+    // An overcast sky (cover 0.85 .. 0.95: rain, snow, a storm) lets next to
+    // no sun through: its clouds take nearly all, not the setting's share
+    // (85 %: the 15 % left drew the window frames' shadows sharp on a cab's
+    // desk in the rain, testers 2026-11-26), and with the clouds' shadows
+    // off the cover itself dims the sun.
+    const float cover = std::clamp(impl.frame.clouds[0], 0.0f, 1.0f);
+    const float t = std::clamp((cover - 0.85f) / 0.1f, 0.0f, 1.0f);
+    const float overcast = t * t * (3.0f - 2.0f * t);
+    const float set = std::clamp(cloud_shadow_darkness(), 0.0f, 1.0f);
+    const float darkness = set + (0.97f - set) * (std::max)(overcast, 0.0f) * (set < 0.97f ? 1.0f : 0.0f);
     const float weight = usable && cloud_shadows() ? impl.shadow_strength : 0.0f;
-    const float strength = weight * darkness;
+    // Overcast, also between the clouds the map shows: the sun dimmed all over.
+    const float through = 1.0f - 0.95f * overcast;
+    const float strength = weight * darkness * through;
     // A low sun's way runs under kilometres of the layer: through its
     // clouds, as many as it covers, each taking `darkness` of it.
-    const float cover = std::clamp(impl.frame.clouds[0], 0.0f, 1.0f);
-    const float low = cloud_shadows() ? 1.0f - darkness * cover : 1.0f;
+    const float low = cloud_shadows() ? 1.0f - darkness * cover : 1.0f - 0.95f * overcast;
     const glm::dvec2 moved = impl.eye_field - impl.shadow_field;
     // The edge band: half of 1 / sqrt(sharpness) either side of a half let
     // through (sharpness 1: the whole range, 3: 0.21..0.79, 10: 0.34..0.66).
@@ -1039,7 +1049,7 @@ CloudShadow NativeSky::cloud_shadow() const noexcept {
                      impl.shadow_above},
             .sun = glm::vec4{impl.shadow_sun, strength},
             .edge = {0.5f - band, 0.5f + band},
-            .low_sun = (1.0f - weight) * low + weight};
+            .low_sun = (1.0f - weight) * low + weight * through};
 }
 
 float NativeSky::cloud_base() const noexcept {

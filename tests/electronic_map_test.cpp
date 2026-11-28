@@ -81,6 +81,7 @@ int probe(const std::filesystem::path& root, std::string spec) {
     if (!network) return 2;
     const auto database = formats::load_route_database(vfs, *route);
     const auto config = formats::load_signal_config(vfs, *route);
+    const auto probe_units = formats::rts_signal_units(network->database(), database);
     std::vector<simulation::MapSignal> signals;
     std::set<std::uint32_t> normal;
     const auto& db = network->database();
@@ -92,15 +93,20 @@ int probe(const std::filesystem::path& root, std::string spec) {
             if (item.kind != formats::TrackItemKind::signal) continue;
             const auto* type = config.find_type(item.name);
             if (!type || type->function != formats::SignalFunction::normal) continue;
+            if (entry.item < probe_units.size() && probe_units[entry.item] >= 0 && static_cast<std::size_t>(probe_units[entry.item]) < database.signal_units.size() && simulation::shunting_signal_name(database.signal_units[static_cast<std::size_t>(probe_units[entry.item])].name)) continue;
             signals.push_back({.object = entry.item, .node = n, .offset = entry.offset, .forward = item.signal_direction == 0});
             normal.insert(entry.item);
         }
     }
     const simulation::ElectronicMap map(*network, database, signals);
     const auto number = static_cast<std::uint32_t>(std::stoul(part[3]));
+    const auto item_unit = formats::rts_signal_units(db, database);
     const auto label = [&](const std::uint32_t object) {
         const auto* track = map.track_of(object);
-        return std::to_string(object) + (track ? " (" + track->station + " " + track->name + ")" : std::string());
+        std::string name;
+        if (object < item_unit.size() && item_unit[object] >= 0 && static_cast<std::size_t>(item_unit[object]) < database.signal_units.size())
+            name = " " + database.signal_units[static_cast<std::size_t>(item_unit[object])].name;
+        return std::to_string(object) + name + (track ? " (" + track->station + " " + track->name + ")" : std::string());
     };
     if (part[2] == "?") {
         for (const auto& track : map.tracks())
@@ -117,6 +123,8 @@ int probe(const std::filesystem::path& root, std::string spec) {
             std::uint32_t last = ~0u;
             bool was = false;
             double moved = 0.0;
+            double prev_turn = -1.0;
+            float prev_speed = 0.0f;
             for (int step = 0; step < 2400; ++step) {
                 const auto ahead = simulation::look_ahead(*network, t.node(), t.offset(), t.forward(), 5.0,
                                                           [](const formats::TrackItem& item) { return item.kind == formats::TrackItemKind::signal; });
@@ -127,6 +135,16 @@ int probe(const std::filesystem::path& root, std::string spec) {
                 }
                 const auto target = map.update(state, *network, t.node(), t.offset(), t.forward(), number, passed);
                 for (const auto p : passed) std::cout << "  passed " << label(p) << " at " << static_cast<int>(moved) << "\n";
+                // The map's way's switches off the straight (the КЛУБ's 40 km/h): printed as passed.
+                if (target.matched) {
+                    const auto w = map.way(*network, t.node(), t.offset(), t.forward(), number);
+                    const double first = w.turns.empty() ? -1.0 : w.turns.front().distance;
+                    if (prev_turn >= 0.0 && prev_turn <= 5.0 && (first < 0.0 || first > prev_turn))
+                        std::cout << "  switch off the straight at " << static_cast<int>(moved + prev_turn) << ", " << static_cast<int>(prev_speed * 3.6f + 0.5f)
+                                  << " km/h" << std::endl;
+                    prev_turn = first;
+                    prev_speed = w.turns.empty() ? 0.0f : w.turns.front().speed;
+                }
                 // A fifth part "from-to": every step there.
                 if (part.size() > 4) {
                     const auto dash = part[4].find('-');
@@ -206,6 +224,17 @@ int main(int argc, char* argv[]) {
     std::cout << "map: " << map.tracks().size() << " of " << station_tracks << " station tracks placed, " << signals.size()
               << " train signals\n";
     check(map.tracks().size() + 2 >= station_tracks, "the station tracks placed on the track");
+    // A switch's speed by its shape (GLOBAL tsection.dat): a 3° B point 40,
+    // 4.7° (482 m) 40, 5° (655 m) 80, 3.0° (1239 m) 120, a slip 25.
+    {
+        const auto& lib = network->sections();
+        const auto kmh = [&](const std::uint32_t shape) {
+            return static_cast<int>(simulation::switch_speed(lib.shape(shape), lib) * 3.6f + 0.5f);
+        };
+        check(kmh(38046) == 40 && kmh(21994) == 40 && kmh(70) == 80 && kmh(21500) == 120 && kmh(22022) == 25,
+              "switch speeds by shape: " + std::to_string(kmh(38046)) + " " + std::to_string(kmh(21994)) + " " + std::to_string(kmh(70)) + " "
+                  + std::to_string(kmh(21500)) + " " + std::to_string(kmh(22022)));
+    }
     check(simulation::ElectronicMap::track_number("1БП") == 1 && simulation::ElectronicMap::track_number("21") == 21
               && simulation::ElectronicMap::track_number("Н Албаши") == 0 && simulation::ElectronicMap::track_number("99") == 0,
           "the track numbers of the names");

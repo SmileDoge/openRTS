@@ -1,0 +1,24 @@
+# The ВЛ10 (DC only, WorksOnLineVoltages 2500-4000 V) under 25 kV AC with
+# openRTS's brakes: its compressor stands (testers 2026-11-23: it charged
+# the main reservoir). The pipe vented and charged six times draws the main
+# reservoir below the governor's cut-in (7.5 atm); it does not come back.
+#
+#   openrts-train-check <RTS root> --dll mdd_vl10u-053 mdd_VL10u-053A mdd_VL10u-053B --start on
+#       --brakes openrts --seconds 150 --script tests/data/vl10_compressor_ac.script
+# The ВЛ10's 395 is switch 0 (VI 0, I 6, II 5).
+0    voltage 25000 50
+1    switch 0 0
+6    switch 0 6
+14    switch 0 0
+19    switch 0 6
+27    switch 0 0
+32    switch 0 6
+40    switch 0 0
+45    switch 0 6
+53    switch 0 0
+58    switch 0 6
+66    switch 0 0
+71    switch 0 6
+79   switch 0 5
+79   expect mr < 7.5
+139  expect mr < 7.1          # no compressor: only the leaks and the pipe

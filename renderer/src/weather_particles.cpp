@@ -52,8 +52,12 @@ struct WeatherParticleRenderer::Impl {
 std::uint32_t WeatherParticleRenderer::count(const float amount, const bool snow) noexcept {
     // A blizzard (snow past 2) thickens fast: 3 is 300 000 flakes.
     const float a = std::clamp(amount, 0.0f, snow ? 3.0f : 2.0f);
-    const float n = (snow ? 40000.0f : 60000.0f) * a * (snow && a > 2.0f ? 1.0f + 1.5f * (a - 2.0f) : 1.0f);
-    return static_cast<std::uint32_t>(n);
+    float n = (snow ? 40000.0f : 60000.0f) * a * (snow && a > 2.0f ? 1.0f + 1.5f * (a - 2.0f) : 1.0f);
+    // The box grows with the reach: as many more as its volume (the
+    // density kept), at most 1.2 million.
+    const float wide = std::clamp(precipitation_reach(), 18.0f, 60.0f) / 18.0f;
+    n *= wide * wide * std::sqrt(wide);
+    return static_cast<std::uint32_t>((std::min)(n, 1200000.0f));
 }
 
 WeatherParticleRenderer::WeatherParticleRenderer(const WGPUDevice device, const WGPUTextureFormat target_format)
@@ -143,8 +147,9 @@ void WeatherParticleRenderer::render(const WGPURenderPassEncoder pass, const glm
     u.eye_vel[3] = projection[1][1];
     for (int k = 0; k < 3; ++k) u.light[k] = std::clamp(weather.light[k], 0.0f, 1.0f);
     u.light[3] = frame_linear() ? 1.0f : 0.0f;
-    u.params[0] = weather.snow ? 18.0f : 22.0f;
-    u.params[1] = weather.snow ? 10.0f : 14.0f;
+    const float wide = std::clamp(precipitation_reach(), 18.0f, 60.0f) / 18.0f;
+    u.params[0] = (weather.snow ? 18.0f : 22.0f) * wide;
+    u.params[1] = (weather.snow ? 10.0f : 14.0f) * std::sqrt(wide);
     // The viewport's aspect (projection's x over y scale, inverted).
     u.params[2] = projection[0][0] != 0.0f ? projection[1][1] / projection[0][0] : 1.0f;
     u.params[3] = weather.viewport_height;

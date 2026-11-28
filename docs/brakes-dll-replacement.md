@@ -314,7 +314,12 @@ scenarios run with Brakes.dll and with openRTS side by side
    (`simulation/src/saut.cpp`), part of the КЛУБ's step, for the КЛУБ's
    screens and the train's DLLs: its keys in the working cab, its modes
    (ГР, УК, КОМ, ПОД, К20, ОТП), its target and distance, its braking (the
-   DLLs cut traction), its displays (`SAUT_DBID`, `SAUT_DFID`), its sounds
+   DLLs cut traction; beyond Brakes.dll, 2026-11-26, on openRTS's brakes:
+   a service application as the real САУТ-ЦМ makes, the УР taken 0.5 atm
+   under the charging pressure at 0.3 atm/s once over its permitted speed,
+   0.3 atm deeper every 5 s it stays over, 1.5 at most, let go 3 km/h
+   under it; the train window's "САУТ: brakes over its speed", off as
+   Brakes.dll), its displays (`SAUT_DBID`, `SAUT_DFID`), its sounds
    (on the locomotive's SMS with `TRANS_SOUND`), its announcements from the
    track items (platforms, crossings and the routes' `%n` sidings:
    Новокузнецк, Чернышевск, Павловск, Кубань and Степи Приазовья have
@@ -356,10 +361,55 @@ scenarios run with Brakes.dll and with openRTS side by side
      openRTS's cab brakes (223 + 16 `.eng`: the 2ТЭ10М, 2ТЭ10Л, 2ТЭ10У,
      2ТЭ10В, 3ТЭ10М, 3ТЭ10У, ТЭП10Л, ВЛ80С, ВЛ82м). Of 2517, 263 keep
      Brakes.dll's brakes.
-   - Brakes.dll's still, each its own port: the 334 (`BR_334ID`, the ЭР9's,
-     ЭР9П's, ЭР9ПК's valve: 51 `.eng`) and the custom 292 (`BR_292CUSTOM`:
-     170, the same families); the ДТ116's `BR_AUTO` (5); the КПД-3, the
-     УКБМ, the МУ blocks (stage 4).
+   - 2026-11-24: the 334 (`BR_334ID`, the ЭР2's and ЭР9's valve: 51
+     `.eng`) is openRTS's (`CabBrakeControls::valve334`: 0 emergency, 1
+     braking, with the ЭПТ on the ЭПТ alone, 2 lap, 3 train holding the
+     ЭПТ, 4 and 5 train and charge, the УР to the charge at 0.5 atm/s), and
+     the custom 292 (`BR_292CUSTOM`: 170) no longer keeps Brakes.dll: on
+     openRTS's air the engine's distributor is a real one. Their trains have
+     no КЛУБ, so Brakes.dll is still loaded for its vigilance, ЭПК and ALSN;
+     the Train window says that it then keeps the train under 40 km/h out of
+     MDD Launcher.
+   - 2026-11-24: a car with no vigilance of Brakes.dll's at all (no
+     `PB_SETUP`, no РБ or ЭПК key: the ЭР9's and ЭР2's cars between the head
+     cars, their brakes only) no longer counts as "no КЛУБ": it needs
+     nothing more of Brakes.dll (until then one such car kept it loaded for
+     the whole train). Of the installation's cars with Brakes.dll, 2217 are
+     now all openRTS's (722 before), the ЭР9ПК's whole trains among them.
+   - 2026-11-24: a cab without the КЛУБ whose vigilance is the speed
+     recorder's (`SL_SPEED1`, openRTS's recorder) no longer keeps
+     Brakes.dll: the ALSN delay (`ALSN_DELAY`: a new aspect taken once it
+     has stood that long, Б after КЖ shown as К) is openRTS's then
+     (`LegacyConsist::RecorderCar`). Test
+     `openrts.content.recorder_vl10_no_brakes_dll`. Of the installation's
+     cars with Brakes.dll, 2648 are all openRTS's.
+   - 2026-11-24, the rest of the recorders (`simulation/recorder.hpp`):
+     - the КПД-3 (`SL_KPDSPD1`): its screen (the speed, in tenths under 10
+       km/h; the clock; the acceleration with its sign) or its two screens
+       and keys (the acceleration, the clock, the date, two numbers), its
+       lamps and light; the vigilance as the needle recorder's;
+     - the УКБМ (`SL_SETUP` 8) in place of the needle recorder's timer: a
+       check every 30 s (120 on the whitest aspects), the РБ in its window
+       passes it, missed the lamp and shorter checks until the РБ and the
+       РБС, too fast on К or КЖ the whistle at once; its power switch off
+       with the ALSN on, the same;
+     - the МУ blocks (`SL_SETUP` 0x10, no needle, no КПД-3): their own
+       vigilance (by 6, 10, 20, 60 km/h), the permitted speed by the aspect
+       (on КЖ falling after 700 m), the speed blinking near it, the clock,
+       the coordinate, the date, the self-test;
+     - САУТ or ТСКБМ alone (the ВЛ85's `PB_SETUP` 1, the 2ТЭ116's 4) run in
+       openRTS's КЛУБ's step without the КЛУБ;
+     - `BR_AUTO` (the ДТ116's) only keeps Brakes.dll from the slave
+       sections: openRTS's devices work each car's air anyway;
+     - a cab not driven (another section's, `LocoFlags` without 1) shows its
+       car's pipe, main reservoir and cylinder on its gauges, its УР at 0,
+       as Brakes.dll's there (2026-11-26; before, every needle stood at 0:
+       testers, the ВЛ10's second cab "воздух по нулям").
+
+     Every one of the installation's 3187 cars with Brakes.dll can run
+     without it ("Brakes.dll не загружать", from the next train). Tests:
+     `openrts.recorder` (the УКБМ, the КПД-3, the МУ), and runs without
+     Brakes.dll of the ЧМЭ3, ВЛ85, ДТ116, 2ТЭ10В, 2ТЭ116, 2ТЭ10М.
    - 2026-11-22: the ЭП2Д's ППТ (`BR_PPTID`, 26 `.eng`) is openRTS's: at
      0, with the ЭПТ on, its КПТ commands the ЭПТ by itself (VI, V, VЭ
      hold and apply, IV and III hold; PROBABLE, from Brakes.dll's `_Run`).
@@ -619,8 +669,22 @@ Brakes.dll's way above.
   track: the target is that entry (where the entries are not known, one
   train signal or none before the track). Not back in the station it was
   left in (Albashi's `2А` after its track 1 signal).
-- Not yet: the ALSN's frequency from the map, its limits, switches and
-  crossings, К280 / К282, manual tables for stations the database names
+- **Limits by the entered track** (testers 2026-11-26): in the ЭК mode the
+  limits ahead are the map's way's, not the train's: the way to the
+  nearest track of the number entered and 1.5 km on through it
+  (`ElectronicMap::way`), its speed posts, and 40 km/h at each switch it
+  takes off the straight (MainRoute): a facing one onto its other branch,
+  a trailing one from it (off a side track onto the main). The next limit
+  the КЛУБ gets is the most restrictive of them ahead (v² + 2·0.6·d), so
+  a train on track 2 with track 4 entered is brought down to 40 at the
+  switch from 2 to 4. A switch's 40 holds from the head over it; the
+  КЛУБ lifts it once the entered length has run past (0: at the head).
+  The route's data give a switch no speed of its own; it is taken from
+  its shape's side branch (tsection.dat, `switch_speed`): radius under
+  600 m 40, from 600 m 80 (1/18), from 1100 m 120 (1/22); a slip ("Slip"
+  in the shape's file: the parts of English switches) 25.
+  Without such a track ahead the train's own way's limits stand.
+- Not yet: the ALSN's frequency from the map, crossings, К280 / К282, manual tables for stations the database names
   otherwise. The log says each change (`КЛУБ ЭК, track 3: target НМ3 in
   1234 m`, `… без ЭК`).
 - Tests: `tests/electronic_map_test.cpp` (Kuban, content: Albashi's tracks

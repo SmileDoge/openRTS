@@ -55,6 +55,8 @@ public:
         }
     }
     [[nodiscard]] bool snow() const noexcept { return precipitation_ && precipitation_->snow; }
+    // This frame's particles, the beams that light them (set_lamps) among them.
+    [[nodiscard]] const renderer::WeatherParticles& weather() const noexcept { return weather_; }
     // The scene's lights: the nearest beams (cones: headlights, searchlights)
     // that reach the box of falling drops around `eye` light them.
     void set_lamps(const std::vector<renderer::SceneLight>& lights, const glm::vec3& eye);
@@ -90,7 +92,9 @@ struct ExhaustSource {
     float dispersion{};
     float mass = 1.0f;
     std::uint32_t colour = 0xCF656577u; // ARGB
-    core::VirtualPath texture;
+    float brightness = 1.0f;   // over the light (snow: whiter than smoke)
+    float life = 0.0f;         // seconds a puff lives, fading (0: RTS's smoke)
+    core::VirtualPath texture; // none: the round glow
 };
 
 class SmokeView {
@@ -119,6 +123,7 @@ private:
         float lift{};           // [17]
         glm::vec3 push{};       // [18..20]
         float head_start{};     // [5] with flag 8: sent part of a frame ago
+        float age{};            // seconds (life)
         bool started = false;
     };
     struct Emitter {
@@ -128,7 +133,10 @@ private:
         glm::vec3 direction{};
         glm::vec3 velocity{};
         float nozzle_size = 0.1f;
+        float brightness = 1.0f;
+        float life = 0.0f;
         std::uint32_t texture = 0;
+        bool textured = false;
         bool seen = false;
     };
 

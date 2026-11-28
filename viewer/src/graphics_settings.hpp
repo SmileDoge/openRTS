@@ -30,6 +30,11 @@ struct GraphicsSettings {
     std::uint32_t msaa = 4;
     bool experimental = false;  // launcher_experimental: the new renderer
     bool hdr = false;           // launcher_hdr
+    // HDR output to an HDR display (launcher_hdr_output; DirectX 12, Windows's
+    // HDR on): the paper white and the peak, nits (hdr_paper_white, hdr_peak).
+    bool hdr_output = false;
+    float hdr_paper_white = 200.0f;
+    float hdr_peak = 1000.0f;
     // HDR (the new renderer): tone_mode (0 none, 1 Khronos, 2 AgX, 3 ACES,
     // 4 Khronos by day and AgX by night, 5 ACES by day and AgX by night),
     // exposure, night_exposure, saturation.
@@ -53,7 +58,6 @@ struct GraphicsSettings {
     float light_range = 0.0f;       // m; 0: RTS's MaxLightDistance
     float headlight_reach = 1.0f;   // times the .eng's
     float night_ambient = 1.0f;     // the sky's light at night, a factor
-    bool light_fullbright = false;  // FullBright lit as ordinary surfaces
     bool lamp_own_model = true;     // a lamp throws no shadow of its own model
     // Sky and water (openRTS's own, not as in RTS).
     bool native_sky = true;
@@ -66,6 +70,10 @@ struct GraphicsSettings {
     // The world.
     bool forest_clearance = true;
     float forest_clearance_distance = 3.0f; // m
+    bool grass = true;           // openRTS's grass (docs/grass.md)
+    float grass_density = 1.0f;  // 0.25..2
+    float grass_reach = 45.0f;   // m, 20..120
+    float world_draw_distance = 1800.0f; // m, 500..4000 (world_draw_distance)
     bool signal_lights_real_size = true;
     // The models' night textures (TEXTURES\NIGHT, ESD_Alternative_Texture)
     // at night, as RTS; off: the day's, lit by the lamps (night_textures).

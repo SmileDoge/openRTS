@@ -73,6 +73,11 @@ Questions, discussion and bug reports: our
     handbrake, release valve, emergency valve, cargo information, and with
     the realistic air the distributor's switches (483: empty / medium /
     loaded and flat / mountain; the 292's plug К / Д / УВ);
+  - loading as in RTS (`docs/cargo.md`): Num3 on a pickup switches it,
+    bulk loaders pour into the cars under them (the pile grows, the car's
+    mass too), racks and trestles fill and empty, cranes open a "Load
+    cargo" window with containers and other cargo objects; openRTS's own
+    cargo kinds (ash, clay, wood chips, cast iron and more);
   - derailment as RTS does it (overturning in curves, running off the end
     of the track);
   - the body on its springs over the bogies: the track's errors under each
@@ -411,7 +416,8 @@ the Train window)
 | Arrows, Shift, End | walk, run, slower |
 | Num0 / `-` | open the window |
 | Num1 / `=` | lean out |
-| Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside) |
+| Num3 / the key left of `1` | the car menu at the coupling or bogie under the cursor (outside); on a pickup: off / ready / active |
+| Ctrl+Num3 / Alt + the key left of `1` | a pickup: drain, unload |
 | Num2 / Shift + the key left of `1` | the flashlight, as in RTS: a beam from the eyes along the view, 50 m |
 | Num4 / Shift+`-` | the time of day on the screen, as in RTS (shown anyway, with "x60", while time runs faster) |
 | Ctrl+Num5 / Ctrl + the key left of `1` | the tape, as in RTS: start it on the locomotive driven / stop it; the files go to `%LOCALAPPDATA%\openRTS\RTS_TAPES`, RTS's `lenta.xls` reads them; next to it openRTS's brake log `…_openrts.csv`: the valve's position, the УР, the ЭПТ, every car's pressures (`docs/tape.md`) |

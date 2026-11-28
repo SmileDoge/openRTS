@@ -1,6 +1,7 @@
 // Depth only (SceneEffects: the shadow cascades and the camera's pre-pass):
 // the instance's placement as the shading paths have it, the view-projection
-// of the pass by a dynamic offset; alpha-tested primitives cut out at 0.5.
+// of the pass by a dynamic offset; alpha-tested primitives cut out at 0.5,
+// blended ones at 0.9.
 // The camera's pass keeps the frame's portals as the main pass does
 // (fs_portal: GTAO and the light clusters see the next car's salon through
 // the doorway, not its end wall); the shadow passes draw every instance whole.
@@ -48,6 +49,9 @@ struct DepthOut {
     @location(0) uv: vec2<f32>,
     @location(1) world: vec3<f32>,
     @location(2) @interpolate(flat) portal: i32,
+    // Cut out under this alpha: 0.5 alpha-tested, 0.9 blended (nearly
+    // opaque only: a blended body is there, its glass not).
+    @location(3) @interpolate(flat) cut: f32,
 };
 
 fn through_portal(p: mat4x4<f32>, world: vec3<f32>) -> bool {
@@ -117,12 +121,15 @@ fn vs_depth(@location(0) position: vec3<f32>, @location(2) uv: vec2<f32>, @built
     out.uv = uv;
     out.world = world.xyz;
     out.portal = instance.portal;
+    // The drawing's cut-off (ModelRenderer: RTS's 0.3, a blended one's 0.9,
+    // a material's alpha_cutoff): a texel kept over it.
+    out.cut = draw.extent.w;
     return out;
 }
 
 @fragment
 fn fs_cutout(input: DepthOut) {
-    if (textureSample(source_texture, source_sampler, input.uv).a < 0.5) {
+    if (!(textureSample(source_texture, source_sampler, input.uv).a > input.cut)) {
         discard;
     }
 }
@@ -136,7 +143,7 @@ fn fs_portal(input: DepthOut) {
 
 @fragment
 fn fs_cutout_portal(input: DepthOut) {
-    if (!portal_keeps(input.portal, input.world) || textureSample(source_texture, source_sampler, input.uv).a < 0.5) {
+    if (!portal_keeps(input.portal, input.world) || !(textureSample(source_texture, source_sampler, input.uv).a > input.cut)) {
         discard;
     }
 }

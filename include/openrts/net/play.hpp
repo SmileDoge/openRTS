@@ -152,6 +152,28 @@ struct OpenrtsCarAction {
 };
 [[nodiscard]] Bytes encode_openrts_car_action(const OpenrtsCarAction& action);
 [[nodiscard]] std::optional<OpenrtsCarAction> decode_openrts_car_action(ByteView body);
+// 0x461C car_cargo with openRTS's own body (2026-11-26): the server reads
+// its first two fields (u32 train, u32 car), keeps the last of each car and
+// gives them to those who join (snapshot.hpp); then u8 'o', u8 version 1,
+// u32 n and n loads: u16 cargo (formats::CargoKind's code), text_u16
+// object id, i32 area, f32 volume m³, f32 mass kg, i32 count, f32 x 3 its
+// place, f32 x 3 its size (simulation::CarLoad). All the car's loads: they
+// replace what it had.
+struct OpenrtsCarCargo {
+    std::uint32_t train{}, car{};
+    struct Load {
+        std::uint16_t cargo{};
+        std::string object;
+        std::int32_t area{};
+        float volume{}, mass{};
+        std::int32_t count = 1;
+        std::array<float, 3> position{}, extent{};
+    };
+    std::vector<Load> loads;
+};
+[[nodiscard]] Bytes encode_openrts_car_cargo(const OpenrtsCarCargo& cargo);
+// nullopt: not openRTS's (RTS's own body) or broken.
+[[nodiscard]] std::optional<OpenrtsCarCargo> decode_openrts_car_cargo(ByteView body);
 [[nodiscard]] std::optional<TrainStatePart> decode_train_state(ByteView body);
 // 0x4617 car_light, as rts1.exe sends it: the receiver takes the radius,
 // colour and position too (0x4C3DE0).
@@ -469,6 +491,46 @@ struct ConsoleNext {
 [[nodiscard]] Bytes encode_console_next(const ConsoleNext& next);
 [[nodiscard]] std::optional<ConsoleNext> decode_console_next(ByteView body);
 
+// console_route: a route set on the console's map as the server's own map
+// sets it (docs/server.md, "Setting a route on the map"): its end, the
+// points to pass, the junctions' branches, from the rear, the order.
+// `kind`: preview (the way only), set, or fetch (the request the train's
+// route was set by, to edit it). The answer: console_route_reply.
+struct ConsoleRouteSpot {
+    std::uint32_t node{};
+    double offset{};
+};
+struct ConsoleRouteAsk {
+    enum class Kind : std::uint8_t { preview = 0, set = 1, fetch = 2 };
+    Kind kind = Kind::preview;
+    std::uint32_t train{};
+    bool rear_first = false;
+    bool shunting = false;
+    std::optional<ConsoleRouteSpot> end;
+    std::vector<ConsoleRouteSpot> via;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> branches; // junction node, branch
+};
+[[nodiscard]] Bytes encode_console_route_ask(const ConsoleRouteAsk& ask);
+[[nodiscard]] std::optional<ConsoleRouteAsk> decode_console_route_ask(ByteView body);
+// The way as spans of vector nodes in its travel order (a preview's, or
+// the route set), and for a fetch the request echoed in `request`.
+struct ConsoleRouteSpan {
+    std::uint32_t node{};
+    bool forward = true;
+    double from{}, to{};
+};
+struct ConsoleRouteAnswer {
+    ConsoleRouteAsk::Kind kind = ConsoleRouteAsk::Kind::preview;
+    std::uint32_t train{};
+    bool ok = false;
+    std::u16string message; // the error, or the result of setting it
+    std::vector<ConsoleRouteSpan> spans;
+    std::uint32_t junctions{};
+    std::optional<ConsoleRouteAsk> request; // a fetch's: none when the map did not set its route
+};
+[[nodiscard]] Bytes encode_console_route_answer(const ConsoleRouteAnswer& answer);
+[[nodiscard]] std::optional<ConsoleRouteAnswer> decode_console_route_answer(ByteView body);
+
 // 0x462D player_pos as the server relays it in play: the sender's id in
 // front, the 40 bytes after its first field, its name after (rts_server.exe
 // and openRTS's server alike). Who is where, for the players' list and
@@ -487,6 +549,27 @@ struct OtherPlayer {
 // (the server's answer; its login says rain, all RTS knows). Older readers
 // stop after the u16.
 constexpr std::uint16_t openrts_features = 1;
+// The server's answer with this feature (2026-11-26, the server's setting
+// "fast positions", on by default): its openRTS players send their trains'
+// motion (openrts_train_motion) 10 times a second, and draw the others'
+// from it a fifth of a second behind instead of the RTS position's 1.75 s.
+constexpr std::uint16_t openrts_feature_fast_positions = 2;
+
+// openrts_train_motion (0x45EE, openRTS's own): u32 train, u32 the sender's
+// clock (ms, wrapping), u32 TDB vector node, f32 offset, u8 direction (as
+// 0x4603: the rear end), f32 speed, f32 acceleration (m/s, m/s²: along the
+// train). Sent while it moves and once when it stops; the server relays it
+// to the other openRTS players.
+struct OpenrtsMotion {
+    std::uint32_t train{};
+    std::uint32_t sent_ms{};
+    std::uint32_t node{};
+    float offset{};
+    std::uint8_t direction{};
+    float speed{}, acceleration{};
+};
+[[nodiscard]] Bytes encode_openrts_motion(const OpenrtsMotion& motion);
+[[nodiscard]] std::optional<OpenrtsMotion> decode_openrts_motion(ByteView body);
 // The server's answer since 2026-11-21 then, when its game may be joined
 // from Discord: u8 1, the address for the others (text_u16; empty: the one
 // the player connected to), u16 the players in it, u16 its places (0: no

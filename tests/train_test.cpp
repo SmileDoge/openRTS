@@ -388,6 +388,60 @@ void test_save_restore(const Stock& stock, const simulation::BrakeModel model) {
     check(worst_air < 1e-3f, std::string("restored (") + name + "): its air the same");
 }
 
+// Each module saves its own block (cars as entities, step 4): "k<car>.<name>
+// <version>" and its keys under it. A save from before blocks still gives
+// the handles back; a block of another version, or another module's, is
+// left out and the module keeps its starting state.
+void test_module_blocks(const Stock& stock) {
+    using Handle = simulation::DriverHandles::BrakeHandle;
+    Run a(stock, {}, 1500.0);
+    a.driver->reverser = 1;
+    a.driver->brake = Handle::lap;
+    simulation::StateWriter saved;
+    a.train.save_state(saved);
+    const std::string text = saved.text();
+    std::size_t car = 0;
+    while (car < a.train.cars().size() && !a.train.module(car)) ++car;
+    const auto key = "k" + std::to_string(car) + ".keyboard";
+    check(text.find(key + " 1\n") != std::string::npos && text.find(key + ".handles ") != std::string::npos,
+          "a module's block: its name, version, keys");
+
+    const auto restored = [&](const std::string& with) {
+        Run b(stock, {}, 1500.0);
+        b.train.restore_state(simulation::StateReader(with));
+        return b.driver->brake == Handle::lap && b.driver->reverser == 1;
+    };
+    check(restored(text), "the block restores the handles");
+
+    std::string old, other;
+    std::istringstream lines(text);
+    for (std::string line; std::getline(lines, line);) {
+        if (line.rfind(key + " ", 0) == 0) {
+            other += key + " 7\n";
+            continue;
+        }
+        other += line + "\n";
+        if (line.rfind("modules ", 0) == 0) continue;
+        if (line.rfind(key + ".", 0) == 0) line.erase(key.size() - std::string("keyboard").size(), std::string("keyboard.").size());
+        old += line + "\n";
+    }
+    check(old.find(".keyboard") == std::string::npos && restored(old), "a save from before blocks: the handles back");
+    check(!restored(other), "a block of another version is left out");
+
+    struct Other final : simulation::CarModule {
+        [[nodiscard]] std::string_view name() const override { return "other"; }
+        void step(double, const simulation::EngineInputs&, simulation::EngineDemands&) override {}
+        void restore(const simulation::StateReader&, std::string_view) override { read = true; }
+        bool read = false;
+    };
+    Run c(stock, {}, 1500.0);
+    auto module = std::make_unique<Other>();
+    auto* seen = module.get();
+    c.train.set_module(car, std::move(module));
+    c.train.restore_state(simulation::StateReader(text));
+    check(!seen->read, "another module's block is not read");
+}
+
 // The brakes' condition (docs/train.md "Brake condition"): drawn per car
 // from the seed, worse with a lower condition, kept by a save; the pipe
 // left in III loses more the worse; the pressing follows the rigging and
@@ -991,6 +1045,147 @@ void test_contacts(const Stock& stock) {
               "an open coupler does not couple");
         check(ahead.cars().size() == 4 && behind.cars().size() == 4 && ahead.speed() > 0.3, "the trains push each other");
     }
+    // Couplers that lock at 0.1 m/s (the ЧС7's, the passenger cars'). A
+    // touch below it only pushes the overlap apart and the speeds stay
+    // (RTS 0x4FB8CC), so the engine pushing on couples once it closes at
+    // 0.1 m/s; the joint starts at its slack, not pressed by r0 (testers,
+    // 2026-11-26: a gentle touch never coupled, a harder one jerked hard).
+    {
+        auto text = wagon_text;
+        const std::string r0 = "r0 ( 0.1m 0.1m ) )";
+        text.replace(text.find(r0), r0.size(), r0 + " Velocity ( 0.1m/s )");
+        const auto locking = formats::parse_wagon(text);
+        check(locking.ok() && near(locking.couplings[0].velocity, 0.1, 1e-6), "the coupling Velocity read");
+        std::vector<simulation::CarSetup> cars(4, simulation::CarSetup{.definition = &locking});
+        auto network = simulation::straight_test_track(3000.0);
+        simulation::Train ahead(cars);
+        simulation::Train behind(std::vector<simulation::CarSetup>(2, simulation::CarSetup{.definition = &locking}));
+        check(ahead.place(*network, 1, 1500.0, true), "locking: ahead placed");
+        check(behind.place(*network, 1, ahead.rear_end()->offset() - 0.5, true), "locking: behind placed");
+        std::array<simulation::Train*, 2> trains{&ahead, &behind};
+        bool touched = false;
+        simulation::Train* coupled = nullptr;
+        double closing_at = 0.0;
+        for (int i = 0; i < 400 && !coupled; ++i) {
+            for (const auto& r : simulation::resolve_contacts(trains)) {
+                touched = true;
+                if (r.outcome == simulation::ContactOutcome::coupled) {
+                    coupled = r.survivor;
+                    closing_at = behind.cars().front().velocity;
+                }
+            }
+            if (coupled) break;
+            // 0.05 m/s till the touch, then 20 kN pushing on.
+            if (!touched) behind.add_velocity(0.05f - behind.cars().front().velocity);
+            else behind.add_velocity(static_cast<float>(20000.0 / behind.mass() * simulation::train_step));
+            ahead.step();
+            behind.step();
+        }
+        check(touched && coupled != nullptr, "a gentle touch, pushed on, couples");
+        check(closing_at >= 0.1 && closing_at < 0.2, "it couples at the coupling Velocity");
+        if (coupled) {
+            const auto& c = coupled->cars();
+            const auto joint = 3;
+            const double gap = c[joint].offset - c[joint + 1].offset - (c[joint].definition->length + c[joint + 1].definition->length) * 0.5 -
+                0.1;
+            check(gap > -0.02, "the joint starts at its slack, gap " + std::to_string(gap));
+        }
+    }
+}
+
+// Cars as entities, step 1 (docs/car-architecture.md): a train refers to its
+// cars by an ordered list of CarIds that moves with the cars: a cut in the
+// middle, the coupling back, a coupling with a train standing tail first and
+// a turn keep every car's id with its car, in order, its direction with it.
+void test_car_ids(const Stock& stock) {
+    using simulation::CarId;
+    simulation::CarRegistry registry;
+    // Cars with ids; the third flipped (its direction is the car's own).
+    // `count` cars: the engine and its wagons.
+    const auto made = [&](const std::size_t count, const std::size_t flipped = SIZE_MAX) {
+        auto setups = stock.cars(count - 1);
+        for (std::size_t i = 0; i < setups.size(); ++i) {
+            setups[i].id = registry.create();
+            setups[i].flipped = i == flipped;
+        }
+        return setups;
+    };
+    const auto flips = [](const simulation::Train& train) {
+        std::vector<bool> out;
+        for (const auto& car : train.cars()) out.push_back(car.flipped);
+        return out;
+    };
+    const auto ids_of = [](const std::vector<simulation::CarSetup>& setups) {
+        std::vector<CarId> out;
+        for (const auto& setup : setups) out.push_back(setup.id);
+        return out;
+    };
+    {
+        const auto setups = made(5, 2);
+        simulation::Train train(setups);
+        const auto ids = ids_of(setups);
+        check(train.car_ids() == ids, "ids: the train's cars by id, in the setup's order");
+        check(train.index_of(ids[3]) == std::optional<std::size_t>{3}, "ids: a car found by its id");
+        check(!train.index_of(CarId{}) && !train.index_of(registry.create()), "ids: no id, another car's: not in the train");
+        check(flips(train) == std::vector<bool>{false, false, true, false, false}, "ids: the flipped car");
+    }
+    // Uncoupling in the middle and coupling back.
+    {
+        auto network = simulation::straight_test_track(3000.0);
+        const auto setups = made(5, 2);
+        const auto ids = ids_of(setups);
+        simulation::Train train(setups);
+        check(train.place(*network, 1, 1500.0, true), "ids: placed");
+        const auto before = flips(train);
+        auto cut = train.uncouple(3, true, false);
+        check(cut != nullptr, "ids: cut before car 3");
+        if (cut) {
+            check(train.car_ids() == std::vector<CarId>(ids.begin(), ids.begin() + 3) &&
+                      cut->car_ids() == std::vector<CarId>(ids.begin() + 3, ids.end()),
+                  "ids: a cut in the middle: each part its cars' ids, in order");
+            check(flips(train) == std::vector<bool>(before.begin(), before.begin() + 3), "ids: the cut: the flipped car still flipped");
+            const double gap = train.rear_end()->offset() - cut->front_end()->offset();
+            check(train.couple(*cut, false, true, (std::max)(gap, 0.0)), "ids: coupled back");
+            check(train.car_ids() == ids && cut->car_ids().empty(), "ids: coupled back: the same ids in the same order");
+            check(flips(train) == before, "ids: coupled back: each car's direction as before");
+            // Its doors are the car's (kept by its id): wherever the car goes.
+            for (std::size_t i = 0; i < ids.size(); ++i) registry.components(ids[i]).doors.groups_open = static_cast<std::uint8_t>(i + 1);
+            auto part = train.uncouple(2, true, false);
+            bool kept = part != nullptr;
+            for (const auto* t : {&train, part.get()}) {
+                if (!t) continue;
+                for (std::size_t i = 0; i < t->cars().size(); ++i) {
+                    const auto at = std::find(ids.begin(), ids.end(), t->cars()[i].id) - ids.begin();
+                    kept = kept && registry.components(t->cars()[i].id).doors.groups_open == static_cast<std::uint8_t>(at + 1);
+                }
+            }
+            check(kept, "ids: each car's doors with it after a cut");
+        }
+    }
+    // A train standing tail first: it is coupled reversed, its cars turned.
+    {
+        auto network = simulation::straight_test_track(3000.0);
+        const auto a_setups = made(2);
+        const auto b_setups = made(3, 1);
+        const auto a_ids = ids_of(a_setups);
+        auto b_ids = ids_of(b_setups);
+        simulation::Train a(a_setups);
+        simulation::Train b(b_setups);
+        check(a.place(*network, 1, 1500.0, true), "ids: ahead placed");
+        check(b.place(*network, 1, a.rear_end()->offset() - 5.0, true), "ids: behind placed");
+        check(b.turn_around(), "ids: behind turned: tail first");
+        std::reverse(b_ids.begin(), b_ids.end());
+        check(b.car_ids() == b_ids, "ids: a turn reverses the order, the ids with their cars");
+        check(flips(b) == std::vector<bool>{true, false, true}, "ids: a turn turns every car");
+        // Its rear (its old front) faces the ahead train's rear.
+        const double gap = a.rear_end()->offset() - b.rear_end()->offset();
+        check(a.couple(b, false, false, (std::max)(std::abs(gap), 0.0)), "ids: coupled with the train tail first");
+        auto expected = a_ids;
+        expected.insert(expected.end(), b_ids.rbegin(), b_ids.rend());
+        check(a.car_ids() == expected, "ids: coupled tail first: its cars reversed behind, each its id");
+        // Behind ahead's cars, its cars turned back as they were placed.
+        check(flips(a) == std::vector<bool>{false, false, false, true, false}, "ids: coupled tail first: each car's direction its own");
+    }
 }
 
 } // namespace
@@ -1216,12 +1411,13 @@ void test_realistic_air(const Stock& stock) {
         check(c.cars()[1].ep_fill == 1.0f, "1 atm/s until drawn");
     }
     {
-        struct RtsValve final : simulation::LocomotiveController {
+        struct RtsValve final : simulation::CarModule {
+            [[nodiscard]] std::string_view name() const override { return "test"; }
             void step(double, const simulation::EngineInputs&, simulation::EngineDemands&) override {}
             [[nodiscard]] bool rts_brakes() const override { return true; }
         };
         Run r(stock, settings, 1000.0);
-        r.train.set_controller(0, std::make_unique<RtsValve>());
+        r.train.set_module(0, std::make_unique<RtsValve>());
         check(r.train.brake_model() == simulation::BrakeModel::rts, "a legacy valve keeps the RTS model");
     }
     // The wagons' distributor in Luau (ORTSBrakeDistributor,
@@ -1416,7 +1612,8 @@ void test_broken_and_sand(const Stock& stock) {
 // force against mass x 10 x Adheasion[1], x Adheasion[0] after a slip; by
 // motor when the .eng names their axles.
 void test_wheel_slip(const Stock& stock) {
-    struct Puller final : simulation::LocomotiveController {
+    struct Puller final : simulation::CarModule {
+        [[nodiscard]] std::string_view name() const override { return "test"; }
         float force = 0.0f;
         std::array<float, 8> motors{};
         std::uint8_t count = 0;
@@ -1434,7 +1631,7 @@ void test_wheel_slip(const Stock& stock) {
         check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
         auto made = std::make_unique<Puller>();
         auto* p = made.get();
-        t.set_controller(0, std::move(made));
+        t.set_module(0, std::move(made));
         p->force = 350000.0f;
         t.step();
         check(t.cars()[0].wheelslip == 15 && t.cars()[0].force == 0.0f, "over the adhesion it slips (Wheelslip 15) and pulls nothing");
@@ -1458,7 +1655,7 @@ void test_wheel_slip(const Stock& stock) {
         check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
         auto made = std::make_unique<Puller>();
         auto* p = made.get();
-        t.set_controller(0, std::move(made));
+        t.set_module(0, std::move(made));
         p->force = 200000.0f;
         p->motors = {170000.0f, 30000.0f};
         p->count = 2;
@@ -1471,6 +1668,29 @@ void test_wheel_slip(const Stock& stock) {
         p->force = 900000.0f;
         t.step();
         check(t.cars()[0].wheelslip == 0, "motors with no force of their own: no slip (RTS)");
+    }
+    {
+        // openRTS's adhesion: a DLL that leaves its motors' forces at 0 (the
+        // ЭД4М's) has its force over the axles evenly, and they slip
+        // (testers 2026-11-23: every axle at 0 %, never a slip).
+        Stock motors = stock;
+        motors.engine.engine->num_engines = 4;
+        motors.engine.engine->num_axles = 4;
+        motors.engine.engine->engine_axles = {{0}, {1}, {2}, {3}};
+        simulation::Train t(motors.cars(0), {.rails = simulation::RailCondition::dry});
+        check(t.place(*network, 1, 500.0, true, &error), "placed: " + error);
+        auto made = std::make_unique<Puller>();
+        auto* p = made.get();
+        t.set_module(0, std::move(made));
+        p->count = 4;
+        p->force = 100000.0f;
+        t.step();
+        const auto& car = t.cars()[0];
+        check(car.axles == 4 && car.slip_ratio[0] > 0.2f && car.slip_ratio[3] > 0.2f && car.wheelslip == 0,
+              "motors at 0, the force evenly: each axle's share of its grip shown: " + std::to_string(car.slip_ratio[0]));
+        p->force = 900000.0f;
+        t.step();
+        check(t.cars()[0].wheelslip != 0, "motors at 0, over the adhesion: the axles slip");
     }
     {
         // The RTS air: a brake far over the adhesion stands the wheels.
@@ -1718,6 +1938,55 @@ Train ( TrainCfg ( "c"
               "the rules leave a 2ТЭ10УТ (passenger) as its file gives it, no 418");
         check(formats::set_override_sensor418(formats::set_override_sensor418("", false), std::nullopt).empty(),
               "ORTSBrakeSensor418 taken out again: no companion left");
+        // The lamps' editor: a car's lights kept in its companion, over the
+        // file's (Lights and RTSLights), its other entries kept.
+        {
+            formats::LightDefinition head;
+            head.type = 1;
+            head.headlight = 3;
+            head.unit = 2;
+            head.fade_in = 0.5f;
+            head.attenuation = {2.0f, 0.2f, 0.7f};
+            head.spot_exponent = 0.5f * 128.0f;
+            head.candela = 200000.0f;
+            head.kelvin = 4500.0f;
+            head.name = "Прожектор Левый";
+            head.states.push_back({.colour = 0xFFFFF0E0u, .position = {0.3f, 2.1f, 9.4f}, .azimuth = {0.0f, 1.5f, 0.0f},
+                                   .elevation = {2.0f, 0.0f, 0.0f}, .radius = 450.0f, .angle = 6.5f, .source_radius = 0.2f});
+            formats::LightDefinition glow;
+            glow.texture = "Common.Snd/lamp.ace";
+            glow.states.push_back({.colour = 0xC0FFFFFFu, .position = {-0.3f, 2.1f, 9.5f}, .radius = 0.25f});
+            const std::vector<formats::LightDefinition> lights{head, formats::LightDefinition{}, glow};
+            const auto companion = formats::set_override_lights(formats::set_override_sensor418("", true), lights);
+            const auto folder = set / "lamps";
+            std::filesystem::create_directories(folder);
+            auto lamp_eng = eng;
+            lamp_eng.replace(lamp_eng.find(plain), plain.size(),
+                             plain + " Lights ( 1 Light ( Type ( 0 ) States ( 1 State ( Position ( 0 1 0 ) Radius ( 1 ) ) ) ) )\n"
+                                     " RTSLights ( 1 RTSLight ( Type ( 0 ) States ( 1 State ( Position ( 0 2 0 ) Radius ( 1 ) ) ) ) )\n");
+            std::ofstream(folder / "lamps.eng", std::ios::binary) << lamp_eng;
+            std::ofstream(folder / "lamps.eng.openrts", std::ios::binary) << companion;
+            core::Vfs lamp_vfs;
+            lamp_vfs.mount_directory(work);
+            lamp_vfs.build_index();
+            const auto loaded = formats::load_wagon(lamp_vfs, "lamps", "lamps", true);
+            const auto& l = loaded.lights;
+            const bool same = l.size() == 3 && l[0].type == 1 && l[0].headlight == 3 && l[0].unit == 2 && l[0].fade_in == 0.5f
+                           && l[0].attenuation == head.attenuation && l[0].spot_exponent == head.spot_exponent && l[0].states.size() == 1
+                           && l[0].candela == 200000.0f && l[0].kelvin == 4500.0f && l[0].lumens == 0.0f
+                           && l[0].name == "Прожектор Левый" && l[2].name.empty()
+                           && l[0].states[0].position == head.states[0].position && l[0].states[0].azimuth == head.states[0].azimuth
+                           && l[0].states[0].elevation == head.states[0].elevation && l[0].states[0].radius == 450.0f
+                           && l[0].states[0].angle == 6.5f && l[0].states[0].colour == 0xFFFFF0E0u && l[1].states.empty()
+                           && core::fold_case(l[2].texture) == "common.snd/lamp.ace" && l[2].states.size() == 1
+                           && l[2].states[0].colour == 0xC0FFFFFFu;
+            check(loaded.ok() && same, "a car's lights from its companion, in place of its file's (RTSLights too)");
+            check(loaded.brakes.sensor418 == true, "the companion's other entries kept beside the lights");
+            const auto again = formats::set_override_lights(companion, lights);
+            check(again == companion, "the lights written over the same: the companion unchanged");
+            check(formats::set_override_lights(formats::set_override_lights("", lights), std::nullopt).empty(),
+                  "the lights taken out again: no companion left");
+        }
         std::filesystem::remove_all(work);
     }
     const auto shod = formats::parse_consist(R"(SIMISA@@@@@@@@@@JINX0D0t______
@@ -1785,6 +2054,7 @@ int main() {
     test_travel_after_stop(stock);
     test_save_restore(stock, simulation::BrakeModel::rts);
     test_save_restore(stock, simulation::BrakeModel::realistic);
+    test_module_blocks(stock);
     test_rail_joints(stock);
     test_slide_off(stock);
     test_overturn(stock);
@@ -1794,6 +2064,7 @@ int main() {
     test_adhesion(stock);
     test_uncouple(stock);
     test_contacts(stock);
+    test_car_ids(stock);
     test_ept();
     test_realistic_air(stock);
     test_brake_condition(stock);

@@ -1,5 +1,6 @@
 #include <openrts/simulation/speed_limits.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <numbers>
 
@@ -104,6 +105,18 @@ std::vector<std::pair<float, double>> SpeedLimits::limits_ahead(const Train& tra
         if (result.size() >= count) break;
     }
     return result;
+}
+
+void SpeedLimits::limits_on(const std::uint32_t node, const double entry, const double exit, const bool forward, const double at,
+                            const TrainCategory category, std::vector<std::pair<float, double>>& out) const {
+    std::vector<std::pair<float, double>> found;
+    for (const auto& on : posts_) {
+        if (on.node != node || !applies(on, forward, category)) continue;
+        const bool inside = forward ? on.offset > entry && on.offset <= exit : on.offset < entry && on.offset >= exit;
+        if (inside) found.emplace_back(speed_of(on), at + std::abs(on.offset - entry));
+    }
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.second < b.second; });
+    out.insert(out.end(), found.begin(), found.end());
 }
 
 std::optional<double> SpeedLimits::ordinate(const Train& train) const {

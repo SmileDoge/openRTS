@@ -1,6 +1,7 @@
 #include <openrts/audio/sound_instance.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <limits>
@@ -53,6 +54,12 @@ struct SoundInstance::Stream {
         std::uint64_t start_frame = 0; // where a loop began in its clip
         std::string file;              // for the trace
         bool region = false;           // looping its clip's loop region (StartLoopRelease with cue points)
+        // A PlayOneShot of several files selected in order (RTS 0x4A8C00,
+        // 0x4A7C64): its files one after another, the stream busy till the
+        // last has played; the action and the next file, the voice's space.
+        const formats::SoundAction* chain = nullptr;
+        std::size_t next_file = 0;
+        VoiceSpace space = VoiceSpace::flat;
 
         // Fade factor at the current age; 0 once a fade-out has ended.
         [[nodiscard]] float fade() const {
@@ -69,7 +76,10 @@ struct SoundInstance::Stream {
     std::vector<std::size_t> sequence; // next file of sequential selections, per trigger
     Voice loop;
     std::vector<Voice> one_shots;
-    float volume = 1.0f; // SetStreamVolume
+    // The stream's volume (RTS stream state +36): its Volume at the start,
+    // replaced by SetStreamVolume and by a random trigger's Volume_Min_Max
+    // (0x4A8284, 0x4A7C64), times the curve (0x4A78A0).
+    float volume = 1.0f;
     // The trigger whose StartLoop / StartLoopRelease is this stream's loop
     // (RTS: the stream state's current trigger and its flag bit 0), and,
     // after a deactivation, the frame to resume the loop at.
@@ -161,7 +171,17 @@ void SoundInstance::stop(VoiceSink& sink) {
         if (stream.loop.id && stream.current && sink.playing(stream.loop.id) && stream.loop.clip &&
             stream.loop.clip->frames > 0) {
             const auto played = static_cast<std::uint64_t>(stream.loop.age * static_cast<float>(stream.loop.clip->sample_rate));
-            stream.resume_frame = (stream.loop.start_frame + played) % stream.loop.clip->frames;
+            const auto& clip = *stream.loop.clip;
+            const std::uint64_t at = stream.loop.start_frame + played;
+            // A StartLoopRelease past its start goes round its loop region,
+            // not the whole file: taken round the file it came back in its
+            // start part, which played again when the group came on (the
+            // ChS7's fans starting anew on coming back into the cab from
+            // the outside view, testers 2026-11-23).
+            if (stream.loop.region && clip.has_loop() && at >= clip.loop_end)
+                stream.resume_frame = clip.loop_start + (at - clip.loop_start) % (clip.loop_end - clip.loop_start);
+            else
+                stream.resume_frame = at % clip.frames;
         } else {
             stream.current.reset();
         }
@@ -176,15 +196,30 @@ void SoundInstance::stop(VoiceSink& sink) {
 
 void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     active_ = true;
+    activating_ = true;
+    activated_at_ = clock_;
+    struct Done {
+        bool& flag;
+        ~Done() { flag = false; }
+    } done{activating_};
     if (!trace_.empty()) note(SIZE_MAX, activated_once_ ? "group on again" : "group on");
+    // openRTS (RTS 0x4A9BA8 waits a random trigger's minimum delay again,
+    // its first activation a whole delay): a random trigger comes in part
+    // of its way through a delay, as if the group had played all along. A
+    // wagon's run is random one-shots every 1 to 5 s
+    // (evfr_tanker.sms): the cars near a camera put at the train's end
+    // (F3) were silent a second or more (2026-11-28).
+    const auto mid_delay = [&](const formats::SoundTrigger& trigger) {
+        std::uniform_real_distribution<float> pick(0.0f, (std::max)(trigger.minimum, trigger.maximum));
+        return pick(random_);
+    };
     if (activated_once_) {
-        // Again (RTS 0x4A9BA8): random triggers wait their minimum delay, the
-        // loops that played when the group went off start where they were;
-        // trigger and stream states stay as they were.
+        // Again: the loops that played when the group went off start where
+        // they were; trigger and stream states stay as they were.
         for (auto& stream : streams_) {
             const auto& triggers = stream.definition->triggers;
             for (std::size_t i = 0; i < triggers.size(); ++i) {
-                if (triggers[i].kind == SoundTriggerKind::random) stream.countdown[i] = triggers[i].minimum;
+                if (triggers[i].kind == SoundTriggerKind::random) stream.countdown[i] = mid_delay(triggers[i]);
             }
         }
         catch_up(inputs, sink);
@@ -206,11 +241,15 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     for (auto& stream : streams_) {
         std::fill(stream.enabled.begin(), stream.enabled.end(), true);
         stream.running = true;
-        stream.volume = 1.0f;
+        stream.volume = stream.definition->volume;
         const auto& triggers = stream.definition->triggers;
         for (std::size_t i = 0; i < triggers.size(); ++i) {
-            std::uniform_real_distribution<float> pick(triggers[i].minimum, (std::max)(triggers[i].minimum, triggers[i].maximum));
-            stream.countdown[i] = pick(random_);
+            if (triggers[i].kind == SoundTriggerKind::random) {
+                stream.countdown[i] = mid_delay(triggers[i]);
+            } else {
+                std::uniform_real_distribution<float> pick(triggers[i].minimum, (std::max)(triggers[i].minimum, triggers[i].maximum));
+                stream.countdown[i] = pick(random_);
+            }
         }
     }
     for (auto& stream : streams_) {
@@ -249,11 +288,14 @@ void SoundInstance::catch_up(const SoundInputs& inputs, VoiceSink& sink) {
     if (incoming.empty() && posted_.empty()) return;
     if (!trace_.empty()) note(SIZE_MAX, std::to_string(incoming.size()) + " codes queued while off: their states only");
     catching_up_ = true;
-    // PostTrigger codes they make follow, a few rounds at most.
+    // PostTrigger codes they make follow, a few rounds at most. The queued
+    // ones went through the pairs already (update_streams).
     for (int round = 0; round < 8 && (!incoming.empty() || !posted_.empty()); ++round) {
-        incoming.insert(incoming.end(), posted_.begin(), posted_.end());
+        auto codes = round == 0 ? std::move(incoming) : std::vector<std::uint32_t>{};
+        incoming.clear();
+        const auto posted = pass_pairs(posted_);
         posted_.clear();
-        const auto codes = pass_pairs(incoming);
+        codes.insert(codes.end(), posted.begin(), posted.end());
         passed_.insert(passed_.end(), codes.begin(), codes.end());
         run_codes(codes, inputs, sink);
         incoming.clear();
@@ -297,13 +339,15 @@ std::vector<std::uint32_t> SoundInstance::pass_pairs(const std::vector<std::uint
 
 void SoundInstance::run_codes(const std::vector<std::uint32_t>& codes, const SoundInputs& inputs, VoiceSink& sink) {
     if (codes.empty()) return;
-    for (auto& stream : streams_) {
-        if (!stream.running) continue;
-        const auto& triggers = stream.definition->triggers;
-        for (std::size_t i = 0; i < triggers.size(); ++i) {
-            if (!stream.enabled[i] || triggers[i].kind != SoundTriggerKind::discrete) continue;
-            for (const auto code : codes) {
-                if (code == triggers[i].code) fire(stream, i, 1.0f, inputs, sink);
+    // In the codes' order (RTS runs its queue so): a fan's Off then On left
+    // it off when its Off trigger came after its On in the stream.
+    for (const auto code : codes) {
+        for (auto& stream : streams_) {
+            if (!stream.running) continue;
+            const auto& triggers = stream.definition->triggers;
+            for (std::size_t i = 0; i < triggers.size(); ++i) {
+                if (stream.enabled[i] && triggers[i].kind == SoundTriggerKind::discrete && code == triggers[i].code)
+                    fire(stream, i, 1.0f, inputs, sink);
             }
         }
     }
@@ -311,10 +355,12 @@ void SoundInstance::run_codes(const std::vector<std::uint32_t>& codes, const Sou
 
 void SoundInstance::note(const std::size_t stream, const std::string& what) const {
     if (trace_.empty()) return;
+    // With the wall clock (steady), to line up with other traces.
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (stream == SIZE_MAX) {
-        std::fprintf(stderr, "[sound %8.2f] %s: %s\n", clock_, trace_.c_str(), what.c_str());
+        std::fprintf(stderr, "[sound %8.2f wall %.3f] %s: %s\n", clock_, wall, trace_.c_str(), what.c_str());
     } else {
-        std::fprintf(stderr, "[sound %8.2f] %s stream %zu: %s\n", clock_, trace_.c_str(), stream + 1, what.c_str());
+        std::fprintf(stderr, "[sound %8.2f wall %.3f] %s stream %zu: %s\n", clock_, wall, trace_.c_str(), stream + 1, what.c_str());
     }
 }
 
@@ -342,7 +388,11 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
     const auto start = [&](const formats::SoundAction& action, const VoicePlayback playback) -> Stream::Voice {
         if (action.files.empty()) return {};
         std::size_t choice = 0;
-        if (action.selection == formats::SoundSelection::sequential) {
+        if (action.selection == formats::SoundSelection::sequential && playback == VoicePlayback::once) {
+            // RTS (0x4A8C00 case 2): a one-shot in order starts at its first
+            // file; the others follow it (update_streams).
+            choice = 0;
+        } else if (action.selection == formats::SoundSelection::sequential) {
             choice = stream.sequence[index]++ % action.files.size();
         } else {
             choice = std::uniform_int_distribution<std::size_t>(0, action.files.size() - 1)(random_);
@@ -358,6 +408,27 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
         } else if (playback == VoicePlayback::loop && random_loop_phase_ && clip->frames > 1) {
             start_frame = std::uniform_int_distribution<std::uint64_t>(0, clip->frames - 1)(random_);
             sink.seek(id, start_frame);
+        } else if (playback == VoicePlayback::loop_region && random_loop_phase_ && clip->has_loop()
+                   && (activating_ || clock_ - activated_at_ < 1.0f)) {
+            // A loop with a region found going on when the group comes on,
+            // or in its first second (a DLL's variables start it a frame or
+            // two later): the train placed with its engines running, the
+            // camera come near. Somewhere in its region, past its start. The 2ТЭ116's
+            // two sections' x-diesel.wav, started in one frame at frame 0,
+            // played in step and, their revolutions a little apart, swept
+            // like a flanger (testers 2026-11-28).
+            start_frame = std::uniform_int_distribution<std::uint64_t>(clip->loop_start, clip->loop_end - 1)(random_);
+            sink.seek(id, start_frame);
+        } else if (playback == VoicePlayback::loop_region && random_loop_phase_ && clip->has_loop() && clip->sample_rate > 0) {
+            // Started by its trigger (an engine started): its attack, from a
+            // point up to a quarter of a second in (not past the region's
+            // start), so two sections started in one frame do not play in
+            // step (the flanger above).
+            const auto most = (std::min)(clip->loop_start, static_cast<std::uint64_t>(clip->sample_rate / 4));
+            if (most > 0) {
+                start_frame = std::uniform_int_distribution<std::uint64_t>(0, most)(random_);
+                sink.seek(id, start_frame);
+            }
         }
         sink.set(id, 0.0f, 1.0f, inputs.position); // real values follow in this update
         const bool region = playback == VoicePlayback::loop_region && clip->has_loop();
@@ -413,6 +484,14 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             stop_all();
             if (auto voice = start(action, VoicePlayback::once); voice.id) {
                 if (!trace_.empty()) note(here, "one-shot " + voice.file);
+                // Several files in order: one after another (the САВПЭ's
+                // "next stop", the station, "the doors are closing"; until
+                // 2026-11-28 one a trigger: the names were lost, testers).
+                if (action.selection == formats::SoundSelection::sequential && action.files.size() > 1) {
+                    voice.chain = &action;
+                    voice.next_file = 1;
+                    voice.space = space;
+                }
                 stream.one_shots.push_back(std::move(voice));
             }
             break;
@@ -428,7 +507,7 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             stream.loop = start(action, action.kind == SoundActionKind::start_loop ? VoicePlayback::loop
                                                                                     : VoicePlayback::loop_region);
             stream.current = index;
-            if (!trace_.empty()) note(here, "loop " + stream.loop.file + (stream.loop.region ? " (region)" : ""));
+            if (!trace_.empty()) note(here, "loop " + stream.loop.file + (stream.loop.region ? " (region)" : "") + (stream.loop.start_frame ? " from frame " + std::to_string(stream.loop.start_frame) : std::string{}));
             break;
         case SoundActionKind::release_loop_release:
         case SoundActionKind::release_loop_release_with_jump: {
@@ -436,8 +515,21 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             Stream::Voice* voice = stream.loop.id ? &stream.loop : nullptr;
             for (auto& v : stream.one_shots)
                 if (!voice && sink.playing(v.id)) voice = &v;
-            if (!voice || !sink.playing(voice->id)) {
+            if (!voice) {
                 if (!trace_.empty()) note(here, "release: nothing plays");
+                break;
+            }
+            if (!sink.playing(voice->id)) {
+                // A loop not heard now (still starting, or its voice taken
+                // for a while) is let go all the same: left, it played on
+                // till its key was pressed again (testers 2026-11-26: the
+                // whistle and the horn pressed together stuck on).
+                stream.current.reset();
+                if (voice == &stream.loop && stream.loop.id) {
+                    sink.stop(stream.loop.id);
+                    stream.loop = {};
+                }
+                if (!trace_.empty()) note(here, "release: nothing heard, the loop stopped");
                 break;
             }
             stream.current.reset();
@@ -589,15 +681,27 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
         // updates, restarting its loops. RTS's runtime test is not traced;
         // its sounds do not stutter there (PROBABLE).
         if (!camera || (distances && (distance > activate_within || distance > deactivate_beyond))) {
-            // Codes wait in the queue (RTS: 96 entries) for the next activation.
-            queued_.insert(queued_.end(), inputs.discrete.begin(), inputs.discrete.end());
-            queued_.insert(queued_.end(), posted_.begin(), posted_.end());
+            // Codes wait in the queue (RTS: 96 entries) for the next
+            // activation, through the trigger pairs first: a DLL posting its
+            // pairs' On codes every step (the ВЛ60ПК's fans, 200..211) filled
+            // the queue with repeats in seconds, and a fan started in the cab
+            // was gone from it when the engineer stepped out (testers
+            // 2026-11-25: no fans outside after turning them off and on).
+            std::vector<std::uint32_t> incoming(inputs.discrete.begin(), inputs.discrete.end());
+            incoming.insert(incoming.end(), posted_.begin(), posted_.end());
             posted_.clear();
+            const auto kept = pass_pairs(incoming);
+            queued_.insert(queued_.end(), kept.begin(), kept.end());
             if (queued_.size() > 96) queued_.erase(queued_.begin(), queued_.end() - 96);
             return;
         }
         activate(inputs, sink);
-    } else if (camera_deactivates || (distances && distance > deactivate_beyond)) {
+    // openRTS: an active group whose deactivation distance is not beyond
+    // its activation one goes off a little past it (5 %, at least 2 m). The ЭР9П's motor cars (50 / 50 m) stood
+    // at the edge: their TED came and went every few frames as the camera
+    // swayed (testers 2026-11-24). RTS tests the same distance every frame
+    // (0x44AB7C) without a margin.
+    } else if (camera_deactivates || (distances && distance > deactivate_beyond + (deactivate_beyond <= activate_within ? (std::max)(2.0f, 0.05f * deactivate_beyond) : 0.0f))) {
         if (!trace_.empty()) {
             char text[96];
             std::snprintf(text, sizeof text, "group off (%s, distance %.1f m)", camera_deactivates ? "camera" : "distance", distance);
@@ -677,8 +781,19 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
                 // the camera appears next to starts at once. Other variables
                 // start from their current value (no spurious one-shots).
                 const bool from_outside = !has_previous_ && trigger.variable == SoundVariable::distance;
+                // Speed the same way from standing: a group that comes on with
+                // the train already running (the engineer into the cab on the
+                // move, the second section's cab) starts the loops its
+                // Speed_Inc_Past triggers would have started, not its
+                // one-shots (testers 2026-11-23: the ChS7's 3СЛ-2М, Speed_Inc_Past
+                // 1.38 StartLoop, stayed silent on the move).
+                const bool from_standing = !has_previous_ && trigger.variable == SoundVariable::speed && trigger.increase &&
+                                           std::none_of(trigger.actions.begin(), trigger.actions.end(), [](const formats::SoundAction& a) {
+                                               return a.kind == SoundActionKind::play_one_shot;
+                                           });
                 const auto previous = from_outside ? (trigger.increase ? -std::numeric_limits<float>::infinity()
                                                                        : std::numeric_limits<float>::infinity())
+                    : from_standing ? 0.0f
                     : has_previous_ ? previous_[index]
                                     : current;
                 const bool crossed = trigger.increase ? previous < trigger.threshold && current >= trigger.threshold
@@ -693,7 +808,8 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
                 stream.countdown[i] = (std::max)(pick(random_), 0.05f);
                 std::uniform_real_distribution<float> volume(trigger.volume_minimum,
                                                              (std::max)(trigger.volume_minimum, trigger.volume_maximum));
-                fire(stream, i, volume(random_), inputs, sink);
+                stream.volume = volume(random_);
+                fire(stream, i, 1.0f, inputs, sink);
                 break;
             }
             }
@@ -709,7 +825,7 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             return curve.control == SoundVariable::unknown ? 0.0f
                                                            : inputs.variables[static_cast<std::size_t>(curve.control)];
         };
-        float volume = group_->volume * definition.volume * stream.volume * inputs.gain;
+        float volume = group_->volume * stream.volume * inputs.gain;
         if (definition.volume_curve) volume *= evaluate_curve(*definition.volume_curve, curve_input(*definition.volume_curve));
         // The head out of a window silences the streams not allowed there.
         if (inputs.window && !definition.allow_on_window_camera) volume = 0.0f;
@@ -754,6 +870,26 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             } else {
                 if (!trace_.empty()) note(static_cast<std::size_t>(&stream - streams_.data()), "loop " + stream.loop.file + " ended");
                 stream.loop = {};
+            }
+        }
+        // A one-shot's next file in order once it has played (RTS
+        // 0x4A7C64): the stream stays busy; a file that is missing ends it.
+        for (auto& voice : stream.one_shots) {
+            if (!voice.chain || voice.released >= 0.0f || sink.playing(voice.id)) continue;
+            while (voice.next_file < voice.chain->files.size()) {
+                const auto& file = voice.chain->files[voice.next_file++];
+                auto clip = clips_(file.name);
+                if (!clip) continue;
+                const auto id = sink.play(clip, VoicePlayback::once, voice.space);
+                if (!id) break;
+                sink.set(id, 0.0f, 1.0f, inputs.position);
+                voice.id = id;
+                voice.clip = std::move(clip);
+                voice.file = file.name;
+                voice.age = 0.0f;
+                voice.fade_in = 0.0f;
+                if (!trace_.empty()) note(static_cast<std::size_t>(&stream - streams_.data()), "one-shot then " + voice.file);
+                break;
             }
         }
         std::erase_if(stream.one_shots, [&](const Stream::Voice& voice) {

@@ -58,6 +58,11 @@ fn pbr_f_schlick(v_dot_h: f32, f0: vec3<f32>) -> vec3<f32> {
 // light the shape lets past the horizon (RTS's lamps: n.l down to -0.15)
 // Lambert alone.
 fn pbr_lit(s: PbrSurface, l: vec3<f32>, lit: vec3<f32>, reflects: bool) -> vec3<f32> {
+    return pbr_lit_share(s, l, lit, 1.0, reflects);
+}
+
+// pbr_lit with the reflection taking `share` of `lit` (pbr_lamp_share).
+fn pbr_lit_share(s: PbrSurface, l: vec3<f32>, lit: vec3<f32>, share: f32, reflects: bool) -> vec3<f32> {
     let n_dot_l = dot(s.n, l);
     if (!reflects || n_dot_l <= 0.0) {
         return s.diffuse * lit;
@@ -65,7 +70,29 @@ fn pbr_lit(s: PbrSurface, l: vec3<f32>, lit: vec3<f32>, reflects: bool) -> vec3<
     let h = normalize(l + s.v);
     let f = s.specular * pbr_f_schlick(clamp(dot(s.v, h), 0.0, 1.0), s.f0);
     let specular = pbr_d_ggx(clamp(dot(s.n, h), 0.0, 1.0), s.alpha) * pbr_v_smith(s.n_dot_v, n_dot_l, s.alpha) * f;
-    return (s.diffuse * (vec3<f32>(1.0) - f) + specular * pbr_pi) * lit;
+    return s.diffuse * (vec3<f32>(1.0) - f) * lit + specular * (pbr_pi * share) * lit;
+}
+
+// What share of a lamp's `lit` its reflection takes. `lit` has the lamp's
+// Lambert in it, but not always n.l: RTS's light shapes (`rts_shape`:
+// light_factor, interior_factor) take one by the lamp's axis, widened
+// (-n.axis * 2 + 0.3, at least 0.3 on a surface along the beam), through
+// to_linear with the colour; a light with flag 32 none. The Lambert part
+// stays RTS's; the reflection is the beam's by the true n.l, never more
+// than `lit`. Until 2026-11-26 it took RTS's Lambert: on the ground a
+// headlight's beam grazes (n.l some 0.05: 0.4 there), the reflection came
+// out 8 times too strong, and seen against the light the sleepers and the
+// ballast shone white (testers, PBR rails).
+fn pbr_lamp_share(light: Light, n: vec3<f32>, l: vec3<f32>, rts_shape: bool) -> f32 {
+    let n_dot_l = max(dot(n, l), 0.0);
+    if ((i32(light.kind.x) & 32) != 0) {
+        return n_dot_l;
+    }
+    if (!rts_shape) {
+        return 1.0;
+    }
+    let rts = pow(clamp(-dot(n, light.direction) * 2.0 + 0.3, 0.0, 1.0), 2.2);
+    return min(n_dot_l / max(rts, 1e-4), 1.0);
 }
 
 // The sky's reflection (PBR stage 2; the effects' sky light, SkyLight): the

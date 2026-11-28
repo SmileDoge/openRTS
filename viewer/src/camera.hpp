@@ -7,6 +7,14 @@
 
 namespace openrts::viewer {
 
+// How far the world's objects are drawn, m (the graphics settings' "World
+// draw distance", 500 .. 4000; RTS's 1800 by default). Read each frame; the
+// world tiles loaded round the eye are chosen by it when a route loads.
+inline float& world_draw_distance() {
+    static float metres = 1800.0f;
+    return metres;
+}
+
 struct FlyMovement {
     bool forward = false;
     bool backward = false;

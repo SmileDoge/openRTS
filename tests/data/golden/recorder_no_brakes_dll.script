@@ -1,0 +1,12 @@
+# The speed recorder without Brakes.dll (all of it openRTS's), started on,
+# standing on a green: no whistle (var 52) after 30 s. Was: a ВЛ85 with САУТ
+# alone (PB_SETUP 1) lost the ALSN's power to openRTS's КЛУБ part (var + 32
+# bit 4 cleared), a ВЛ80с with the КПД took "no code" first and asked for
+# vigilance standing; both whistled on, the РБ and the РБС refused
+# (testers 2026-11-27). The ЭПК keys: the ВЛ85's 8, the ВЛ80с's 23.
+0    voltage 25000 50
+0    line_limit 90
+0    line_signal S1 1200 7
+2    switch 8 1
+2    switch 23 1
+30   expect var52 == 0

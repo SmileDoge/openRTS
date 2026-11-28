@@ -1,0 +1,13 @@
+# The speed recorder of a ВЛ85 with САУТ (PB_SETUP 17: САУТ's power gates
+# the ALSN vigilance) beside Brakes.dll's (--klub shadow): started on, the
+# ЭПК key (8) on, a green ahead. Every SAUT_PIT on: no whistle, no venting.
+# openRTS never took САУТ as powered: a whistle from the start, the РБ and
+# the РБС refused, the ЭПК vented in 7 s (testers 2026-11-27).
+#
+#   openrts-train-check <RTS root> --dll mdd_VL85-200 mdd_VL85-200a mdd_VL85-200b --start on
+#       --seconds 60 --script tests/data/golden/vl85_saut_recorder.script --klub shadow
+0    voltage 25000 50
+0    line_limit 90
+0    line_signal S1 1200 7
+2    switch 8 1
+60   expect alive > 0

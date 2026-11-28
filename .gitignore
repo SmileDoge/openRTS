@@ -9,3 +9,5 @@ viewer_state.ini
 openrts.log
 .git-rewrite/
 .vscode/
+build-vr/
+scratch/

@@ -9,16 +9,19 @@ add_library(openrts_viewer_core STATIC
     src/players_panel.cpp
     src/track_view.cpp
     src/crossing_view.cpp
+    src/cargo_view.cpp
     src/road_traffic.cpp
     src/particle_effects.cpp
     src/thunder_view.cpp
     src/weather_cycle.cpp
     src/train_view.cpp
     src/train_extra_sounds.cpp
+    src/pantograph_arcs.cpp
     src/speed_post_view.cpp
     src/signal_view.cpp
     src/track_control.cpp
     src/inspector.cpp
+    src/inspector_lamps.cpp
     src/mod_files.cpp
     src/tape_view.cpp
     src/profile_strip.cpp
@@ -61,6 +64,33 @@ endif()
 if(WIN32)
     target_link_libraries(openrts_viewer_core PUBLIC comdlg32)
 endif()
+# VR seated in the cab (docs/vr.md), with openRTS's wgpu-native.
+target_sources(openrts_viewer_core PRIVATE src/vr_session.cpp)
+if(OPENRTS_HAS_XR)
+    target_link_libraries(openrts_viewer_core PUBLIC openrts_openxr_loader d3d11 dxgi)
+endif()
+# NVIDIA DLSS through Streamline (viewer/src/dlss_upscaler.cpp): with
+# openRTS's wgpu-native (its D3D11 shared textures) and the Streamline SDK
+# (OPENRTS_STREAMLINE_ROOT: its release unpacked; LICENSE-EXCEPTIONS.md).
+target_sources(openrts_viewer_core PRIVATE src/dlss_upscaler.cpp)
+set(OPENRTS_STREAMLINE_ROOT "" CACHE PATH "The NVIDIA Streamline SDK (DLSS), unpacked")
+set(OPENRTS_HAS_DLSS OFF CACHE INTERNAL "")
+if(OPENRTS_HAS_XR AND OPENRTS_STREAMLINE_ROOT AND EXISTS "${OPENRTS_STREAMLINE_ROOT}/include/sl.h")
+    set(OPENRTS_HAS_DLSS ON CACHE INTERNAL "")
+    target_compile_definitions(openrts_viewer_core PUBLIC OPENRTS_HAS_DLSS=1)
+    target_include_directories(openrts_viewer_core PRIVATE "${OPENRTS_STREAMLINE_ROOT}/include")
+    target_link_libraries(openrts_viewer_core PUBLIC d3d11 dxgi wintrust crypt32)
+endif()
+message(STATUS "openRTS DLSS (Streamline): ${OPENRTS_HAS_DLSS}")
+# Streamline's DLLs beside an executable (loaded at run time, if there).
+function(openrts_copy_streamline target)
+    if(OPENRTS_HAS_DLSS)
+        foreach(dll sl.interposer.dll sl.common.dll sl.dlss.dll nvngx_dlss.dll)
+            add_custom_command(TARGET ${target} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different "${OPENRTS_STREAMLINE_ROOT}/bin/x64/${dll}" "$<TARGET_FILE_DIR:${target}>")
+        endforeach()
+    endif()
+endfunction()
 
 add_executable(openrts_viewer src/main.cpp src/crash_report.cpp)
 openrts_configure_target(openrts_viewer)
@@ -77,4 +107,5 @@ if(MSVC)
 endif()
 
 openrts_copy_wgpu_runtime(openrts_viewer)
+openrts_copy_streamline(openrts_viewer)
 openrts_copy_dllhost(openrts_viewer)

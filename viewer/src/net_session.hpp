@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <optional>
+#include <set>
 #include <string>
 #include <vector>
 #include <utility>
@@ -60,6 +61,10 @@ public:
     // The station routes server train `train` can take next (console_next),
     // `back` the other way; the server's answer comes in next_routes().
     void ask_next_routes(std::uint32_t train, bool back);
+    // A route set on the console's map as the server's map sets it
+    // (console_route): its answer comes in take_route_answer().
+    void send_console_route(const net::ConsoleRouteAsk& ask);
+    [[nodiscard]] std::optional<net::ConsoleRouteAnswer> take_route_answer() { return std::exchange(route_answer_, std::nullopt); }
     [[nodiscard]] const std::optional<net::ConsoleNext>& next_routes() const noexcept { return next_routes_; }
     // The game's weather as the server last told it (openrts_weather), and
     // how many times it has: nothing from an older server.
@@ -171,12 +176,38 @@ private:
         // player's place, which is the camera's).
         bool far = false;
         double next_relay = 0.0; // laid again from its head now and then (move_trains)
+        // Its owner's motion 10 times a second (openrts_train_motion): the
+        // sender's clock put on ours. `least`: ours minus theirs at the
+        // earliest arrival seen (let rise 0.1 ms a second: the clocks
+        // drift); `base`: what the samples are put at, eased towards it at
+        // 2 ms a second, so their spacing stays the sender's (a jump of a
+        // frame's 33 ms made a steady 12 m/s drawn 11.8..12.2); `late`: how
+        // late they came lately. While they come, its RTS positions only
+        // keep the record.
+        struct FastClock {
+            bool set = false;
+            std::uint32_t last_ms = 0;
+            double sent = 0.0;
+            double least = 0.0;
+            double base = 0.0;
+            double late = 0.0;
+            double interval = 0.1; // between the sender's packages, smoothed (0.05 by UDP)
+        } fast;
+        double fast_heard = -1e9; // when the last one came
     };
 
     void apply(const net::ReceivedPackage& package, simulation::TrackNetwork& network, simulation::SignalSystem* signals,
                TrainView& trains, double now);
+    // `timed`: from openrts_train_motion, at that time (our clock) and
+    // acceleration; else an RTS position, which moves the train only while
+    // no timed ones come.
+    struct Timed {
+        double time{};
+        float acceleration{};
+        bool late = false; // older than the last (by UDP): the record keeps the newer place
+    };
     void position(Remote& remote, const net::TrainPos& pos, simulation::TrackNetwork& network, TrainView& trains,
-                  double now);
+                  double now, const Timed* timed = nullptr);
     void move_trains(simulation::TrackNetwork& network, TrainView& trains, double now);
     // The trains the server gave us (docs/net.md, "Own trains"): simulated
     // here, one of them driven, all sent out.
@@ -188,6 +219,7 @@ private:
         bool announced = false;     // stood still once since it was placed here
         bool waiting = false;       // a part cut off: no server id yet (0x4610 brings it)
         double next_position = 0.0; // train_pos due while it moves
+        double next_motion = 0.0;   // openrts_train_motion due while it moves (the server's fast positions)
         double next_look = 0.0;     // car_state at most every 250 ms
         double next_sound = 0.0;    // sound_values at most every 200 ms
         std::vector<std::array<float, 9>> sound_sent;          // by car: Var1..8, travelled
@@ -237,6 +269,10 @@ private:
     std::map<std::uint16_t, std::size_t> not_handled_; // of them, the ones the observer leaves
     double report_at_ = 10.0;
     std::map<std::uint32_t, Owned> owned_;
+    // The car keys the game's other records hold now (all but `record`'s):
+    // a server uid already given to one of them gets a new car (uids repeat
+    // with train numbers).
+    [[nodiscard]] std::set<std::uint32_t> record_keys_but(const net::SnapshotTrain& record) const;
     // Our trains' own states (0x45FB): coming in parts, and those waiting for
     // their train to be on the track here.
     std::map<std::uint32_t, std::vector<net::Bytes>> state_parts_;
@@ -248,6 +284,11 @@ private:
     std::map<std::size_t, const void*> cab_doors_view_; // the cab's view last seen per car
     void send_states(TrainView& trains, double t);
     void put_back_state(std::uint32_t id, TrainView& trains);
+    // A car's cargo from the network (0x461C, openRTS's body): on its train
+    // here, else kept with the train's record till it is placed.
+    void apply_cargo(net::ByteView body, TrainView& trains);
+    // The cargo the server kept for a train (its snapshot record), on it.
+    void apply_record_cargo(const std::vector<net::Bytes>& bodies, TrainView& trains);
     // The folder of an own train's states kept here: by its name and cars.
     [[nodiscard]] std::filesystem::path kept_states_folder(const Owned& own, const TrainView& trains) const;
     void keep_state(const Owned& own, const TrainView& trains, const std::string& text, double t, bool dated);
@@ -284,6 +325,10 @@ private:
     bool hello_sent_ = false;
     bool openrts_server_ = false;
     bool server_storm_ = false;
+    // The server's hello says its players send their trains' motion 10
+    // times a second (net::openrts_feature_fast_positions).
+    bool fast_positions_ = false;
+    bool udp_live_ = false; // the positions by UDP get through (RtsConnection::datagrams_live)
     std::optional<DiscordJoin> discord_join_;
     std::map<std::uint32_t, Player> players_;
     // Each player's places of the last seconds (heard time, place): one in
@@ -316,6 +361,7 @@ private:
     std::optional<std::string> placement_text_;
     std::optional<net::ConsoleState> console_state_;
     std::optional<net::ConsoleNext> next_routes_;
+    std::optional<net::ConsoleRouteAnswer> route_answer_;
     std::vector<std::string> console_log_;
 };
 

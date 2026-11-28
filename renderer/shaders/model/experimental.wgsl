@@ -58,8 +58,12 @@ fn to_display(c: vec3<f32>) -> vec3<f32> {
 // One further light's linear contribution: physical falloff, or RTS's shape
 // factor taken in display space.
 fn lamp_light(light: Light, world: vec4<f32>, n: vec3<f32>, physical: bool) -> vec3<f32> {
-    if (physical) {
+    // A photometric lamp (ambient.w, photometric.hpp) is physical always.
+    if (physical || light.ambient.w > 0.5) {
         let strength = physical_light(light, world, n);
+        if (strength > 0.0 && light.ambient.w > 0.5) {
+            return light.ambient.xyz * strength; // photometric: linear already
+        }
         if (strength > 0.0) {
             return to_linear(light.diffuse.xyz) * strength;
         }
@@ -115,8 +119,17 @@ fn parallax_uv(uv: vec2<f32>, view: vec3<f32>, n: vec3<f32>, depth: f32, referen
     }
     let px = dot(along, world_dx);
     let py = dot(along, world_dy);
-    let shift = uv_step_x * ((px * yy - py * xy) / det) + uv_step_y * ((py * xx - px * xy) / det);
-    let count = i32(clamp(mix(steps_most, 8.0, facing), 8.0, 64.0));
+    let a = (px * yy - py * xy) / det;
+    let b = (py * xx - px * xy) / det;
+    let shift = uv_step_x * a + uv_step_y * b;
+    // The steps: by the angle (8 square on, `steps_most` edgewise), but no
+    // more than the shift is long on the screen (a, b: in pixels), a step
+    // a pixel and a third: far away, where the whole relief moves a few
+    // pixels, a few steps (as many as near cost the same there; testers
+    // 2026-11-27: 94 fps looking along a track).
+    let by_angle = mix(steps_most, 8.0, facing);
+    let by_screen = length(vec2<f32>(a, b)) * 0.75;
+    let count = i32(clamp(min(by_angle, by_screen), 4.0, 64.0));
     let layer_step = 1.0 / f32(count);
     let uv_step = shift * layer_step;
     // From the relief's top: above the surface by (1 - reference) of the
@@ -148,6 +161,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
+    // An upscaler's texture LOD bias (ModelRenderer::set_texture_lod_bias).
+    draw.lod_bias = draw.lod_bias + frame.temporal.z;
     let uv_in = keep_inside(input.uv);
     // The texture as RTS reads it (its LOD bias); the material's maps with
     // these gradients (in any branch).
@@ -183,22 +198,30 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let texels_dy = dpdy(texels);
     let alpha_mip = 0.5 * log2(max(max(dot(texels_dx, texels_dx), dot(texels_dy, texels_dy)), 1e-8));
     var coverage = texel.w;
+    // RTS's alpha test (GL_GREATER 0.3) or a material's alpha_cutoff
+    // (draw.extent.w), as the RTS path and the ray shadows have it.
     if (alpha_test) {
+        let cutoff = draw.extent.w;
         if (alpha_to_coverage) {
-            coverage = coverage_alpha(texel.w, 0.5, alpha_width, alpha_mip);
+            coverage = coverage_alpha(texel.w, cutoff, alpha_width, alpha_mip);
             if (coverage <= 0.0) {
                 discard;
             }
-        } else if (texel.w < 0.5) {
+        } else if (frame.temporal.x > 0.5) {
+            if (!stochastic_keep(coverage_alpha(texel.w, cutoff, alpha_width, alpha_mip), input.clip.xy)) {
+                discard;
+            }
+            coverage = 1.0;
+        } else if (!(texel.w > cutoff)) {
             discard;
         }
     }
 
     let shader = draw.named_shader;
     let material = draw.light_material;
-    // FullBright is unlit unless the panel lights it (frame.shading.y, light_fullbright()).
-    // A night texture (-16) is self-lit whatever the panel says.
-    let unlit = shader == 1 || shader == 3 || shader == 6 || (material == -8 && frame.shading.y < 0.5) || material == -16;
+    // FullBright is unlit (the inspector makes one ordinary per shape), and
+    // so is a night texture (-16).
+    let unlit = shader == 1 || shader == 3 || shader == 6 || material == -8 || material == -16;
     let base = to_linear(texel.xyz) * draw.base_color.xyz;
     var colour = base;
     if (effects.views.x > 0.5 && effects.views.x < 1.5) {
@@ -280,7 +303,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             ambient = max(effects_sky_light(n), night_light * hemisphere) * openness;
         }
         // The sun's shadow and the ambient occlusion (SceneEffects).
-        let shadow = effects_shadow(input.world.xyz, n, input.clip);
+        let shadow = effects_shadow(input.world.xyz, n, input.clip) * effects_ray_sun_tint(input.clip);
         // Glass (blended) takes none: the occlusion at its pixel is of the
         // surface behind it (a sticker on a door's glass showed the seats'
         // shading through it).
@@ -346,12 +369,17 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             let first = cluster * effects.clusters.w;
             for (var i = 0u; i < count; i = i + 1u) {
                 let index = cluster_lights[first + i];
+                // Outside the room the eye is in and shadowless: not in it.
+                if (in_room && lamp_outside_room(scene_lights[index]) && !effects_lamp_has_shadow(index, input.clip)) { continue; }
                 let light = lamp_light(scene_lights[index], input.world, n, physical);
                 if (any(light > vec3<f32>(0.0))) {
                     let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
                     lamps = lamps + lit;
                     if (pbr) {
-                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(scene_lights[index], input.world), lit, reflects);
+                        let way = pbr_lamp_way(scene_lights[index], input.world);
+                        let rts_shape = !physical && scene_lights[index].ambient.w <= 0.5;
+                        lamps_out = lamps_out
+                            + pbr_lit_share(surface, way, lit, pbr_lamp_share(scene_lights[index], n, way, rts_shape), reflects);
                     }
                 }
             }
@@ -360,12 +388,15 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             let extra_lights = ring_count(input.ring);
             for (var i = 0; i < extra_lights; i = i + 1) {
                 let ring_light = frame.rings[input.ring * 9u + u32(i)];
+                if (in_room && lamp_outside_room(ring_light) && !effects_lamp_has_shadow_of(ring_light)) { continue; }
                 let light = lamp_light(ring_light, input.world, n, physical);
                 if (any(light > vec3<f32>(0.0))) {
                     let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);
                     lamps = lamps + lit;
                     if (pbr) {
-                        lamps_out = lamps_out + pbr_lit(surface, pbr_lamp_way(ring_light, input.world), lit, reflects);
+                        let way = pbr_lamp_way(ring_light, input.world);
+                        let rts_shape = !physical && ring_light.ambient.w <= 0.5;
+                        lamps_out = lamps_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(ring_light, n, way, rts_shape), reflects);
                     }
                 }
             }
@@ -387,7 +418,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
                 let lit = to_linear(frame.interior[i].diffuse.xyz * factor);
                 cab_lamps = cab_lamps + lit;
                 if (pbr) {
-                    cab_out = cab_out + pbr_lit(surface, pbr_lamp_way(frame.interior[i], input.world), lit, reflects);
+                    let way = pbr_lamp_way(frame.interior[i], input.world);
+                    cab_out = cab_out + pbr_lit_share(surface, way, lit, pbr_lamp_share(frame.interior[i], n, way, true), reflects);
                 }
             }
         }

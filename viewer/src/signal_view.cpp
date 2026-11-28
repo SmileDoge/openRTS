@@ -376,8 +376,16 @@ void SignalView::collect_lights(const std::span<const renderer::StreamedInstance
                 if (glm::dot(eye - world, facing) <= 0.0f) continue;
                 const auto packed = static_cast<std::uint32_t>(colour->argb[1]) | (static_cast<std::uint32_t>(colour->argb[2]) << 8)
                     | (static_cast<std::uint32_t>(colour->argb[3]) << 16) | (static_cast<std::uint32_t>(colour->argb[0]) << 24);
+                // openRTS: the light texture's bright core is about a fifth of
+                // the quad, right for a lens (Radius 0.49: a core of some
+                // 20 cm), not for a route indicator's dots (Kuban's
+                // T_Head_YR_Gx_N, 0.048: a core of 2 cm, a pixel or two
+                // near, its letter seen only far, where the quad grows with
+                // the distance; testers 2026-11-27). A light under 10 cm is
+                // drawn 2.5 times bigger: its core the LED's size.
+                const float radius = light->radius < 0.1f ? light->radius * 2.5f : light->radius;
                 sprites_.push_back({.position = world,
-                                    .radius = light->radius,
+                                    .radius = radius,
                                     .uv = uv,
                                     .colour = packed,
                                     .texture = texture,

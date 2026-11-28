@@ -34,6 +34,9 @@ inline constexpr float cab_lamps_in_daylight = 0.5f;
 
 struct SceneEffectSettings {
     bool shadows = true;
+    // The sun's shadows of the models by rays too (ray_scene.hpp), where the
+    // GPU has ray queries.
+    bool ray_shadows = false;
     bool clustered_lights = true;
     bool ambient_occlusion = true;
     // The occlusion's quality. High: two slices of six steps each way at the
@@ -100,6 +103,10 @@ struct SceneEffectSettings {
     // the camera's depth pre-pass too. Off by default (openRTS's own).
     bool light_shafts = false;
     float light_shafts_strength = 1.0f;
+    // Temporal anti-aliasing (TemporalAA, the HDR frame): the camera's depth
+    // pre-pass, and the moving models' depth (moving_depth()) for their
+    // motion. Over the MSAA, not instead of it.
+    bool temporal_aa = false;
     // Relief by the materials' height maps (parallax occlusion mapping,
     // docs/pbr-materials.md): the image shifted where the eye's ray meets
     // the relief, up to `parallax_distance` m from the eye (faded out over
@@ -229,6 +236,9 @@ public:
     // The camera's depth pre-pass of this frame (single-sample, the frame's
     // size), when it is drawn (the ambient occlusion or the bloom); else null.
     [[nodiscard]] WGPUTextureView camera_depth() const noexcept;
+    // With temporal_aa: the moving models' own depth from the camera (the
+    // pre-pass's size; 0 where none is), else null.
+    [[nodiscard]] WGPUTextureView moving_depth() const noexcept;
     // The owner (ModelExtraLight::owner) of the lamp a depth slot draws the
     // shadow of, 0 for the other slots: its own model is left out.
     [[nodiscard]] std::uint32_t depth_slot_owner(std::uint32_t slot) const noexcept;

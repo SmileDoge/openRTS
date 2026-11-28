@@ -190,6 +190,12 @@ struct LightDefinition {
     std::vector<LightState> states;
     std::array<float, 3> attenuation{2.0f, 0.6f, 0.4f}; // kind (2 linear), start share, length share
     float spot_exponent = 64.0f;        // SpotExponent x 128
+    // openRTS's photometric light (renderer/photometric.hpp; the experimental
+    // path): ORTSCandela, ORTSLumens, ORTSKelvin; 0 not given.
+    float candela{}, lumens{}, kelvin{};
+    // openRTS's own label (ORTSName ( "..." )), to tell lights apart in the
+    // inspector; RTS skips it.
+    std::string name;
 };
 
 // AuxLibrarySoundType: AMBIENT (no position), WAGON (at the car, with its
@@ -246,6 +252,7 @@ struct EngineDefinition {
     float max_current{};
     float sanding_speed{};
     float max_sanding_time = -1.0f; // MaxSandingTime, s of sand (-1: unlimited)
+    float max_diesel_level = -1.0f; // MaxDieselLevel, l of fuel (-1: not given; RTS's DLL host starts it at 5000)
     float main_reservoir_volume{};
     // AirBrakesMainMaxAirPressure and AirBrakesCompressorRestartPressure: the
     // compressor governor's cut-out and cut-in, atm (psi unless the file gives
@@ -437,6 +444,12 @@ using WagonRules = std::function<WagonOverrides(const struct WagonDefinition& ca
 [[nodiscard]] std::string set_override_distributor(std::string_view text, BrakeDistributor distributor);
 // The same with ORTSBrakeSensor418 ( 0 | 1 ), taken out for none.
 [[nodiscard]] std::string set_override_sensor418(std::string_view text, std::optional<bool> fitted);
+// The lights as a companion's Lights block (every light, by LightID) and an
+// empty RTSLights (the file's own would be added after them).
+[[nodiscard]] std::string write_lights(const std::vector<LightDefinition>& lights);
+// `text` (a companion's) with its Lights / RTSLights blocks replaced by
+// `lights`' (the inspector's lamps), or taken out for none.
+[[nodiscard]] std::string set_override_lights(std::string_view text, const std::optional<std::vector<LightDefinition>>& lights);
 
 // RTS value readers, exposed for tests.
 [[nodiscard]] double rts_quantity_value(std::string_view token);

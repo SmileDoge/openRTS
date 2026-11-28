@@ -27,6 +27,7 @@ if(TARGET openrts_viewer_core)
     openrts_add_icon(openrts_game)
     target_link_libraries(openrts_game PRIVATE openrts_viewer_core openrts_update)
     openrts_copy_wgpu_runtime(openrts_game)
+    openrts_copy_streamline(openrts_game)
     # The game next to the menu, so that a build folder starts as is.
     add_dependencies(openrts_game openrts_viewer)
 else()

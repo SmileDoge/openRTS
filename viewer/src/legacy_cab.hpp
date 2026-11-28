@@ -85,6 +85,13 @@ public:
     // The keys no longer reach the cab (the engineer left the car): the
     // buttons a key holds (NONFIXED) go back to their FixedState, as if let go.
     void release_keys();
+    // Each frame: a NONFIXED switch whose key was let go is asked back to its
+    // FixedState again until it is there (RTS 0x414340 steps it back once per
+    // key delay; the DLL may refuse while another is held: the whistle and
+    // the horn pressed together stuck on, testers 2026-11-26).
+    // `dt`: the frame's s; a PRECISE switch's key held turns it as a drag
+    // (the handbrake's wheel: its State is not what the DLL reads).
+    void return_released(float dt = 0.0f);
     // A key of the player's cab bound to switch `id` the way `direction`
     // (+1 up, -1 down; 0 either) is down now (Brakes.dll's springs, as its
     // GetAsyncKeyState on the switch's AssignKey).
@@ -166,7 +173,7 @@ public:
     [[nodiscard]] trainplugin::CabBrakes cab_brakes(std::size_t train, std::size_t car) const {
         return consist_ ? consist_->cab_brakes(train, car) : trainplugin::CabBrakes{};
     }
-    [[nodiscard]] std::unique_ptr<simulation::LocomotiveController> controller(std::size_t train, std::size_t car) const {
+    [[nodiscard]] std::unique_ptr<simulation::CarModule> controller(std::size_t train, std::size_t car) const {
         return consist_ ? consist_->controller(train, car) : nullptr;
     }
     [[nodiscard]] const std::array<float, 8>* sound_variables(std::size_t train, std::size_t car) const;
@@ -251,6 +258,18 @@ private:
     std::unique_ptr<trainplugin::LegacyConsist> consist_;
     std::vector<Binding> bindings_;
     std::set<int> keys_down_; // the GLFW keys down, as the cab's key events left them
+    std::set<std::uint32_t> returning_; // NONFIXED switches let go, not yet back (return_released)
+    // The NONFIXED switches each key's press moved: its release returns these
+    // alone (testers 2026-11-26: letting go of the whistle's Space returned
+    // the ЭД4М's brake switch on Shift+Space too, its brakes let off).
+    std::map<int, std::set<std::uint32_t>> pressed_by_key_;
+    // When each NONFIXED switch was pressed (clock_): one let go sooner than
+    // min_hold after stays pressed till then, so the DLL's step sees it (a
+    // quick tap of the РБ fell between two steps; testers 2026-11-26).
+    std::map<std::uint32_t, double> pressed_at_;
+    double clock_ = 0.0;
+    static constexpr double min_hold = 0.2;
+    std::map<std::uint32_t, int> precise_held_; // PRECISE switches turned by a key held: the way
     std::map<std::uint64_t, std::uint8_t> going_down_; // ping-pong direction per car << 32 | switch id
     std::optional<std::pair<std::size_t, std::uint32_t>> held_; // the button the mouse holds down: car, id
     struct Drag {

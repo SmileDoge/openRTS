@@ -49,7 +49,8 @@ From lowest to highest priority:
 What openRTS itself brings (the thunder, `openrts-thunder.zip`; the stock
 rules, `openrts-stock.zip`, `docs/scripting.md`; the bodies' snow masks
 for the ChS7 and the VL10, `openrts-snow.zip`, in `MATERIALS`,
-`docs/pbr-materials.md`, by their author's leave) lies in
+`docs/pbr-materials.md`, by their author's leave; the track's PBR
+materials, `openrts-rails.zip`, in `MATERIALS`) lies in
 `PACKS` beside the program (`openrts_game.exe`, `openrts_viewer.exe`;
 `core::own_packs_directory()`), its ZIPs mounted before every layer of the
 installation, as base packs (layer 0 above): the installation's packs and

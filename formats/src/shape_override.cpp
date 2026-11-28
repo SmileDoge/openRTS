@@ -5,6 +5,7 @@
 
 #include <openrts/formats/shape_binary.hpp>
 
+#include "shape_lights.hpp"
 #include "text_tree.hpp"
 
 namespace openrts::formats {
@@ -50,6 +51,10 @@ ShapeOverride parse_shape_override(std::string_view text) {
     const auto* top = root.child("openrtsshapeoverride");
     if (!top) return result;
     for (const auto& node : top->children) {
+        if (node.name == "lightsources") {
+            result.lights = detail::read_light_sources(node);
+            continue;
+        }
         if (node.name == "nighttextures" && !node.values.empty()) {
             result.night_textures = node.number(0, 1.0) != 0.0;
             continue;
@@ -81,6 +86,7 @@ std::string write_shape_override(const ShapeOverride& data) {
         }
         out += " )\n";
     }
+    if (data.lights) out += write_shape_lights(*data.lights, "\t");
     out += ")\n";
     return out;
 }

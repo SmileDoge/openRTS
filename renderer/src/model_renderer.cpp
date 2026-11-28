@@ -42,9 +42,11 @@
 #include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/rts_material.hpp>
 #include <openrts/renderer/webgpu_texture.hpp>
+#include <openrts/renderer/opacity_micromap.hpp>
 
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/scene_effects.hpp>
+#include <openrts/renderer/ray_scene.hpp>
 #include <openrts/renderer/task_pool.hpp>
 
 #include <glm/gtc/matrix_inverse.hpp>
@@ -71,8 +73,8 @@ struct GpuVertex {
 // shape matrix (rest pose) and material. One 256-byte slot per primitive in
 // the model's material buffer.
 // The light material of a draw RTS draws unlit at night (its shape has the
-// night bit, rts1.exe 0x4B042C): unlit in both paths, whatever
-// light_fullbright() says (it is not an MSTS index).
+// night bit, rts1.exe 0x4B042C): unlit in both paths (it is not an MSTS
+// index).
 constexpr std::int32_t night_texture_material = -16;
 
 struct MaterialUniform {
@@ -161,7 +163,7 @@ struct FrameUniform {
     float fog_distance[4]; // x: start, y: end (<= 0 disables), z: interior lamps
     glm::mat4 view_projection;
     float eye[4]; // camera position (experimental path: view vector)
-    float shading[4]; // x: night_ambient_scale(), y: light_fullbright(), z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
+    float shading[4]; // x: night_ambient_scale(), y: unused, z: 1 the frame is linear (frame_encoding()), w: 1 PBR (frame_pbr())
     float fog_sun[4];            // xy: the sun's way along the ground (0: no ring), zw: the eye's x, z
     float fog_ring[FogRing::count][4]; // the horizon's colour at each fog_ring_angle (display)
     // ModelPortal: centre, (across, half), (up, half), (eye) as columns.
@@ -178,6 +180,8 @@ struct FrameUniform {
     float rain_front[4];
     float rain_side[4]; // xy the side drops' run (m), zw their way now
     float snow_cover[4]; // x how much of the snow maps' snow lies (0..1); y the snow's run up the front glass, zw along the side windows (m)
+    // x 1: an alpha test's edge by noise (set_stochastic_alpha); y the frame's number for the noise.
+    float temporal[4];
     float rain_wiped[rain_grid_columns * rain_grid_rows];
 };
 // WebGPU's least maxUniformBufferBindingSize.
@@ -268,7 +272,6 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
     result.fog_distance[1] = lighting.fog_end;
     result.fog_distance[3] = physical_light_falloff() ? 1.0f : 0.0f;
     result.shading[0] = night_ambient_scale();
-    result.shading[1] = light_fullbright() ? 1.0f : 0.0f;
     result.shading[2] = frame_linear() ? 1.0f : 0.0f;
     result.shading[3] = frame_pbr() ? 1.0f : 0.0f;
     fill_fog_ring(result, lighting.fog_ring, eye);
@@ -409,7 +412,7 @@ void fill_fog_ring(Uniform& uniform, const FogRing& ring, const glm::vec3& eye) 
 [[nodiscard]] WGPUShaderModule create_shader_module(const WGPUDevice device, const char* body, const bool effects = false,
                                                   const bool tangents = false) {
     auto code = std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("model/interface") + detail::shader_code("common/fog_ring");
-    if (effects) code += std::string(detail::shader_code("common/effects_struct")) + detail::shader_code("common/effects_main") + detail::shader_code("common/pbr");
+    if (effects) code += std::string(detail::shader_code("common/effects_struct")) + detail::shader_code("common/effects_main") + detail::ray_shadow_code() + detail::shader_code("common/pbr");
     code += body;
     // A model with a normal map (PBR stage 4): its tangents as a second
     // vertex buffer, in the world with the bitangent's sign (a mirroring
@@ -777,6 +780,14 @@ private:
 };
 
 // A shared vertex and index buffer: models' ranges in it.
+// The usage a BLAS's vertices and indices need (ray_scene.hpp), with ray queries.
+WGPUBufferUsage ray_input() {
+#ifdef OPENRTS_HAS_RAY_QUERY
+    if (ray_queries()) return WGPUBufferUsage_BlasInput;
+#endif
+    return WGPUBufferUsage_None;
+}
+
 struct GeometryPage {
     static constexpr std::uint64_t vertex_capacity = 1u << 20; // vertices (40 MB of GpuVertex)
     static constexpr std::uint64_t index_capacity = 1u << 22;  // indices (16 MB)
@@ -858,11 +869,11 @@ struct ModelPools {
         }
         if (!range) {
             auto page = std::make_unique<GeometryPage>();
-            WGPUBufferDescriptor vertex_descriptor{.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst,
+            WGPUBufferDescriptor vertex_descriptor{.usage = WGPUBufferUsage_Vertex | WGPUBufferUsage_CopyDst | ray_input(),
                                                    .size = GeometryPage::vertex_capacity * stride};
             vertex_descriptor.label = {.data = "model vertices (shared)", .length = WGPU_STRLEN};
             page->vertices = wgpuDeviceCreateBuffer(device, &vertex_descriptor);
-            WGPUBufferDescriptor index_descriptor{.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst,
+            WGPUBufferDescriptor index_descriptor{.usage = WGPUBufferUsage_Index | WGPUBufferUsage_CopyDst | ray_input(),
                                                   .size = GeometryPage::index_capacity * sizeof(std::uint32_t)};
             index_descriptor.label = {.data = "model indices (shared)", .length = WGPU_STRLEN};
             page->indices = wgpuDeviceCreateBuffer(device, &index_descriptor);
@@ -949,6 +960,7 @@ struct GpuGeometry {
     WGPUBuffer indices = nullptr;
     WGPUBuffer tangents = nullptr; // a normal-mapped model's (PBR stage 4), else none
     std::uint64_t bytes{};
+    std::uint64_t vertex_count{}; // the model's vertices (a BLAS's reach)
     bool train = false; // a TRAINS/ shape's
     // In a page: its buffers are the page's, its draws offset by these.
     std::shared_ptr<ModelPools> pools;
@@ -1013,6 +1025,21 @@ struct RenderModel::Impl {
         glm::vec4 height{0.0f};
         float extent{};
         bool label = false; // a label laid over an opaque surface (mark_labels): no raindrops on it
+        // Its triangles whose texture is opaque at their middle (alpha over
+        // RTS's alpha-test reference), a share: a cut-out as good as solid
+        // (a car's body, a wheel's disc) is in the ray scene as one.
+        float opaque_share = 1.0f;
+        // A cut-out's own (the ray scene reads its texture's alpha): its
+        // triangles' UVs (u, v of each corner) and its texture's mask layer.
+        std::vector<float> ray_uvs;
+        std::int64_t ray_mask = -1;
+        // How it casts the shadows by rays (formats::shadow_caster) and a
+        // cut-out's alpha a texel passes over (cutoff_byte); the drawing's
+        // and the depth passes' cut-off (0: not cut out).
+        formats::ShadowCaster::Kind ray_kind = formats::ShadowCaster::Kind::solid;
+        std::uint8_t ray_cutoff = 229;
+        std::uint32_t ray_tint = 0xFFFFFFu; // a transmission's RGB, 8 bits each
+        float alpha_cutoff = 0.0f;
         WGPUTextureView orm_view = nullptr;
         WGPUTextureView normal_view = nullptr;
         WGPUTextureView emissive_view = nullptr;
@@ -1038,14 +1065,12 @@ struct RenderModel::Impl {
     std::vector<std::string> dependencies;
     std::uint32_t alternative_texture{};
     std::vector<std::string> texture_folders;
-    bool fullbright_images = false;
     std::vector<std::string> texture_key;
     // At night a shape with the night bit (ESD_Alternative_Texture 0x100) is
-    // drawn unlit, all of it (rts1.exe 0x4B042C); FullBright draws keep their
-    // material when they are lit as ordinary ones (fullbright-day).
+    // drawn unlit, all of it (rts1.exe 0x4B042C).
     bool night_unlit = false;
-    bool fullbright_day = false;
     std::vector<formats::ShapeLight> lights;
+    std::optional<formats::PickupDescription> pickup;
     std::vector<ModelPrimitive> primitives;
     std::vector<std::string> material_messages; // what was wrong with its material files
     // Matrices, hierarchy and animations, kept when the shape is animated so
@@ -1081,7 +1106,42 @@ struct RenderModel::Impl {
     Impl(const Impl&) = delete;
     Impl& operator=(const Impl&) = delete;
 
+#ifdef OPENRTS_HAS_RAY_QUERY
+    // Each draw's BLAS (ray_scene.hpp), made the first frame it is seen;
+    // state 0 not tried, 1 made, 2 none (blended, cut out, no geometry).
+    std::vector<WGPUBlas> blas;
+    std::vector<std::uint8_t> blas_state;
+    // Each distance level's opaque primitives in one BLAS (their rest-pose
+    // matrices in `level_transforms`): an instance placed whole by its
+    // transform, one TLAS instance a model; state as blas_state's.
+    std::vector<WGPUBlas> level_blas;
+    std::vector<std::uint8_t> level_state;
+    std::vector<WGPUBuffer> level_transforms;
+    std::uint32_t level_custom = 0;            // its table entries' first (the level BLAS)
+    std::vector<std::uint32_t> blas_custom;    // each primitive BLAS's entry
+    std::vector<std::int64_t> ray_uv_first;    // each cut-out draw's UVs' first (-1 not yet, -2 none)
+    // Each cut-out draw's opacity micromap (opacity_micromap.hpp; none: not
+    // made, or not a mask), and whether it was tried.
+    std::vector<WGPUOpacityMicromap> ray_omm;
+    std::vector<std::uint8_t> ray_omm_tried;
+    std::vector<std::shared_ptr<MicromapJob>> ray_omm_job; // its bake while on the worker
+#endif
+
     ~Impl() {
+#ifdef OPENRTS_HAS_RAY_QUERY
+        for (const auto b : blas) {
+            if (b) wgpuBlasRelease(b);
+        }
+        for (const auto b : level_blas) {
+            if (b) wgpuBlasRelease(b);
+        }
+        for (const auto b : level_transforms) {
+            if (b) wgpuBufferRelease(b);
+        }
+        for (const auto o : ray_omm) {
+            if (o) wgpuOpacityMicromapRelease(o);
+        }
+#endif
         // Its slots back to the pages (a queue write after the frames using them).
         if (pools) {
             if (!material_own) pools->free_materials(material_range);
@@ -1118,7 +1178,6 @@ const formats::ShapeModel* RenderModel::rig() const noexcept {
 
 std::uint32_t RenderModel::alternative_texture() const noexcept { return impl_ ? impl_->alternative_texture : 0u; }
 
-bool RenderModel::fullbright_images() const noexcept { return impl_ && impl_->fullbright_images; }
 
 const std::vector<ModelPrimitive>& RenderModel::primitives() const noexcept {
     static const std::vector<ModelPrimitive> none;
@@ -1150,6 +1209,15 @@ const std::vector<formats::ShapeLight>& RenderModel::lights() const noexcept {
     return impl_ ? impl_->lights : none;
 }
 
+const std::optional<formats::PickupDescription>& RenderModel::pickup() const noexcept {
+    static const std::optional<formats::PickupDescription> none;
+    return impl_ ? impl_->pickup : none;
+}
+
+void RenderModel::set_lights(std::vector<formats::ShapeLight> lights) {
+    if (impl_) impl_->lights = std::move(lights);
+}
+
 ModelAnimationInfo RenderModel::animation() const noexcept {
     if (!impl_ || !impl_->rig || impl_->rig->animations.empty()) return {};
     const auto& animation = impl_->rig->animations.front();
@@ -1178,6 +1246,7 @@ struct ModelRenderer::Impl {
         std::uint32_t owner = 0; // set_owner
         std::int32_t portal = 0; // set_portal
         bool moving = false;     // set_moving
+        bool train = false;      // set_train
         // First of this instance's animated local matrices in
         // `frame_locals`, or -1 for the model's rest pose; how many.
         std::ptrdiff_t matrices = -1;
@@ -1250,6 +1319,7 @@ struct ModelRenderer::Impl {
         bool alpha_test = false;
         bool shadow_only = false; // a caster out of view: shadow passes only
         bool moving = false;      // its instances move (set_moving)
+        bool train = false;       // they are trains' (set_train)
         // Its instances: depth_instances[first, first + count), culled per
         // depth pass (render_depth).
         std::uint32_t first = 0;
@@ -1275,6 +1345,10 @@ struct ModelRenderer::Impl {
     // Depth-only passes: a view-projection per slot (dynamic offset).
     static constexpr std::uint32_t depth_slots = ModelRenderer::depth_slots;
     bool submit_moving = false; // set_moving
+    bool submit_train = false;  // set_train
+    bool stochastic_alpha = false; // set_stochastic_alpha
+    float texture_lod_bias = 0.0f;  // set_texture_lod_bias
+    std::uint32_t stochastic_frame = 0;
     std::uint64_t moving_signature = 0;
     std::uint64_t moving_signature_outside = 0; // without the cab (RTS pass 3)
     static constexpr std::uint64_t depth_stride = 256;
@@ -1380,7 +1454,9 @@ struct ModelRenderer::Impl {
             .emissive = {draw.emissive.x, draw.emissive.y, draw.emissive.z, draw.emissive.w},
             .maps = {draw.maps.x, draw.maps.y, draw.maps.z, draw.maps.w},
             .height = {draw.height.x, draw.height.y, draw.height.z, draw.height.w},
-            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, draw.label ? 1.0f : 0.0f, 0.0f},
+            // w: a cut-out's alpha a texel passes over (the drawing's and the
+            // depth passes': RTS's 0.3, a blended one's 0.9, a material's).
+            .extent = {draw.extent, draw.snow_view ? 1.0f : 0.0f, draw.label ? 1.0f : 0.0f, draw.alpha_cutoff},
         };
     }
 
@@ -1973,6 +2049,98 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
         if (!view) continue;
         if (state.texture_count > 0 && state.texture_index < model.textures.size())
             draw.image = model.textures[state.texture_index].image_index;
+        // Its cut-off and how it casts the ray shadows (formats::shadow_caster):
+        // RTS's, or openRTS's material's.
+        const auto fixed = rts::apply_material(draw.material);
+        const bool blend_shader =
+            draw.material.shader == rts::NamedShader::blend_a_tex || draw.material.shader == rts::NamedShader::blend_a_tex_diff;
+        const formats::Material* own_material =
+            range.primitive_state_index < asset.materials.size() && !asset.materials[range.primitive_state_index].layers.empty()
+            ? &asset.materials[range.primitive_state_index].material
+            : nullptr;
+        // A blended one (BlendATexDiff) without its alpha test: the depth
+        // passes cut it out at a nearly opaque alpha (depth.wgsl).
+        const bool blended_cut = blend_shader && !draw.material.alpha_test_mode && !fixed.alpha_test;
+        std::uint8_t max_alpha = 255;
+        if (draw.image < asset.textures.size() && asset.textures[draw.image].image && (fixed.alpha_test || blended_cut)) {
+            const auto& pixels = asset.textures[draw.image].image->pixels;
+            max_alpha = 0;
+            for (std::size_t p = 3; p < pixels.size() && max_alpha < 255; p += 4) max_alpha = (std::max)(max_alpha, pixels[p]);
+        }
+        const auto caster = formats::shadow_caster(own_material, fixed.alpha_test, blended_cut, max_alpha);
+        draw.ray_kind = caster.kind;
+        {
+            const auto byte = [](const float v) { return static_cast<std::uint32_t>(std::lround(std::clamp(v, 0.0f, 1.0f) * 255.0f)); };
+            draw.ray_tint = byte(caster.transmission[0]) | (byte(caster.transmission[1]) << 8) | (byte(caster.transmission[2]) << 16);
+        }
+        draw.ray_cutoff = formats::cutoff_byte(caster.cutoff);
+        draw.alpha_cutoff = fixed.alpha_test || blended_cut || (blend_shader && draw.material.alpha_test_mode) ? caster.cutoff : 0.0f;
+        // How much of it is opaque (the ray scene's cut-outs, build_ray_scene).
+        if (draw.image < asset.textures.size() && asset.textures[draw.image].image && asset.textures[draw.image].image->width > 0) {
+            const auto& image = *asset.textures[draw.image].image;
+            std::uint32_t triangles = 0, opaque = 0;
+            const auto last = (std::min)(range.first_index + range.index_count, static_cast<std::uint32_t>(model.indices.size()));
+            for (auto t = range.first_index; t + 2 < last; t += 3) {
+                float u = 0.0f, v = 0.0f;
+                bool ok = true;
+                for (std::uint32_t k = 0; k < 3; ++k) {
+                    const auto vertex = model.indices[t + k];
+                    if (vertex >= model.vertices.size()) {
+                        ok = false;
+                        break;
+                    }
+                    u += model.vertices[vertex].uv[0] / 3.0f;
+                    v += model.vertices[vertex].uv[1] / 3.0f;
+                }
+                if (!ok) continue;
+                u -= std::floor(u);
+                v -= std::floor(v);
+                const auto x = (std::min)(static_cast<std::uint32_t>(u * static_cast<float>(image.width)), image.width - 1);
+                const auto y = (std::min)(static_cast<std::uint32_t>(v * static_cast<float>(image.height)), image.height - 1);
+                const auto at = (static_cast<std::size_t>(y) * image.width + x) * 4 + 3;
+                ++triangles;
+                // Opaque: over its cut-off (a shadow drawn under a car is no
+                // caster at all: shadow_caster).
+                if (at < image.pixels.size() && formats::alpha_passes(image.pixels[at], draw.ray_cutoff)) ++opaque;
+            }
+            if (triangles > 0) draw.opaque_share = static_cast<float>(opaque) / static_cast<float>(triangles);
+#ifdef OPENRTS_HAS_RAY_QUERY
+            // A cut-out (not all opaque): the rays read its alpha.
+            if (draw.ray_kind == formats::ShadowCaster::Kind::mask && draw.opaque_share >= 0.999f) draw.ray_kind = formats::ShadowCaster::Kind::solid;
+            const bool transmits = draw.ray_kind == formats::ShadowCaster::Kind::transmission;
+            if (ray_queries() && (draw.material.depth_write || transmits)
+                && (draw.ray_kind == formats::ShadowCaster::Kind::mask || transmits) && asset.textures[draw.image].source_path) {
+                const auto& key = asset.textures[draw.image].source_path->key();
+                auto& rays = detail::RayScene::get();
+                if (const auto layer = transmits ? rays.alpha_layer(device, key, image.width, image.height, image.pixels.data())
+                                                 : rays.mask_layer(device, key, draw.ray_cutoff, image.width, image.height, image.pixels.data())) {
+                    draw.ray_mask = *layer;
+                    if (std::getenv("OPENRTS_RAY_CUTOUT_LOG")) {
+                        std::size_t over03 = 0, over09 = 0, some = 0, partial = 0;
+                        for (std::size_t p = 3; p < image.pixels.size(); p += 4) {
+                            const auto a = image.pixels[p];
+                            if (a > 76) ++over03;
+                            if (a >= 230) ++over09;
+                            if (a > 0) ++some;
+                            if (a > 0 && a < 230) ++partial;
+                        }
+                        const double n = static_cast<double>(image.pixels.size() / 4);
+                        std::printf("ray cut-out %s kind %d shader %d alpha_test %d blend %d cutoff %d share %.2f texels >0.3 %.2f >=0.9 %.2f some %.2f partial %.2f\n",
+                                    asset.textures[draw.image].source_path->key().c_str(), static_cast<int>(draw.ray_kind), static_cast<int>(draw.material.shader),
+                                    fixed.alpha_test ? 1 : 0, fixed.blend ? 1 : 0, draw.ray_cutoff, draw.opaque_share, over03 / n, over09 / n,
+                                    some / n, partial / n);
+                    }
+                    // Every corner's UV, in the index order (3 a triangle).
+                    for (auto t = range.first_index; t < last; ++t) {
+                        const auto vertex = model.indices[t];
+                        const bool ok = vertex < model.vertices.size();
+                        draw.ray_uvs.push_back(ok ? model.vertices[vertex].uv[0] : 0.0f);
+                        draw.ray_uvs.push_back(ok ? model.vertices[vertex].uv[1] : 0.0f);
+                    }
+                }
+            }
+#endif
+        }
         if (range.primitive_state_index < asset.materials.size() && !asset.materials[range.primitive_state_index].layers.empty()) {
             const auto& m = asset.materials[range.primitive_state_index];
             const auto& f = m.material;
@@ -2014,9 +2182,7 @@ void ModelRenderer::Impl::create_draws(RenderModel::Impl& gpu, const StreamedMod
         const auto& draw = gpu.draws[i];
         // At night a shape with the night bit is drawn unlit (RTS 0x4B042C:
         // NamedShader 3): the Rostov backdrop's lit city, lit windows.
-        const auto uniform = material_uniform(draw, gpu.night_unlit && !(gpu.fullbright_day && draw.material.light_material == -8)
-                                                        ? night_texture_material
-                                                        : draw.material.light_material);
+        const auto uniform = material_uniform(draw, gpu.night_unlit ? night_texture_material : draw.material.light_material);
         std::memcpy(materials.data() + i * material_stride, &uniform, sizeof(uniform));
     }
     gpu.slot_count = static_cast<std::uint32_t>(gpu.draws.size());
@@ -2218,9 +2384,9 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     gpu->source = asset.source_path;
     gpu->alternative_texture = asset.alternative_texture;
     gpu->texture_folders = asset.texture_folders;
-    gpu->fullbright_images = asset.fullbright_images;
     gpu->texture_key = asset.texture_key;
     gpu->lights = asset.lights;
+    gpu->pickup = asset.pickup;
     gpu->dependencies = asset.dependency_keys();
     gpu->material_messages = asset.material_messages;
     gpu->primitives.reserve(model.primitive_states.size());
@@ -2283,12 +2449,13 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
     }
     if (!geometry->range.page) {
         geometry->vertices = create_buffer(
-            impl_->device, WGPUBufferUsage_Vertex, vertices.size() * sizeof(GpuVertex), vertices.data());
+            impl_->device, WGPUBufferUsage_Vertex | ray_input(), vertices.size() * sizeof(GpuVertex), vertices.data());
         geometry->indices = create_buffer(
-            impl_->device, WGPUBufferUsage_Index, model.indices.size() * sizeof(std::uint32_t), model.indices.data());
+            impl_->device, WGPUBufferUsage_Index | ray_input(), model.indices.size() * sizeof(std::uint32_t), model.indices.data());
     }
     if (!geometry->vertices || !geometry->indices) return result;
     geometry->bytes = vertices.size() * sizeof(GpuVertex) + model.indices.size() * sizeof(std::uint32_t);
+    geometry->vertex_count = vertices.size();
     if (tangents) {
         geometry->tangents = create_buffer(impl_->device, WGPUBufferUsage_Vertex, asset.tangents.size() * sizeof(asset.tangents[0]),
                                            asset.tangents.data());
@@ -2308,7 +2475,6 @@ RenderModel ModelRenderer::create_model(StreamedModelAsset&& asset) {
         return std::find(list.begin(), list.end(), item) != list.end();
     };
     gpu->night_unlit = (asset.alternative_texture & 0x100u) != 0 && has(asset.texture_folders, "NIGHT");
-    gpu->fullbright_day = has(asset.texture_key, "fullbright-day");
 
     impl_->create_draws(*gpu, asset);
     if (gpu->draws.empty()) return result;
@@ -2335,6 +2501,17 @@ void ModelRenderer::forget_texture(const core::VirtualPath& path) {
     if (!impl_) return;
     const std::lock_guard lock(impl_->shared_mutex);
     impl_->texture_cache.erase(path.key());
+}
+
+void ModelRenderer::forget_material_maps(const std::unordered_set<std::string>& files) {
+    if (!impl_ || files.empty()) return;
+    const std::lock_guard lock(impl_->shared_mutex);
+    // A map's key (model_materials.cpp's map_key): "material <kind> ..." with
+    // the keys of the files it is made of.
+    std::erase_if(impl_->texture_cache, [&](const auto& entry) {
+        if (!entry.first.starts_with("material ")) return false;
+        return std::any_of(files.begin(), files.end(), [&](const std::string& file) { return entry.first.find(file) != std::string::npos; });
+    });
 }
 
 void ModelRenderer::replace(RenderModel& slot, RenderModel&& next) {
@@ -2526,6 +2703,21 @@ void ModelRenderer::submit(RenderModel& model, const ModelTransform& transform) 
     }
     impl_->queue.push_back({.model = model.impl_.get(), .transform = transform, .level = level});
     impl_->queue.back().moving = impl_->submit_moving;
+    impl_->queue.back().train = impl_->submit_train;
+}
+
+void ModelRenderer::set_stochastic_alpha(const bool on, const std::uint32_t frame) noexcept {
+    if (!impl_) return;
+    impl_->stochastic_alpha = on;
+    impl_->stochastic_frame = frame;
+}
+
+void ModelRenderer::set_texture_lod_bias(const float bias) noexcept {
+    if (impl_) impl_->texture_lod_bias = bias;
+}
+
+void ModelRenderer::set_train(const bool train) noexcept {
+    if (impl_) impl_->submit_train = train;
 }
 
 void ModelRenderer::set_room(const std::optional<ModelRoom>& room) noexcept {
@@ -2738,13 +2930,18 @@ void ModelRenderer::prepare() {
                 if (impl_->hides(queued, draw)) continue;
                 const auto& material = draw.material;
                 const bool blend_shader = material.shader == rts::NamedShader::blend_a_tex || material.shader == rts::NamedShader::blend_a_tex_diff;
-                if ((blend_shader && !material.alpha_test_mode) || !material.depth_write) continue;
-                const bool alpha_test = blend_shader && material.alpha_test_mode;
+                if (!material.depth_write) continue;
+                // A blended primitive too, cut out where it is nearly opaque: a
+                // body drawn blended (the ВЛ60ПК's) hid what was behind it from
+                // the light shafts, the occlusion and the shadows (testers
+                // 2026-11-25: the footbridge's shafts showed on its side);
+                // glass stays out by its alpha.
+                const bool alpha_test = blend_shader;
                 const auto binding = draw.binding;
                 // By primitive, binding, alpha test and whether only the shadows take it.
                 const auto fresh = static_cast<std::uint32_t>(batches.size());
                 const auto group = scratch.table.find_or_add(
-                    &draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u) | (queued.moving ? 4u : 0u), fresh);
+                    &draw, binding, (alpha_test ? 1u : 0u) | (queued.shadow_only ? 2u : 0u) | (queued.moving ? 4u : 0u) | (queued.train ? 8u : 0u), fresh);
                 if (group == fresh) {
                     Impl::DepthBatch head;
                     head.draw = &draw;
@@ -2753,6 +2950,7 @@ void ModelRenderer::prepare() {
                     head.alpha_test = alpha_test;
                     head.shadow_only = queued.shadow_only;
                     head.moving = queued.moving;
+                    head.train = queued.train;
                     batches.push_back(head);
                 }
                 ++batches[group].count;
@@ -3090,7 +3288,10 @@ void ModelRenderer::prepare() {
     if (!impl_->frame_binding) return;
     impl_->uploaded = true;
 
-    const auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
+    auto lighting = frame_uniform(impl_->frame.lighting, impl_->frame.view_projection, impl_->frame.camera_position);
+    lighting.temporal[0] = impl_->stochastic_alpha ? 1.0f : 0.0f;
+    lighting.temporal[1] = static_cast<float>(impl_->stochastic_frame % 1024u);
+    lighting.temporal[2] = impl_->texture_lod_bias;
     const auto queue = wgpuDeviceGetQueue(impl_->device);
     wgpuQueueWriteBuffer(queue, impl_->frame_buffer, 0, &lighting, sizeof(lighting));
     if (!instances.empty()) wgpuQueueWriteBuffer(queue, impl_->instance_buffer, 0, instances.data(), instances.size() * sizeof(GpuInstance));
@@ -3103,6 +3304,279 @@ void ModelRenderer::prepare() {
     }
     if (queue) wgpuQueueRelease(queue);
     part.close(nullptr);
+    build_ray_scene();
+}
+
+// The ray scene (ray_scene.hpp): every queued instance's opaque primitives
+// (not blended, not cut out: the maps keep those), their BLAS made as they
+// first come (some hundreds a frame at most), the TLAS built every frame
+// (bound in the effects' group, it must be).
+void ModelRenderer::build_ray_scene() {
+#ifdef OPENRTS_HAS_RAY_QUERY
+    if (!impl_ || !ray_queries() || !impl_->device) return;
+    OPENRTS_ZONE("models: ray scene");
+    auto& scene = detail::RayScene::get();
+    // Each build entry's geometries, kept until the build.
+    std::vector<std::vector<WGPUBlasTriangleGeometry>> pending;
+    std::vector<WGPUBlasBuildEntry> builds;
+    constexpr std::size_t most_new = 384; // new primitives' BLAS a frame
+    std::size_t made = 0;
+    pending.reserve(64);
+    builds.reserve(64);
+    // Whether the ray scene takes a primitive (opaque: the rays read no texture).
+    const auto traced = [](const RenderModel::Impl::Draw& draw, const GpuGeometry& geometry) {
+        using Kind = formats::ShadowCaster::Kind;
+        const auto fixed = rts::apply_material(draw.material);
+        const bool blend_shader =
+            draw.material.shader == rts::NamedShader::blend_a_tex || draw.material.shader == rts::NamedShader::blend_a_tex_diff;
+        // A mask without its own (the masks' array or the UVs' buffer full)
+        // nearly all opaque counts as solid (a body with a mask for its rails
+        // and ladders, a wheel's disc: their shadows were rings, testers
+        // 2026-11-27); the rest stays out.
+        const bool casts = draw.ray_kind == Kind::solid || draw.ray_mask >= 0 || (draw.ray_kind == Kind::mask && draw.opaque_share >= 0.9f);
+        // A transmission (glass) only with its own layer; drawn without
+        // depth too.
+        if (draw.ray_kind == Kind::transmission)
+            return draw.ray_mask >= 0 && draw.range.index_count >= 3 && geometry.vertex_count > 0;
+        return draw.material.depth_write && (!fixed.blend || blend_shader) && casts && draw.range.index_count >= 3 && geometry.vertex_count > 0;
+    };
+    // A geometry's entry in the cut-outs' table: (its UVs' first, its mask
+    // layer), or opaque (a solid one, or the buffer full).
+    const auto entry_of = [&](RenderModel::Impl& model, const std::size_t index, std::uint32_t& flags) -> std::array<std::uint32_t, 4> {
+        auto& draw = model.draws[index];
+        flags = WGPUAccelerationStructureGeometryFlag_Opaque;
+        if (draw.ray_mask < 0 || draw.ray_uvs.empty()) return {0u, detail::RayScene::opaque_layer, 0u, 0u};
+        if (model.ray_uv_first.size() != model.draws.size()) model.ray_uv_first.assign(model.draws.size(), -1);
+        if (model.ray_uv_first[index] < 0) {
+            const auto first = scene.add_uvs(impl_->device, draw.ray_uvs.data(), draw.ray_uvs.size() / 2);
+            model.ray_uv_first[index] = first ? static_cast<std::int64_t>(*first) : -2;
+        }
+        if (model.ray_uv_first[index] < 0) return {0u, detail::RayScene::opaque_layer, 0u, 0u};
+        flags = 0; // not opaque: its candidates go to the shader
+        const std::uint32_t kind = draw.ray_kind == formats::ShadowCaster::Kind::transmission ? 1u : 0u;
+        return {static_cast<std::uint32_t>(model.ray_uv_first[index]),
+                static_cast<std::uint32_t>(draw.ray_mask) | (static_cast<std::uint32_t>(draw.ray_cutoff) << 16) | (kind << 24), draw.ray_tint, 0u};
+    };
+    // A cut-out's opacity micromap (its mask's; none for an opaque geometry,
+    // a transmission, or without the device's).
+    const bool micromaps = scene.opacity_micromaps(impl_->device);
+    // `pending`: its bake still on the worker (the BLAS waits for it).
+    const auto micromap_of = [&](RenderModel::Impl& model, const std::size_t index, const std::uint32_t flags,
+                                 bool& pending) -> WGPUOpacityMicromap {
+        if (!micromaps || flags != 0) return nullptr;
+        if (model.ray_omm.size() != model.draws.size()) {
+            model.ray_omm.assign(model.draws.size(), nullptr);
+            model.ray_omm_tried.assign(model.draws.size(), 0);
+            model.ray_omm_job.assign(model.draws.size(), nullptr);
+        }
+        if (model.ray_omm_tried[index] == 2) return model.ray_omm[index];
+        if (model.ray_omm_tried[index] == 0) {
+            model.ray_omm_tried[index] = 2;
+            const auto& draw = model.draws[index];
+            if (draw.ray_kind != formats::ShadowCaster::Kind::mask || draw.ray_mask < 0 || draw.ray_uvs.size() < 6) return nullptr;
+            auto pixels = scene.mask_pixels(static_cast<std::uint32_t>(draw.ray_mask));
+            if (pixels.empty()) return nullptr;
+            constexpr std::uint32_t level = 4;
+            model.ray_omm_job[index] = bake_opacity_micromaps_async(draw.ray_uvs, std::move(pixels), detail::RayScene::mask_size, level);
+            model.ray_omm_tried[index] = 1;
+        }
+        // On the worker.
+        const auto job = model.ray_omm_job[index];
+        if (!job || !job->done.load(std::memory_order_acquire)) {
+            pending = pending || job != nullptr;
+            return nullptr;
+        }
+        model.ray_omm_tried[index] = 2;
+        model.ray_omm_job[index] = nullptr;
+        const auto& baked = job->result;
+        const WGPUOpacityMicromapDescriptor descriptor{
+            .subdivisionLevel = baked.level,
+            .micromapCount = baked.count,
+            .data = baked.data.data(),
+            .dataSize = baked.data.size(),
+            .indices = baked.indices.data(),
+            .indexCount = baked.indices.size(),
+        };
+        model.ray_omm[index] = wgpuDeviceCreateOpacityMicromap(impl_->device, &descriptor);
+        return model.ray_omm[index];
+    };
+    const auto queue_handle = wgpuDeviceGetQueue(impl_->device);
+    if (ray_shadows_wanted()) {
+        for (const auto& queued : impl_->queue) {
+            auto& model = *queued.model;
+            if (!model.geometry) continue;
+            const auto& geometry = *model.geometry;
+            if (model.blas.size() != model.draws.size()) {
+                model.blas.assign(model.draws.size(), nullptr);
+                model.blas_state.assign(model.draws.size(), 0);
+            }
+            // Still (rest pose, nothing hidden): the level's BLAS, one instance.
+            // The nearest distance level always: a shadow does not change
+            // with the camera's distance (a far level's walls, cut-outs, let
+            // the light through; testers 2026-11-27).
+            if (queued.matrices < 0 && queued.hidden_count == 0) {
+                const std::size_t level = 0;
+                if (model.level_blas.size() <= level) {
+                    model.level_blas.resize(level + 1, nullptr);
+                    model.level_state.resize(level + 1, 0);
+                    model.level_transforms.resize(level + 1, nullptr);
+                }
+                if (model.level_state[level] == 0) {
+                    model.level_state[level] = 2;
+                    std::vector<WGPUBlasTriangleGeometrySize> sizes;
+                    std::vector<WGPUBlasTriangleGeometry> geometries;
+                    std::vector<float> transforms;
+                    std::vector<std::uint32_t> entries;
+                    std::vector<WGPUOpacityMicromap> omms;
+                    bool omm_pending = false;
+                    for (const auto index : model.draws_at(level)) {
+                        const auto& draw = model.draws[index];
+                        if (!traced(draw, geometry)) continue;
+                        std::uint32_t flags = 0;
+                        const auto entry = entry_of(model, index, flags);
+                        entries.insert(entries.end(), entry.begin(), entry.end());
+                        omms.push_back(micromap_of(model, index, flags, omm_pending));
+                        const WGPUBlasTriangleGeometrySize size{
+                            .vertexFormat = WGPUVertexFormat_Float32x3,
+                            .vertexCount = static_cast<std::uint32_t>(geometry.vertex_count),
+                            .indexFormat = WGPUIndexFormat_Uint32,
+                            .indexCount = draw.range.index_count,
+                            .flags = flags,
+                        };
+                        sizes.push_back(size);
+                        geometries.push_back({
+                            .size = size,
+                            .vertexBuffer = geometry.vertices,
+                            .firstVertex = static_cast<std::uint32_t>(geometry.range.vertex_base),
+                            .vertexStride = sizeof(GpuVertex),
+                            .indexBuffer = geometry.indices,
+                            .firstIndex = geometry.first_index() + draw.range.first_index,
+                            .transformBufferOffset = transforms.size() * sizeof(float),
+                        });
+                        for (int row = 0; row < 3; ++row) {
+                            for (int column = 0; column < 4; ++column) transforms.push_back(draw.world[column][row]);
+                        }
+                    }
+                    if (omm_pending) {
+                        // Its micromaps not baked yet: tried again next frame.
+                        model.level_state[level] = 0;
+                        geometries.clear();
+                    }
+                    if (!geometries.empty()) {
+                        const WGPUBufferDescriptor transform_descriptor{
+                            .label = {.data = "model ray transforms", .length = WGPU_STRLEN},
+                            .usage = WGPUBufferUsage_BlasInput | WGPUBufferUsage_CopyDst,
+                            .size = transforms.size() * sizeof(float),
+                        };
+                        const auto buffer = wgpuDeviceCreateBuffer(impl_->device, &transform_descriptor);
+                        const WGPUBlasDescriptor descriptor{
+                            .label = {.data = "model", .length = WGPU_STRLEN},
+                            .flags = WGPUAccelerationStructureFlag_PreferFastTrace | WGPUAccelerationStructureFlag_UseTransform,
+                            .updateMode = WGPUAccelerationStructureUpdateMode_Build,
+                            .geometryCount = sizes.size(),
+                            .geometries = sizes.data(),
+                        };
+                        const bool with_omm = std::any_of(omms.begin(), omms.end(), [](const auto o) { return o != nullptr; });
+                        if (with_omm) wgpuDeviceSetNextBlasOpacityMicromaps(impl_->device, omms.size(), omms.data());
+                        const auto blas = buffer ? wgpuDeviceCreateBlas(impl_->device, &descriptor) : nullptr;
+                        if (with_omm) wgpuDeviceSetNextBlasOpacityMicromaps(impl_->device, 0, nullptr);
+                        if (blas) {
+                            wgpuQueueWriteBuffer(queue_handle, buffer, 0, transforms.data(), transforms.size() * sizeof(float));
+                            for (auto& g : geometries) g.transformBuffer = buffer;
+                            model.level_blas[level] = blas;
+                            model.level_transforms[level] = buffer;
+                            model.level_state[level] = 1;
+                            const auto first = scene.add_entries(impl_->device, entries.data(), entries.size() / detail::RayScene::entry_words);
+                            model.level_custom = first ? *first : 0u;
+                            if (!first) {
+                                // The table full: every geometry taken as opaque is
+                                // not possible after the build's flags; it reads entry 0.
+                                model.level_custom = 0u;
+                            }
+                            pending.push_back(std::move(geometries));
+                            builds.push_back({.blas = blas, .geometryCount = pending.back().size(), .geometries = nullptr});
+                        } else if (buffer) {
+                            wgpuBufferRelease(buffer);
+                        }
+                    }
+                }
+                if (model.level_state[level] == 1) scene.add(model.level_blas[level], queued.transform, model.level_custom);
+                continue;
+            }
+            // Moving parts or hidden ones: each primitive its own instance.
+            for (const auto index : model.draws_at(0)) {
+                const auto& draw = model.draws[index];
+                if (impl_->hides(queued, draw)) continue;
+                auto& state = model.blas_state[index];
+                if (state == 0) {
+                    if (!traced(draw, geometry)) {
+                        state = 2;
+                        continue;
+                    }
+                    if (made >= most_new) continue;
+                    std::uint32_t flags = 0;
+                    const auto entry = entry_of(model, index, flags);
+                    // Its micromap not baked yet: tried again next frame.
+                    bool omm_pending = false;
+                    const auto omm = micromap_of(model, index, flags, omm_pending);
+                    if (omm_pending) continue;
+                    ++made;
+                    if (model.blas_custom.size() != model.draws.size()) model.blas_custom.assign(model.draws.size(), 0u);
+                    if (flags == 0) {
+                        const auto first = scene.add_entries(impl_->device, entry.data(), 1);
+                        if (first) model.blas_custom[index] = *first;
+                        else flags = WGPUAccelerationStructureGeometryFlag_Opaque;
+                    }
+                    const WGPUBlasTriangleGeometrySize size{
+                        .vertexFormat = WGPUVertexFormat_Float32x3,
+                        .vertexCount = static_cast<std::uint32_t>(geometry.vertex_count),
+                        .indexFormat = WGPUIndexFormat_Uint32,
+                        .indexCount = draw.range.index_count,
+                        .flags = flags,
+                    };
+                    const WGPUBlasDescriptor descriptor{
+                        .label = {.data = "model primitive", .length = WGPU_STRLEN},
+                        .flags = WGPUAccelerationStructureFlag_PreferFastTrace,
+                        .updateMode = WGPUAccelerationStructureUpdateMode_Build,
+                        .geometryCount = 1,
+                        .geometries = &size,
+                    };
+                    if (omm && flags == 0) wgpuDeviceSetNextBlasOpacityMicromaps(impl_->device, 1, &omm);
+                    const auto blas = wgpuDeviceCreateBlas(impl_->device, &descriptor);
+                    if (omm && flags == 0) wgpuDeviceSetNextBlasOpacityMicromaps(impl_->device, 0, nullptr);
+                    if (!blas) {
+                        state = 2;
+                        continue;
+                    }
+                    model.blas[index] = blas;
+                    state = 1;
+                    pending.push_back({WGPUBlasTriangleGeometry{
+                        .size = size,
+                        .vertexBuffer = geometry.vertices,
+                        .firstVertex = static_cast<std::uint32_t>(geometry.range.vertex_base),
+                        .vertexStride = sizeof(GpuVertex),
+                        .indexBuffer = geometry.indices,
+                        .firstIndex = geometry.first_index() + draw.range.first_index,
+                    }});
+                    builds.push_back({.blas = blas, .geometryCount = 1, .geometries = nullptr});
+                }
+                if (state != 1) continue;
+                // The world from the primitive's own: as placement() in model/interface.
+                glm::mat4 local = draw.world;
+                const auto matrix = draw.range.matrix_index;
+                if (queued.matrices >= 0 && matrix >= 0 && static_cast<std::size_t>(matrix) < queued.matrix_count) {
+                    const auto at = static_cast<std::size_t>(queued.matrices) + static_cast<std::size_t>(matrix);
+                    if (at < impl_->frame_locals.size()) local = impl_->frame_locals[at].matrix;
+                }
+                scene.add(model.blas[index], queued.transform * local,
+                          index < model.blas_custom.size() ? model.blas_custom[index] : 0u);
+            }
+        }
+    }
+    if (queue_handle) wgpuQueueRelease(queue_handle);
+    for (std::size_t i = 0; i < builds.size(); ++i) builds[i].geometries = pending[i].data();
+    scene.build(impl_->device, builds.data(), builds.size());
+#endif
 }
 
 void ModelRenderer::render(const WGPURenderPassEncoder pass, const std::function<void()>& before_translucent,
@@ -3221,7 +3695,13 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     OPENRTS_ZONE("models: depth pass");
     if (!impl_->uploaded || impl_->depth_batches.empty() || !impl_->depth_binding) return;
     auto& impl = *impl_;
-    const bool shadow = kind == DepthPassKind::shadow;
+    const bool shadow = kind != DepthPassKind::camera;
+    // The sun's cascades with shadows by rays: the cut-outs alone (the rest
+    // the rays see, build_ray_scene).
+    bool rays_cast = false;
+#ifdef OPENRTS_HAS_RAY_QUERY
+    rays_cast = kind == DepthPassKind::sun_shadow && ray_shadows_wanted();
+#endif
     {
         // The view-projection, and for the camera's pass the frame's portals.
         struct {
@@ -3255,7 +3735,18 @@ void ModelRenderer::render_depth(const WGPURenderPassEncoder pass, const std::ui
     ids.reserve(impl.depth_id_total);
     for (const auto& batch : impl.depth_batches) {
         if (batch.shadow_only && !shadow) continue;
-        if ((casters == DepthCasters::still && batch.moving) || (casters == DepthCasters::moving && !batch.moving)) continue;
+#ifdef OPENRTS_HAS_RAY_QUERY
+        if (rays_cast) {
+            const auto& model = *batch.model;
+            const auto index = static_cast<std::size_t>(batch.draw - model.draws.data());
+            if (index < model.blas_state.size() && model.blas_state[index] == 1) continue;
+        }
+#else
+        static_cast<void>(rays_cast);
+#endif
+        if ((casters == DepthCasters::still && batch.moving) || (casters == DepthCasters::moving && !batch.moving)
+            || (casters == DepthCasters::trains && !batch.train))
+            continue;
         // The camera's pass: the instances without a portal, then those with one.
         for (int with_portal = 0; with_portal < (shadow ? 1 : 2); ++with_portal) {
             const auto first = ids.size();

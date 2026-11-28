@@ -20,6 +20,7 @@
 #include <openrts/core/vfs.hpp>
 #include <openrts/formats/route_world.hpp>
 #include <openrts/formats/material.hpp>
+#include <openrts/formats/rolling_stock.hpp>
 #include <openrts/formats/shape_override.hpp>
 #include <openrts/renderer/route_streamer.hpp>
 #include <openrts/renderer/wide_lines.hpp>
@@ -42,6 +43,13 @@ struct InspectorWorld {
     std::filesystem::path root; // the installation (MODS_OPENRTS, openrts.ini)
 };
 
+// The lamp's ImGuizmo gizmo has the mouse (over it or held), drawn this
+// frame or the last: the camera leaves the mouse to it.
+[[nodiscard]] bool lamp_gizmo_wants_mouse();
+// The mouse in the gizmo's square (its window): the left button is the
+// gizmo's there, the others still the camera's.
+[[nodiscard]] bool lamp_gizmo_square_hovered();
+
 class Inspector {
 public:
     Inspector();
@@ -61,6 +69,33 @@ public:
     // The choice as text: open or not, what is chosen, its shape and
     // primitive states (--capture-inspect).
     [[nodiscard]] std::string report(const InspectorWorld& world) const;
+    // The world object's lamp the lamps' editor holds on (to set it by day,
+    // paused too): its tile, UiD and lamp.
+    struct HeldLamp {
+        std::int32_t tile_x{}, tile_z{};
+        std::uint32_t uid{};
+        std::size_t index{};
+    };
+    [[nodiscard]] std::optional<HeldLamp> held_lamp() const;
+    // The lamps' gizmo in the world (inspector_lamps.cpp): a click on a
+    // lamp's marker chooses it, on a handle of the chosen one starts
+    // dragging it (true: the click was the gizmo's); while the button is
+    // held the drag follows the ray; let go, it ends. `hover`: the handle
+    // under the mouse, drawn brighter.
+    bool begin_drag(const glm::vec3& eye, const glm::vec3& direction, const InspectorWorld& world);
+    void drag(const glm::vec3& eye, const glm::vec3& direction, const InspectorWorld& world);
+    void end_drag() noexcept { drag_.reset(); }
+    [[nodiscard]] bool dragging() const noexcept { return drag_.has_value(); }
+    void hover(const std::optional<glm::vec3>& eye, const std::optional<glm::vec3>& direction);
+    // The camera as last drawn, for the lamp's ImGuizmo gizmo (rings to turn
+    // it, arrows to move it), drawn by draw(); while the mouse is over it or
+    // it is held, the scene's clicks are its (gizmo_wants_mouse).
+    void set_camera(const glm::mat4& view, float vertical_fov, float aspect) noexcept {
+        camera_view_ = view;
+        camera_fov_ = vertical_fov;
+        camera_aspect_ = aspect;
+    }
+    [[nodiscard]] bool gizmo_wants_mouse() const noexcept { return gizmo_over_ || gizmo_using_; }
     // "Go to": where the camera goes and what it looks at, taken once.
     [[nodiscard]] std::optional<std::pair<glm::vec3, glm::vec3>> take_fly_to() { return std::exchange(fly_to_, std::nullopt); }
 
@@ -98,6 +133,19 @@ private:
     formats::ShapeOverride& edited(const InspectorWorld& world, const core::VirtualPath& shape);
     void apply_edit(const InspectorWorld& world, const core::VirtualPath& shape);
     void save_edit(const InspectorWorld& world, const core::VirtualPath& shape);
+    // The same beside the shape in its route's folder (a route's own shape):
+    // it goes with the route to everyone who has it.
+    void save_edit_to_route(const InspectorWorld& world, const core::VirtualPath& shape);
+    // The lamps into the shape's own .sd (its ESD_LightSources), a folder's,
+    // the first time kept as .sd.bak; the override's lamps then dropped.
+    void save_lamps_to_sd(const InspectorWorld& world, const core::VirtualPath& shape);
+    // The lamps (inspector_lamps.cpp): a car's lights, a shape's lamps.
+    [[nodiscard]] std::string lamp_key() const;
+    void draw_lamps(const InspectorWorld& world, const core::VirtualPath& shape);
+    void draw_car_lamps(const InspectorWorld& world);
+    void draw_shape_lamps(const InspectorWorld& world, const core::VirtualPath& shape);
+    void add_lamp_lines(const InspectorWorld& world, const core::VirtualPath& shape, const glm::mat4& transform,
+                        std::vector<renderer::WideLine>& lines) const;
 
     bool open_ = false;
     bool picking_ = true;
@@ -118,6 +166,92 @@ private:
     std::uint32_t material_part_ = 0;
     bool material_dirty_ = false;
     std::string material_status_;
+    // The lamps' editor: the chosen lamp and State, of the selection
+    // `lamp_of_`; held on; `lamp_dirty_`: not saved.
+    std::string lamp_of_;
+    int lamp_ = 0, lamp_state_ = 0;
+    bool lamp_hold_ = true;
+    bool lamp_dirty_ = false;
+    std::string lamp_status_;
+    // The gizmo's handles as last drawn (add_lamp_lines): a lamp's marker
+    // (choose it), the chosen one's arrows (move along the shape's x, y, z),
+    // its middle (move in the view's plane), its beam's end (aim it), its
+    // cone's rim (open or close it; a sphere's or a glow's size).
+    struct Handle {
+        enum class Kind : std::uint8_t { lamp, axis, free, aim, rim, source } kind = Kind::lamp;
+        glm::vec3 at{};
+        int axis = 0;        // Kind::axis: 0 x, 1 y, 2 z
+        std::size_t lamp{};  // Kind::lamp
+    };
+    mutable std::vector<Handle> handles_;
+    int hovered_ = -1;
+    glm::vec3 eye_{};
+    // The chosen lamp as drawn: `frame` its numbers' space to the scene
+    // (a car's shape, turned for a light of the last car; a shape's), where
+    // it is and the way it shines in the scene, its cone (tangents of its
+    // half angles) or its size (a sphere, a glow), how far it is drawn.
+    struct LampGeometry {
+        glm::mat4 frame{1.0f};
+        glm::mat4 place{1.0f};
+        glm::vec3 at{}, beam{0.0f, 0.0f, 1.0f};
+        bool cone = false;
+        float tangent_x{}, tangent_y{}, reach{}, size{};
+        float source{}; // its source's radius: the cone starts as a disc of it
+    };
+    [[nodiscard]] std::optional<LampGeometry> lamp_geometry(const InspectorWorld& world, const core::VirtualPath& shape,
+                                                            const glm::mat4& transform) const;
+    struct Drag {
+        Handle handle;
+        glm::vec3 start{};      // where the ray met it
+        glm::vec3 view{};       // the ray at the start: the drag plane's normal
+        glm::mat4 frame{1.0f};  // the lamp's numbers' space to the scene
+        glm::vec3 lamp_at{};    // the lamp, the scene
+        glm::vec3 beam{};       // its way, the scene (unit)
+        float tangent{};        // its cone's at the start
+        float size{};           // its size at the start (a sphere, a glow)
+        float source{};         // its source's radius, the scene's m (the cone's start)
+        float along{};          // Kind::axis: where on its axis the ray met it
+        std::vector<formats::LightDefinition> car;  // as it was (a car)
+        std::vector<formats::ShapeLight> shape;     // as it was (a shape)
+    };
+    std::optional<Drag> drag_;
+    // The ImGuizmo gizmo (inspector_lamps.cpp, draw_lamp_gizmo): the camera,
+    // what it does (0 turn, 1 move), the lamp's place it holds while used.
+    glm::mat4 camera_view_{1.0f};
+    float camera_fov_ = 1.0f, camera_aspect_ = 1.0f;
+    int gizmo_operation_ = 0;
+    int gizmo_space_ = 0; // 0 the lamp's own axes (Local), 1 the world's (World)
+    bool gizmo_over_ = false, gizmo_using_ = false;
+    glm::mat4 gizmo_place_{1.0f};
+    // The chosen shape lamp's rotation as Unity shows it (X, Y, Z degrees;
+    // Ry Rx Rz, its beam the rotated +z), kept by the editor: the format has
+    // only the point it shines to, so Z (the roll) is the editor's alone,
+    // and the angles stay as set where the beam alone cannot tell them (a
+    // yaw with the beam straight down). Taken again from the beam when it
+    // changed some other way.
+    glm::vec3 lamp_euler_{0.0f};
+    std::string lamp_euler_key_;
+    glm::vec3& lamp_euler_for(const glm::vec3& beam);
+    void draw_lamp_gizmo(const InspectorWorld& world);
+    bool start_drag(const Handle& handle, const glm::vec3& eye, const glm::vec3& direction, const InspectorWorld& world);
+    void apply_drag(const InspectorWorld& world, std::optional<glm::vec3> moved, std::optional<glm::vec3> way, std::optional<float> tangent,
+                    std::optional<float> size, std::optional<float> source);
+    void apply_shape_lamps(const InspectorWorld& world, const core::VirtualPath& shape, std::vector<formats::ShapeLight> lamps);
+    // The lamps' undo and redo: the lamps as they were before each change
+    // (a field dragged, a lamp added or taken out, a handle dragged, back to
+    // the files), of the selection `key`; a drag one step.
+    struct LampSnapshot {
+        std::string key;
+        bool car = false;
+        std::vector<formats::LightDefinition> car_lights;
+        std::vector<formats::ShapeLight> shape_lamps;
+        int lamp = 0, state = 0;
+    };
+    std::vector<LampSnapshot> lamp_undo_, lamp_redo_;
+    bool lamp_editing_ = false; // a field still held: its change goes on in the same step
+    [[nodiscard]] std::optional<LampSnapshot> lamp_snapshot(const InspectorWorld& world, const core::VirtualPath& shape) const;
+    void remember_lamps(LampSnapshot before, bool continuing);
+    void step_lamps(const InspectorWorld& world, const core::VirtualPath& shape, bool redo);
 };
 
 } // namespace openrts::viewer

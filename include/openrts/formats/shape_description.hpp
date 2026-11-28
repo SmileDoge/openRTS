@@ -9,6 +9,7 @@
 #include <vector>
 
 #include <openrts/core/vfs.hpp>
+#include <openrts/formats/cargo.hpp>
 
 namespace openrts::formats {
 
@@ -44,6 +45,18 @@ struct ShapeLight {
     // one lamp.
     std::uint32_t array_count{};
     std::array<float, 3> array_step{};
+    // openRTS's photometric lamp (renderer/photometric.hpp; the experimental
+    // path): ORTSCandela, ORTSLumens, ORTSKelvin; 0 not given.
+    float candela{}, lumens{}, kelvin{};
+    // openRTS's own label (ORTSName ( "..." )), to tell lamps apart in the
+    // inspector; RTS skips it.
+    std::string name;
+    // openRTS: ORTSShadowPriority ( n ), 0..5: how much it wants one of the
+    // lamps' shadow maps (SceneEffects::choose_lamp_shadows). 0 never (it
+    // lights but throws no shadow: a gantry's small side lamps), 1 ordinary
+    // (not given), 2 a station lamp whose shadow falls into the cab, 5 a
+    // floodlight over most of a station. ORTSNoShadow ( 1 ) reads as 0.
+    int shadow_priority = 1;
 };
 
 // A box the engineer walks on, climbs or is stopped by (RTS 0x4BB7BC,
@@ -63,6 +76,7 @@ struct ShapeDescription {
     std::uint32_t alternative_texture{}; // ESD_Alternative_Texture bits
     std::vector<ShapeLight> lights;      // ESD_LightSources
     std::vector<WalkBox> boxes;          // ESD_Complex, else ESD_Bounding_Box
+    std::optional<PickupDescription> pickup; // ESD_Pickup_Object: the shape is a pickup
 };
 
 struct ShapeDescriptionResult {
@@ -77,5 +91,10 @@ struct ShapeDescriptionResult {
 [[nodiscard]] ShapeDescriptionResult parse_shape_description(std::string_view text);
 [[nodiscard]] ShapeDescriptionResult load_shape_description(const std::filesystem::path& file);
 [[nodiscard]] ShapeDescriptionResult load_shape_description(const core::Vfs& vfs, const core::VirtualPath& file);
+
+// `lights` as a LightSources ( n LightSource ( ... ) ... ) block (the .sd's
+// ESD_LightSources syntax), each line led by `indent`: openRTS's override of
+// a shape keeps its lamps so (shape_override.hpp).
+[[nodiscard]] std::string write_shape_lights(const std::vector<ShapeLight>& lights, std::string_view indent = {});
 
 } // namespace openrts::formats

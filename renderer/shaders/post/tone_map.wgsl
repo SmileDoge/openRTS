@@ -9,8 +9,8 @@ struct Settings {
     shafts: f32,    // 1: the light shafts added
     linear_scene: f32, // 1: the scene frame holds linear light, 0: gamma 2.2 (frame_encoding())
     auto_exposure: f32, // 1: the exposure times the auto exposure's factor
-    pad0: f32,
-    pad1: f32,
+    hdr_scale: f32,  // HDR output: the paper white over 80 nits (scRGB out); 0: SDR
+    hdr_peak: f32,   // the display's peak over the paper white
     pad2: f32,
 };
 @group(0) @binding(0) var scene: texture_2d<f32>;
@@ -143,6 +143,53 @@ fn curved(stored: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
     return agx(linear);
 }
 
+// Khronos PBR Neutral as above with its ceiling at `top` (the paper white
+// 1): the same picture up to 0.76, the highlights rolled off to the
+// display's peak, not to the paper white.
+fn khronos_neutral_hdr(c_in: vec3<f32>, top_out: f32) -> vec3<f32> {
+    let start_compression = 0.8 - 0.04;
+    let desaturation = 0.15;
+    var c = c_in;
+    let x = min(c.r, min(c.g, c.b));
+    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+    let top = max(c.r, max(c.g, c.b));
+    if (top > 0.0) {
+        c = c * ((top - offset) / top);
+    }
+    let peak = max(c.r, max(c.g, c.b));
+    if (peak < start_compression) {
+        return c;
+    }
+    let d = top_out - start_compression;
+    let new_peak = top_out - d * d / (peak + d - start_compression);
+    c = c * (new_peak / peak);
+    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+    return mix(c, vec3<f32>(new_peak), g);
+}
+
+// The HDR output's picture: display-linear, 1 the paper white, up to
+// hdr_peak. Khronos (the day of every curve but AgX) rolls off to the peak;
+// AgX (and the night) as the SDR picture, its white at the paper white.
+fn hdr_curved(stored: vec3<f32>, bloom: vec3<f32>) -> vec3<f32> {
+    let linear_frame = settings.linear_scene > 0.5;
+    if (settings.curve == 0u) {
+        let shown = clamp(stored, vec3<f32>(0.0), vec3<f32>(1.0));
+        return select(pow(shown, vec3<f32>(2.2)), shown, linear_frame);
+    }
+    let scene_linear = select(pow(max(stored, vec3<f32>(0.0)), vec3<f32>(2.2)), max(stored, vec3<f32>(0.0)), linear_frame) + bloom;
+    let adapted = select(1.0, exposure_state.y, settings.auto_exposure > 0.5 && exposure_state.w > 0.5);
+    let linear = scene_linear * settings.exposure * adapted;
+    if (settings.curve == 2u) {
+        return pow(agx(linear), vec3<f32>(2.2));
+    }
+    let day = khronos_neutral_hdr(linear, settings.hdr_peak);
+    if ((settings.curve == 4u || settings.curve == 5u) && settings.night > 0.0) {
+        let night = pow(agx(scene_linear * settings.night_exposure * adapted), vec3<f32>(2.2));
+        return mix(day, night, settings.night);
+    }
+    return day;
+}
+
 @fragment
 fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let encoded = textureLoad(scene, vec2<i32>(position.xy), 0).rgb;
@@ -154,6 +201,14 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     if (settings.shafts > 0.0) {
         let size = vec2<f32>(textureDimensions(scene));
         bloom = bloom + textureSampleLevel(shafts_image, bloom_sampler, position.xy / size, 0.0).rgb;
+    }
+    if (settings.hdr_scale > 0.0) {
+        var light = hdr_curved(encoded, bloom);
+        if (settings.saturation != 1.0) {
+            let luma = dot(light, vec3<f32>(0.2126, 0.7152, 0.0722));
+            light = max(vec3<f32>(luma) + (light - vec3<f32>(luma)) * settings.saturation, vec3<f32>(0.0));
+        }
+        return vec4<f32>(min(light, vec3<f32>(settings.hdr_peak)) * settings.hdr_scale, 1.0);
     }
     var display = curved(encoded, bloom);
     if (settings.saturation != 1.0) {

@@ -2,11 +2,14 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iterator>
 #include <utility>
 
+#include "cargo_internal.hpp"
+#include "shape_lights.hpp"
 #include "text_tree.hpp"
 
 namespace openrts::formats {
@@ -156,9 +159,17 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
     } else if (const auto* bounding = find_node(root, "esd_bounding_box"); bounding && bounding->values.size() >= 6) {
         box(*bounding, 0);
     }
-    const auto* lights = find_node(root, "esd_lightsources");
-    if (!lights) return;
-    for (const auto& node : lights->children) {
+    if (const auto* lights = find_node(root, "esd_lightsources")) description.lights = detail::read_light_sources(*lights);
+    if (const auto* pickup = find_node(root, "esd_pickup_object")) description.pickup = detail::read_pickup_description(*pickup);
+}
+
+} // namespace
+
+namespace detail {
+
+std::vector<ShapeLight> read_light_sources(const TextNode& list) {
+    std::vector<ShapeLight> out;
+    for (const auto& node : list.children) {
         if (node.name != "lightsource") continue;
         ShapeLight light;
         const auto* position = node.child("position");
@@ -180,6 +191,12 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
         light.source_radius = value(node.child("sourceradius"), 0);
         light.auto_when_world_lit = value(node.child("autowhenworldlit"), 0);
         light.light_fade = value(node.child("lightfade"), 0);
+        light.candela = value(node.child("ortscandela"), 0);
+        light.lumens = value(node.child("ortslumens"), 0);
+        light.kelvin = value(node.child("ortskelvin"), 0);
+        light.shadow_priority = std::clamp(static_cast<int>(value(node.child("ortsshadowpriority"), 0, 1.0f)), 0, 5);
+        if (value(node.child("ortsnoshadow"), 0) != 0.0f) light.shadow_priority = 0;
+        if (const auto* n = node.child("ortsname"); n && !n->values.empty()) light.name = n->values.front();
         if (const auto* array = node.child("lightarray")) {
             const float count = value(array, 0);
             if (count >= 2.0f) {
@@ -192,11 +209,50 @@ void read_extensions(const std::string_view text, ShapeDescription& description)
             const float start = value(attenuation, 0), length = value(attenuation, 1), kind = value(attenuation, 2);
             if (start >= 0.0f && length > 0.0f) light.attenuation = {kind, start, length};
         }
-        description.lights.push_back(std::move(light));
+        out.push_back(std::move(light));
     }
+    return out;
 }
 
-} // namespace
+} // namespace detail
+
+std::string write_shape_lights(const std::vector<ShapeLight>& lights, const std::string_view indent) {
+    const std::string in(indent);
+    char buffer[160];
+    const auto numbers = [&](const char* name, std::initializer_list<float> values) {
+        std::string out = std::string(" ") + name + " (";
+        for (const float v : values) {
+            std::snprintf(buffer, sizeof buffer, " %.6g", static_cast<double>(v));
+            out += buffer;
+        }
+        return out + " )";
+    };
+    std::string out = in + "LightSources ( " + std::to_string(lights.size()) + "\n";
+    for (const auto& l : lights) {
+        out += in + "\tLightSource (";
+        out += numbers("Position", {l.position[0], l.position[1], l.position[2]});
+        out += numbers("PointsTo", {l.points_to[0], l.points_to[1], l.points_to[2]});
+        out += numbers("Radius", {l.radius[0], l.radius[1]});
+        std::snprintf(buffer, sizeof buffer, " Colour ( %08x )", l.colour);
+        out += buffer;
+        if (!l.flags.empty()) out += " Flags ( " + l.flags + " )";
+        if (l.distance > 0.0f) out += numbers("Distance", {l.distance});
+        out += numbers("Attenuation", {l.attenuation[1], l.attenuation[2], l.attenuation[0]});
+        if (l.spot_exponent != 0.0f) out += numbers("SpotExponent", {l.spot_exponent});
+        if (l.source_radius != 0.0f) out += numbers("SourceRadius", {l.source_radius});
+        if (l.auto_when_world_lit > 0.0f) out += numbers("AutoWhenWorldLit", {l.auto_when_world_lit});
+        if (l.light_fade != 0.0f) out += numbers("LightFade", {l.light_fade});
+        if (l.candela > 0.0f) out += numbers("ORTSCandela", {l.candela});
+        if (l.lumens > 0.0f) out += numbers("ORTSLumens", {l.lumens});
+        if (l.kelvin > 0.0f) out += numbers("ORTSKelvin", {l.kelvin});
+        if (l.shadow_priority != 1) out += numbers("ORTSShadowPriority", {static_cast<float>(l.shadow_priority)});
+        if (!l.name.empty()) out += " ORTSName ( \"" + l.name + "\" )";
+        if (l.array_count >= 2)
+            out += numbers("LightArray", {static_cast<float>(l.array_count), l.array_step[0], l.array_step[1], l.array_step[2]});
+        out += " )\n";
+    }
+    return out + in + ")\n";
+}
 
 ShapeDescriptionResult parse_shape_description(std::string_view text) {
     TokenReader tokens(text);

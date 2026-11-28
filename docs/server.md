@@ -36,6 +36,8 @@ openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summ
 | `--max-players <n>` | places: a new player beyond so many connected is refused (`0x4702`, as with `--no-admit`); one coming back under his nick and the dispatcher's consoles are not counted against it; 0 (the default): no limit |
 | `--autosave <minutes>` | every train on the track saved as the placement `autosave` so often and at the stop (2 by default, 0 never); at the start the last run's kept as `autosave-previous` (Placements) |
 | `--discord-join`, `--public-address <host:port>` | openRTS players' Discord profiles get "Join" with that address (none given: the one each player connected to); net.md, "Joining from Discord" |
+| `--no-fast-positions` | the players send their trains' positions as RTS, every 1.5 s, not 10 times a second (net.md, "Fast positions"; the window's "Fast train positions", the console's `fastpos on\|off` at any time) |
+| `--udp-positions` | experimental: those positions by UDP on the same port number where it gets through, else TCP (net.md, "Positions by UDP"; the window's "Positions by UDP (experimental)", the console's `udppos on\|off`) |
 | `--dispatcher-password <text>` | the dispatcher's console from another computer logs in with it (none: only from this one; "The dispatcher's console (in the game)" below) |
 | `--data <folder>` | where the server keeps its files (the route database it saves); openRTS's user data folder by default (`%LOCALAPPDATA%\openRTS`, or next to the program with a `portable.txt`), never the RTS installation |
 | `--command "<line>"` | a console line run at the start (repeatable) |
@@ -220,6 +222,34 @@ openRTS itself is the console (the user's choice, 2026-11-09):
   given to a player. A train's menu has "Jump to train", "Cancel the route"
   and "Remove train" (on the server); who drives it is the console
   window's. Picking a train on the map picks it in the window.
+- **Setting a route on the server's map (2026-11-26):** a train's menu,
+  "Set a route" (or "Edit the route" for one the map set) turns the map
+  into a route mode, the panel greyed under what is asked: a right click on
+  the track sets the end, then points to pass in order (or moves the end);
+  on a junction, the branch to take (or any); anywhere, "Turn the
+  direction" (from the rear), "Confirm and set: train order" or "...:
+  shunting order", or cancel (Esc too). The way it would take is drawn as
+  it is asked (blue; white for shunting): the shortest way through the
+  points by the chosen branches, never onto another train's track
+  (`GameServer::preview_route`), nothing set until confirmed. Confirmed
+  (`set_requested_route`), its junctions are thrown and held till the rear
+  passes them; a train order opens its manual signals facing the train; a
+  shunting order holds them at RESTRICTING (the white where the type has
+  it), each back to STOP as the head passes it, and sets the train's signal
+  mode SHUNT (an activity's SetSignalMode) till the route ends. The map's
+  "Route for train N to here" goes round other trains too.
+- **The same on the console's map (2026-11-27):** a train's menu, "Set a
+  route" (or "Edit the route" for a route it holds), the same route mode
+  on the console's map: the request goes to the server, which answers with
+  the way it would take (`console_route` `0x45ED` and
+  `console_route_reply` `0x45EC`, openRTS's own: `net::ConsoleRouteAsk`,
+  kind preview, set or fetch, the end, points to pass, junctions' branches,
+  rear first, the order; the answer the way's spans of vector nodes, its
+  junctions, the error or the result, a fetch's request to edit). The
+  server previews (`GameServer::preview_route`), sets
+  (`set_requested_route`) and gives back the request its map kept
+  (`route_request`), as its own window does; asked again each second and
+  when the request changes. Only for a console.
 - **A train's route from the map, as RTS's console sets it (Legacy):**
   pick the train, right-click the track, "Route for the selected train to
   here". The console finds the way from the train's head (or its rear,

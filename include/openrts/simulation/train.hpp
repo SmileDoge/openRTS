@@ -16,6 +16,7 @@
 #include <openrts/formats/rolling_stock.hpp>
 #include <openrts/simulation/adhesion.hpp>
 #include <openrts/simulation/body_motion.hpp>
+#include <openrts/simulation/car_registry.hpp>
 #include <openrts/simulation/cab_brakes.hpp>
 #include <openrts/simulation/distributor.hpp>
 #include <openrts/simulation/state_text.hpp>
@@ -63,6 +64,9 @@ struct TrainSettings {
 
 struct CarSetup {
     const formats::WagonDefinition* definition = nullptr;
+    // The car's identity in its world (car_registry.hpp); none: a car only
+    // simulated (a test run), not one of the world's.
+    CarId id{};
     bool flipped = false;
     float handbrake{}; // 0..1 (consist HandbrakePercent / 100)
     // The front and rear bogie's brake shoes (the consist's ORTSBrakeShoes);
@@ -78,6 +82,7 @@ struct EngineDemands {
     float train_pipe_rate{};   // >0: pipe fed from the main reservoir; <0: vented, atm/s
     float independent_brake = -1.0f; // atm target, <0: unchanged (IndependentBrakeValue)
     float main_reservoir_rate{}; // atm/s (MainResRate)
+    float fuel_rate{};         // l/s a diesel burns (DieselEngine::FuelConsuming)
     float charging_rate{};       // second pipe (ChargingRate)
     float ep_value = -1.0f;      // EP brake target, <0: none (EPTvalue)
     EpCommand ep_command = EpCommand::target; // the 395's ЭПТ command (realistic air), driver_valve.hpp
@@ -144,18 +149,29 @@ struct EngineInputs {
     float line_frequency{};
 };
 
-// Source of a locomotive's demands: the built-in keyboard controller now;
-// legacy DLLs and openRTS plugins later (docs/train-dll.md).
-class LocomotiveController {
+// One of a car's systems (cars as entities, step 4, docs/car-architecture.md):
+// what drives an engine. The keyboard driver, a legacy DLL (its adapter), an
+// openRTS plugin; later the replaceable train systems. A step it reads its
+// car's signals (EngineInputs) and sets the car's demands (EngineDemands);
+// the train's physics, air and couplers do the rest.
+class CarModule {
 public:
-    virtual ~LocomotiveController() = default;
+    virtual ~CarModule() = default;
+    // Its kind ("keyboard", "dll", "plugin"): a saved block is its name's.
+    [[nodiscard]] virtual std::string_view name() const = 0;
+    // Its saved block's layout; a block of another version is not read.
+    [[nodiscard]] virtual int version() const { return 1; }
+    // Whether it reads a block `saved` wrote (the same version by default;
+    // a newer module may read its older blocks).
+    [[nodiscard]] virtual bool reads(const int saved) const { return saved == version(); }
     virtual void step(double dt, const EngineInputs& inputs, EngineDemands& demands) = 0;
-    // The controller's valve is made for RTS's triple valve (legacy DLLs):
+    // The module's valve is made for RTS's triple valve (legacy DLLs):
     // the train keeps BrakeModel::rts.
     [[nodiscard]] virtual bool rts_brakes() const { return false; }
-    // A saved game (Train::save_state): what the controller keeps between
-    // steps (its handles, its valve, its compressor's governor), under keys
-    // starting with `prefix`. Nothing by default.
+    // A saved game (Train::save_state): what the module keeps between steps
+    // (its handles, its valve, its compressor's governor), under keys
+    // starting with `prefix`. Nothing by default. A DLL's own state is the
+    // DLL host's (LegacyConsist::save_state), not this.
     virtual void save(StateWriter& /*out*/, std::string_view /*prefix*/) const {}
     virtual void restore(const StateReader& /*in*/, std::string_view /*prefix*/) {}
 };
@@ -209,11 +225,12 @@ struct CompressorRange {
 };
 [[nodiscard]] CompressorRange compressor_range(const formats::EngineDefinition* engine) noexcept;
 
-class KeyboardController final : public LocomotiveController {
+class KeyboardController final : public CarModule {
 public:
     using BrakeHandle = DriverHandles::BrakeHandle;
 
     KeyboardController(std::shared_ptr<DriverHandles> handles, bool master);
+    [[nodiscard]] std::string_view name() const override { return "keyboard"; }
     void step(double dt, const EngineInputs& inputs, EngineDemands& demands) override;
     void save(StateWriter& out, std::string_view prefix) const override;
     void restore(const StateReader& in, std::string_view prefix) override;
@@ -322,6 +339,9 @@ struct BrakeWear {
 // State of one car (the ts.h Wagon fields RTS simulates on).
 struct CarState {
     const formats::WagonDefinition* definition = nullptr;
+    // Its identity (CarSetup::id): moves with the car through couplings,
+    // cuts and turns, as the car's state does.
+    CarId id{};
     bool flipped = false;
     // The brake shoes of its front and rear bogie (its own ends): their
     // friction under the realistic air (brake_shoes.hpp).
@@ -432,6 +452,10 @@ struct CarState {
     // after the sanding stopped.
     bool sanding = false;
     float sand_left = -1.0f;
+    // A diesel's fuel, l (DieselLocomotive::FuelAmount, rts1.exe car +504):
+    // its MaxDieselLevel full, used at the DLL's FuelConsuming (0x424488);
+    // < 0 not a diesel.
+    float fuel_left = -1.0f;
     float sand_travel = -1.0f;  // m since the sanding stopped, < 0: no effect left
     // Under the realistic air: each bogie's shoes and treads (wet, warm,
     // sliding: adhesion.hpp) and the distance the car slid (юз), m.
@@ -500,6 +524,10 @@ public:
     void ease_shown_derail(float elapsed, float rate);
     // Car `car`'s handbrake, 0..1.
     void set_handbrake(std::size_t car, float value);
+    // A pickup's fuel and sand (cargo.hpp): added to a car's, at most its
+    // MaxDieselLevel / MaxSandingTime; returns what went in.
+    float add_fuel(std::size_t car, float litres);
+    float add_sand(std::size_t car, float seconds);
     // Car `car`'s distributor switches (the realistic air model reads them).
     void set_distributor_modes(std::size_t car, const DistributorModes& modes);
     // Every train fills its cylinders by the ЭПТ at a pace of its own, so a
@@ -564,11 +592,12 @@ public:
     void stop_slide(std::size_t index);
     [[nodiscard]] bool placed() const noexcept { return network_ != nullptr; }
 
-    // Controllers drive engines; cars without one get no demands.
-    void set_controller(std::size_t car, std::unique_ptr<LocomotiveController> controller);
+    // Modules drive engines; cars without one get no demands. They move
+    // with their cars (a cut, a coupling, a train turned).
+    void set_module(std::size_t car, std::unique_ptr<CarModule> module);
     // Bogie distances from the car centre, along the train (front, rear).
     void set_bogies(std::size_t car, float ahead, float behind);
-    [[nodiscard]] LocomotiveController* controller(std::size_t car);
+    [[nodiscard]] CarModule* module(std::size_t car);
 
     // One step of train_step seconds; nothing while asleep.
     void step();
@@ -599,6 +628,11 @@ public:
     void set_drive_acceleration(float acceleration) noexcept { drive_acceleration_ = acceleration; }
 
     [[nodiscard]] const std::vector<CarState>& cars() const noexcept { return cars_; }
+    // The train's cars by identity, front to rear: the ordered list the
+    // train refers to its cars by (CarState::id, as cars()).
+    [[nodiscard]] std::vector<CarId> car_ids() const;
+    // Where the car of `id` is in this train; none: not in it.
+    [[nodiscard]] std::optional<std::size_t> index_of(CarId id) const noexcept;
     // The force each joint passes after the last step (tension +; joint j is
     // behind car j). On the move it is what the cars behind it need (Newton:
     // each one's m·a less its own forces, its brake and resistance against
@@ -692,12 +726,18 @@ struct ContactResult {
     bool absorbed_ahead = false; // coupled: its cars went in front
     bool absorbed_turned = false; // coupled: its car order was reversed
     double force{};              // N, the impact measure RTS compares
+    // buffers: couplers that could lock, met slower than this (their
+    // coupling Velocity, m/s); 0 for other buffers.
+    float lock_speed{};
 };
 
 // Finds trains whose ends will meet within the next step and resolves each
 // meeting once: couples them when both couplers are automatic and not left
-// open and the impact is at most both cars' DerailBufferForce (the earlier
-// train in `trains` survives), otherwise exchanges momentum inelastically.
+// open, they close at the couplers' Velocity and the impact is at most both
+// cars' DerailBufferForce (the earlier train in `trains` survives); such
+// couplers met slower only push the overlap apart (the speeds stay, RTS),
+// others exchange momentum inelastically. The ends meet at the couplers'
+// slack (r0 / 2 of each end, r0 of a rigid one).
 // `passive` (by train, optional): trains another program moves (the
 // network's remote trains); two of them never meet here.
 std::vector<ContactResult> resolve_contacts(std::span<Train* const> trains, std::span<const std::uint8_t> passive = {});

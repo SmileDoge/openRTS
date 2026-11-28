@@ -328,6 +328,8 @@ struct Launcher::State {
     std::vector<formats::ActivityFile> activities;
     int activity = -1;
     bool sound = true;
+    bool vr = false; // the game in a headset (--vr, docs/vr.md)
+    int vr_scale = 150; // its resolution, % of the headset's recommended (--vr-scale)
     float volume = 0.5f;
     bool vsync = true;
     // The brakes, the game's Train window's too (brake_settings_ui.hpp).
@@ -484,6 +486,8 @@ struct Launcher::State {
         weather = std::clamp(remembered_int("launcher_weather", 0), 0, 3);
         start = std::clamp(remembered_int("launcher_start", 0), 0, 2);
         sound = remembered_int("launcher_sound", 1) != 0;
+        vr = remembered_int("launcher_vr", 0) != 0;
+        vr_scale = std::clamp(remembered_int("launcher_vr_scale", 150), 50, 250);
         volume = std::clamp(remembered_float("volume", 0.5f), 0.0f, 1.0f);
         viewer::set_mouse_sensitivity(remembered_float("mouse_sensitivity", 1.0f));
         viewer::set_mouse_smoothing(remembered_float("mouse_smoothing_ms", viewer::default_mouse_smoothing));
@@ -554,6 +558,8 @@ struct Launcher::State {
         remember("launcher_weather", std::to_string(weather));
         remember("launcher_start", std::to_string(start));
         remember("launcher_sound", sound ? "1" : "0");
+        remember("launcher_vr", vr ? "1" : "0");
+        remember("launcher_vr_scale", std::to_string(vr_scale));
         remember("volume", std::to_string(volume));
         remember("launcher_vsync", vsync ? "1" : "0");
         remember("launcher_spawn", std::to_string(spawn));
@@ -794,13 +800,13 @@ struct Launcher::State {
             if (save >= 0 && save < static_cast<int>(saves.size())) {
                 // A saved game: its scenario, trains, clock and weather are in
                 // the file (the game reads them from it).
-                args.insert(args.end(), {"--load", utf8(saves_folder() / (saves[static_cast<std::size_t>(save)] + ".save"))});
+                args.insert(args.end(), {"--load", utf8(saves_folder() / from_utf8(saves[static_cast<std::size_t>(save)] + ".save"))});
             } else if (const auto* chosen = chosen_activity()) {
                 // The scenario sets the trains, the start, the time, season
                 // and weather (the game reads them from it).
                 args.insert(args.end(), {"--activity", chosen->file});
             } else if (situation >= 0) {
-                args.insert(args.end(), {"--situation", utf8(situation_folder() / (situations[static_cast<std::size_t>(situation)] + ".situation"))});
+                args.insert(args.end(), {"--situation", utf8(situation_folder() / from_utf8(situations[static_cast<std::size_t>(situation)] + ".situation"))});
             } else if (consist_used()) {
                 args.insert(args.end(), {"--consist", consists[static_cast<std::size_t>(consist)]});
                 if (path >= 0) {
@@ -826,6 +832,12 @@ struct Launcher::State {
         if (!vsync) args.push_back("--no-vsync");
         if (graphics.experimental) args.push_back("--experimental");
         if (graphics.hdr) args.push_back("--hdr");
+        if (graphics.hdr && graphics.hdr_output)
+            args.insert(args.end(), {"--hdr-output", "--hdr-paper-white", std::to_string(graphics.hdr_paper_white), "--hdr-peak",
+                                     std::to_string(graphics.hdr_peak)});
+#ifdef OPENRTS_HAS_XR
+        if (vr) args.insert(args.end(), {"--vr", "--vr-scale", std::to_string(vr_scale / 100.0f)});
+#endif
         return args;
     }
 
@@ -1851,6 +1863,21 @@ void Launcher::State::draw_graphics(const float height) {
                 }
                 row_note(tr("In the background (another window in front, or minimised): at most 30 frames/s."));
             }
+            group_row(tr("VR headset (OpenXR)"), Load::unknown, Load::unknown);
+#ifdef OPENRTS_HAS_XR
+            ImGui::Checkbox("##vr", &vr);
+            group_row(tr("VR resolution"), Load::high, Load::high);
+            ImGui::BeginDisabled(!vr);
+            ImGui::SliderInt("##vr_scale", &vr_scale, 50, 250, tr("%d%% of the headset's"), ImGuiSliderFlags_AlwaysClamp);
+            ImGui::EndDisabled();
+            row_note(tr("Above 100%: sharper, fewer jagged edges (the headset takes the picture down), the video card works harder."));
+            row_note(tr("Seated in the cab, the keyboard and the mouse. The view centred again: Insert, or the left controller's menu button. Start SteamVR or the headset's app first."));
+#else
+            ImGui::BeginDisabled();
+            ImGui::Checkbox("##vr", &vr);
+            ImGui::EndDisabled();
+            row_note(tr("This build has no VR (it needs openRTS's own wgpu-native)."));
+#endif
             {
                 constexpr std::uint32_t counts[] = {1, 2, 4, 8};
                 const char* names[] = {tr("no anti-aliasing"), "2x", "4x", "8x"};
@@ -1908,6 +1935,16 @@ void Launcher::State::draw_graphics(const float height) {
                 }
                 group_row(tr("Saturation"), Load::none, Load::none);
                 viewer::slider_with_input("##saturation", &g.saturation, 0.5f, 1.8f, "%.2f", "%.2f");
+                group_row(tr("HDR output"), Load::none, Load::negligible);
+                ImGui::Checkbox("##hdr_output", &g.hdr_output);
+                ImGui::SameLine();
+                ImGui::TextDisabled("%s", tr("to an HDR monitor: DirectX 12, HDR on in Windows"));
+                if (g.hdr_output) {
+                    group_row(tr("Paper white"), Load::none, Load::none);
+                    viewer::slider_with_input("##hdr_paper_white", &g.hdr_paper_white, 80.0f, 600.0f, tr("%.0f nits"), "%.0f");
+                    group_row(tr("Monitor peak"), Load::none, Load::none);
+                    viewer::slider_with_input("##hdr_peak", &g.hdr_peak, 200.0f, 4000.0f, tr("%.0f nits"), "%.0f", ImGuiSliderFlags_Logarithmic);
+                }
             }
             ImGui::EndTable();
         }
@@ -1946,6 +1983,9 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("Sharp shadows in the cab"), Load::medium, Load::medium);
             ImGui::Checkbox("##shadow_cab", &e.cab_shadows);
             row_note(tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));
+            group_row(tr("Shadows by rays"), Load::negligible, Load::medium);
+            ImGui::Checkbox("##shadow_rays", &e.ray_shadows);
+            row_note(tr("The models' shadows from the sun traced by rays: exact and sharp, wires and posts too. Only graphics cards with ray tracing (GeForce RTX, Radeon RX 6000 and later, Arc); without it the shadow maps."));
             ImGui::EndDisabled();
             ImGui::EndTable();
         }
@@ -2024,9 +2064,6 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("Light in the cab by day"), Load::none, Load::negligible);
             viewer::slider_with_input("##indoor_light", &e.indoor_light, 0.0f, 1.0f, "%.2f", "%.2f");
             row_note(tr("The sun through the windows and the sky's light thrown about the cab or salon you are in, which the shadows alone leave dark. 0: none."));
-            group_row(tr("Light FullBright as ordinary surfaces"), Load::none, Load::none);
-            ImGui::Checkbox("##fullbright", &g.light_fullbright);
-            row_note(tr("MSTS FullBright surfaces (platforms, signs) take sun, sky and lamps; their darkened night textures are left out."));
             group_row(tr("A lamp throws no shadow of its own model"), Load::negligible, Load::none);
             ImGui::Checkbox("##lamp_own_model", &g.lamp_own_model);
             ImGui::EndTable();

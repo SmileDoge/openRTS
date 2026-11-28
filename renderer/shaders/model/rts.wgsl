@@ -78,6 +78,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         discard;
     }
     draw = draws[input.draw_slot];
+    // An upscaler's texture LOD bias (ModelRenderer::set_texture_lod_bias).
+    draw.lod_bias = draw.lod_bias + frame.temporal.z;
     let uv_in = keep_inside(input.uv);
     let texel = with_snow(textureSampleBias(source_texture, source_sampler, uv_in, draw.lod_bias), uv_in,
                           dpdx(uv_in) * exp2(draw.lod_bias), dpdy(uv_in) * exp2(draw.lod_bias));
@@ -106,8 +108,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         var light_colour = vec4<f32>(0.0);
         var specular = vec4<f32>(0.0);
         let extra_lights = ring_count(input.ring);
+        let inside = in_eye_room(input.world.xyz);
         for (var i = 0; i < extra_lights; i = i + 1) {
             let light = frame.rings[input.ring * 9u + u32(i)];
+            // Outside the cab the eye is in: not through its walls.
+            if (inside && lamp_outside_room(light)) { continue; }
             let factor = light_factor(light, input.world, normal);
             if (factor < 0.0) { continue; }
             light_colour = max(light_colour, light.diffuse * factor);
@@ -138,15 +143,20 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     // openRTS: raindrops on the cab's glass.
     color = rain_on_glass(input.world.xyz, input.normal, color, blended, select(draw.extent.x, 0.0, draw.extent.z > 0.5));
 
-    // Fixed-function alpha test of RTS: GL_GREATER 0.3; with MSAA its edge
-    // as coverage.
+    // Fixed-function alpha test of RTS: GL_GREATER 0.3 (draw.extent.w: a
+    // material's alpha_cutoff instead); with MSAA its edge as coverage.
     if (alpha_test) {
+        let cutoff = draw.extent.w;
         if (alpha_to_coverage) {
-            color.w = coverage_alpha(color.w, 0.3, alpha_width, alpha_mip);
+            color.w = coverage_alpha(color.w, cutoff, alpha_width, alpha_mip);
             if (color.w <= 0.0) {
                 discard;
             }
-        } else if (!(color.w > 0.3)) {
+        } else if (frame.temporal.x > 0.5) {
+            if (!stochastic_keep(coverage_alpha(color.w, cutoff, alpha_width, alpha_mip), input.clip.xy)) {
+                discard;
+            }
+        } else if (!(color.w > cutoff)) {
             discard;
         }
     }

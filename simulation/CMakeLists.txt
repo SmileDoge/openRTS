@@ -19,6 +19,8 @@ add_library(openrts_simulation STATIC
     src/track_profile.cpp
     src/track_traveller.cpp
     src/train.cpp
+    src/car_registry.cpp
+    src/car_components.cpp
     src/realistic_air.cpp
     src/signals.cpp
     src/train_route.cpp
@@ -29,6 +31,7 @@ add_library(openrts_simulation STATIC
     src/electrification.cpp
     src/train_lights.cpp
     src/tape.cpp
-    src/timetable.cpp)
+    src/timetable.cpp
+    src/cargo.cpp)
 openrts_configure_target(openrts_simulation)
 target_link_libraries(openrts_simulation PUBLIC openrts_core openrts_formats PRIVATE openrts_script)

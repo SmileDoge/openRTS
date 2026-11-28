@@ -156,7 +156,7 @@ fn fs_surface(input: SurfaceOut) -> @location(0) vec4<f32> {
     let sun_colour = water_linear(frame.light_diffuse.xyz);
     let sky_light = water_linear(frame.light_ambient.xyz);
     let l = -normalize(frame.light_direction.xyz);
-    let shadow = effects_shadow(input.world, vec3<f32>(0.0, 1.0, 0.0), input.clip);
+    let shadow = effects_shadow(input.world, vec3<f32>(0.0, 1.0, 0.0), input.clip) * effects_ray_sun_tint(input.clip);
     let h = normalize(l + v);
     let gloss = 1500.0;
     let power = toksvig * gloss / (toksvig + gloss * (1.0 - toksvig));

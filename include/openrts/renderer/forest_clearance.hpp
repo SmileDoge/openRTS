@@ -39,6 +39,9 @@ private:
 // The route's axes, from its track and road databases (the viewer sets them
 // when a route is loaded; null: none). Forests built afterwards use them.
 void set_forest_clearance_axes(std::shared_ptr<const ForestClearance> axes);
+// The axes set (null: none), whatever the trees' distance (the grass keeps
+// off the ways by them too).
+[[nodiscard]] std::shared_ptr<const ForestClearance> forest_clearance_axes();
 // How far a tree's crown keeps from a track's or road's edge, metres; 0:
 // trees anywhere, as RTS. Forests built afterwards use it (the viewer
 // reloads the loaded ones when it changes).

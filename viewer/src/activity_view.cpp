@@ -347,6 +347,7 @@ void ActivityView::load(const std::string& text) {
 void ActivityView::choose(const std::int32_t menu, const std::int32_t item) {
     choices_.emplace_back(menu, item);
     menu_open_ = false;
+    shown_menu_ = -1;
 }
 
 bool ActivityView::holds() const { return !windows_.empty() && windows_.front().modal; }
@@ -728,8 +729,10 @@ bool ActivityView::run_outcome(Script& script, const formats::ActivityNode& o, A
         return true;
     }
     if (name == "showactivitymenu") {
-        main_menu_ = static_cast<std::int32_t>(number(&o, 0, main_menu_));
-        menu_open_ = activity_->menu(main_menu_) != nullptr;
+        // RTS: a menu shown once; the main one (SetMainMenu's) stays F8's.
+        shown_menu_ = static_cast<std::int32_t>(number(&o, 0, main_menu_));
+        menu_open_ = activity_->menu(shown_menu_) != nullptr;
+        if (!menu_open_) shown_menu_ = -1;
         return true;
     }
     if (name == "enableevent" || name == "disableevent" || name == "activateevent" || name == "increaseactivationlevel"
@@ -979,8 +982,11 @@ void ActivityView::draw() {
         }
         ImGui::End();
     }
+    if (!menu_open_) shown_menu_ = -1;
     if (menu_open_) {
-        // F8 (RTS): the menu SetMainMenu gave, its visible items to pick.
+        // F8 (RTS): the menu SetMainMenu gave, its visible items to pick
+        // (or the one ShowActivityMenu put up).
+        if (const auto* shown = activity_->menu(shown_menu_)) waiting = shown;
         ImGui::SetNextWindowPos(ImVec2{display.x * 0.5f, display.y * 0.55f}, ImGuiCond_Appearing, ImVec2{0.5f, 0.5f});
         const std::string title = std::string(waiting ? waiting->name : std::string(tr("Scenario"))) + "###activity_menu";
         if (ImGui::Begin(title.c_str(), &menu_open_, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) {

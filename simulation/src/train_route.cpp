@@ -152,6 +152,7 @@ std::optional<Way> find_way(const TrackNetwork& network, const TrackLocation& fr
         out.clear();
         transitions(network, node, forward ? 1 : 0, rules.branches, out);
         for (auto& t : out) {
+            if (t.node != target_node && rules.avoid.contains(t.node)) continue;
             const auto next_k = advance(t.steps, k);
             if (!next_k) continue;
             double cost = leave;

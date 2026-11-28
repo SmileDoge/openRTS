@@ -96,6 +96,63 @@ void material_checks() {
         check(!parse_material("{ format: 'openrts-material/1', height_scale: 0.5 }", "x").patch.height_scale, "a depth over 0.1 m left out");
     }
     check(file.warnings.size() == 2, "two warnings (" + std::to_string(file.warnings.size()) + ")");
+    {
+        // The cut-off as GL_GREATER: a texel passes over it.
+        const auto cut = cutoff_byte(0.3f);
+        check(!alpha_passes(static_cast<std::uint8_t>(0.29f * 255.0f + 0.5f), cut), "cut-off 0.3: alpha 0.29 left out");
+        check(!alpha_passes(static_cast<std::uint8_t>(0.30f * 255.0f), cut), "cut-off 0.3: alpha 0.30 left out");
+        check(alpha_passes(static_cast<std::uint8_t>(0.31f * 255.0f + 0.5f), cut), "cut-off 0.3: alpha 0.31 kept");
+        check(!alpha_passes(76, cut) && alpha_passes(77, cut), "cut-off 0.3: 76 / 255 out, 77 / 255 in");
+        const auto half = cutoff_byte(0.5f);
+        check(!alpha_passes(127, half) && alpha_passes(128, half), "cut-off 0.5: 127 out, 128 in");
+        check(!alpha_passes(51, cutoff_byte(0.2f)) && alpha_passes(52, cutoff_byte(0.2f)), "cut-off 0.2 (51 / 255 itself): 51 out, 52 in");
+        check(!alpha_passes(229, cutoff_byte(0.9f)) && alpha_passes(230, cutoff_byte(0.9f)), "cut-off 0.9: 229 out, 230 in");
+        check(!alpha_passes(255, cutoff_byte(1.0f)) && alpha_passes(1, cutoff_byte(0.0f)), "cut-off 1: none in; 0: any alpha in");
+
+        // How RTS's surfaces cast the ray shadows.
+        using Kind = ShadowCaster::Kind;
+        const auto tested = shadow_caster(nullptr, true, false, 255);
+        check(tested.kind == Kind::mask && tested.cutoff == 0.3f, "an alpha-tested one: a mask over RTS's 0.3");
+        const auto blended = shadow_caster(nullptr, false, true, 255);
+        check(blended.kind == Kind::mask && blended.cutoff == 0.9f, "a blended one: a mask over 0.9");
+        check(shadow_caster(nullptr, true, false, 204).kind == Kind::none, "a shadow drawn under a car (alpha never 0.9): none");
+        check(shadow_caster(nullptr, false, true, 150).kind == Kind::none, "glass: none");
+        check(shadow_caster(nullptr, false, false, 0).kind == Kind::solid, "not cut out: solid");
+
+        // A material's.
+        Material own;
+        own.alpha_cutoff = 0.6f;
+        const auto custom = shadow_caster(&own, true, false, 255);
+        check(custom.kind == Kind::mask && custom.cutoff == 0.6f, "a material's alpha_cutoff");
+        check(!alpha_passes(153, cutoff_byte(0.6f)) && alpha_passes(154, cutoff_byte(0.6f)), "cut-off 0.6: 153 out, 154 in");
+        own.shadow_mode = ShadowMode::none;
+        check(shadow_caster(&own, false, false, 255).kind == Kind::none, "shadow_mode none");
+        own.shadow_mode = ShadowMode::opaque;
+        check(shadow_caster(&own, true, false, 10).kind == Kind::solid, "shadow_mode opaque");
+        own.shadow_mode = ShadowMode::mask;
+        check(shadow_caster(&own, true, false, 10).kind == Kind::mask, "shadow_mode mask, even a texture never 0.9");
+        own.shadow_mode = ShadowMode::automatic;
+        own.alpha_mode = AlphaMode::opaque;
+        check(shadow_caster(&own, true, false, 255).kind == Kind::solid, "auto with alpha_mode opaque: solid");
+        own.alpha_mode = AlphaMode::mask;
+        check(shadow_caster(&own, false, false, 100).kind == Kind::mask, "auto with alpha_mode mask: a mask");
+
+        const auto modes = parse_material("{ format: 'openrts-material/1', shadow_mode: 'none', alpha_cutoff: 0.4 }", "x");
+        check(modes.ok() && modes.patch.shadow_mode == ShadowMode::none && modes.patch.alpha_cutoff == 0.4f && modes.warnings.empty(),
+              "shadow_mode and alpha_cutoff read");
+        const auto glass = parse_material("{ format: 'openrts-material/1', shadow_mode: 'transmission', shadow_transmission: [0.85, 0.9, 1] }", "x");
+        check(glass.ok() && glass.patch.shadow_mode == ShadowMode::transmission && glass.warnings.empty()
+                  && glass.patch.shadow_transmission == std::array<float, 3>{0.85f, 0.9f, 1.0f},
+              "transmission and its colour read");
+        const auto glass_resolved = resolve_material(Material{}, std::vector<MaterialPatch>{glass.patch});
+        const auto through = shadow_caster(&glass_resolved, false, true, 100);
+        check(through.kind == ShadowCaster::Kind::transmission && through.transmission[1] == 0.9f, "transmission: a caster letting light by, its colour");
+        check(Material{}.shadow_transmission == std::array<float, 3>{0.8f, 0.8f, 0.8f}, "transmission's colour by default: 0.8 grey");
+        check(!parse_material("{ format: 'openrts-material/1', shadow_transmission: [2, 0, 0] }", "x").patch.shadow_transmission,
+              "a transmission over 1 left out");
+        const auto resolved = resolve_material(Material{}, std::vector<MaterialPatch>{modes.patch});
+        check(resolved.shadow_mode == ShadowMode::none && resolved.alpha_cutoff == 0.4f, "shadow_mode and alpha_cutoff resolved");
+    }
     check(!parse_material("{ format: 'openrts-material/2' }", "x").ok(), "another major version is not taken");
     check(parse_material("{ format: 'openrts-material/1.3' }", "x").ok(), "a minor version is");
     check(!parse_material("{ roughness: 1 }", "x").ok(), "no format: not taken");

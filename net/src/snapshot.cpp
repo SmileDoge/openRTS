@@ -935,6 +935,32 @@ Bytes encode_train_id(const std::uint32_t train) {
     return w.take();
 }
 
+Bytes encode_openrts_motion(const OpenrtsMotion& m) {
+    WireWriter w;
+    w.u32(m.train);
+    w.u32(m.sent_ms);
+    w.u32(m.node);
+    w.f32(m.offset);
+    w.u8(m.direction);
+    w.f32(m.speed);
+    w.f32(m.acceleration);
+    return w.take();
+}
+
+std::optional<OpenrtsMotion> decode_openrts_motion(const ByteView body) {
+    WireReader r(body);
+    OpenrtsMotion m;
+    m.train = r.u32();
+    m.sent_ms = r.u32();
+    m.node = r.u32();
+    m.offset = r.f32();
+    m.direction = r.u8();
+    m.speed = r.f32();
+    m.acceleration = r.f32();
+    if (!r.ok() || !std::isfinite(m.offset) || !std::isfinite(m.speed) || !std::isfinite(m.acceleration)) return std::nullopt;
+    return m;
+}
+
 Bytes encode_openrts_car_action(const OpenrtsCarAction& action) {
     WireWriter w;
     w.u32(action.train);
@@ -955,6 +981,50 @@ std::optional<OpenrtsCarAction> decode_openrts_car_action(const ByteView body) {
     a.item = r.u32();
     if (!r.ok()) return std::nullopt;
     return a;
+}
+
+Bytes encode_openrts_car_cargo(const OpenrtsCarCargo& cargo) {
+    WireWriter w;
+    w.u32(cargo.train);
+    w.u32(cargo.car);
+    w.u8('o');
+    w.u8(1);
+    w.u32(static_cast<std::uint32_t>(cargo.loads.size()));
+    for (const auto& load : cargo.loads) {
+        w.u16(load.cargo);
+        w.text_u16(from_utf8(load.object));
+        w.i32(load.area);
+        w.f32(load.volume);
+        w.f32(load.mass);
+        w.i32(load.count);
+        for (const float v : load.position) w.f32(v);
+        for (const float v : load.extent) w.f32(v);
+    }
+    return w.take();
+}
+
+std::optional<OpenrtsCarCargo> decode_openrts_car_cargo(const ByteView body) {
+    WireReader r(body);
+    OpenrtsCarCargo cargo;
+    cargo.train = r.u32();
+    cargo.car = r.u32();
+    if (r.u8() != 'o' || r.u8() != 1 || !r.ok()) return std::nullopt;
+    const auto n = r.u32();
+    if (!r.ok() || n > 10000) return std::nullopt;
+    for (std::uint32_t i = 0; i < n && r.ok(); ++i) {
+        OpenrtsCarCargo::Load load;
+        load.cargo = r.u16();
+        load.object = to_utf8(r.text_u16());
+        load.area = r.i32();
+        load.volume = r.f32();
+        load.mass = r.f32();
+        load.count = r.i32();
+        for (auto& v : load.position) v = r.f32();
+        for (auto& v : load.extent) v = r.f32();
+        cargo.loads.push_back(std::move(load));
+    }
+    if (!r.ok()) return std::nullopt;
+    return cargo;
 }
 
 Bytes encode_openrts_cab_doors(const OpenrtsCabDoors& doors) {
@@ -1487,6 +1557,114 @@ std::optional<ConsoleState> decode_console_state(const ByteView body) {
     });
     if (!ok) return std::nullopt;
     return s;
+}
+
+namespace {
+
+void write_route_ask(WireWriter& w, const ConsoleRouteAsk& ask) {
+    w.u8(static_cast<std::uint8_t>(ask.kind));
+    w.u32(ask.train);
+    w.u8(static_cast<std::uint8_t>((ask.rear_first ? 1 : 0) | (ask.shunting ? 2 : 0) | (ask.end ? 4 : 0)));
+    if (ask.end) {
+        w.u32(ask.end->node);
+        w.f64(ask.end->offset);
+    }
+    w.u32(static_cast<std::uint32_t>(ask.via.size()));
+    for (const auto& v : ask.via) {
+        w.u32(v.node);
+        w.f64(v.offset);
+    }
+    w.u32(static_cast<std::uint32_t>(ask.branches.size()));
+    for (const auto& [node, branch] : ask.branches) {
+        w.u32(node);
+        w.u32(branch);
+    }
+}
+
+ConsoleRouteAsk read_route_ask(WireReader& r) {
+    ConsoleRouteAsk ask;
+    ask.kind = static_cast<ConsoleRouteAsk::Kind>(r.u8() % 3);
+    ask.train = r.u32();
+    const auto flags = r.u8();
+    ask.rear_first = (flags & 1) != 0;
+    ask.shunting = (flags & 2) != 0;
+    if (flags & 4) {
+        ConsoleRouteSpot end;
+        end.node = r.u32();
+        end.offset = r.f64();
+        ask.end = end;
+    }
+    const auto via = r.u32();
+    for (std::uint32_t i = 0; i < via && r.ok() && i < 256; ++i) {
+        ConsoleRouteSpot v;
+        v.node = r.u32();
+        v.offset = r.f64();
+        ask.via.push_back(v);
+    }
+    const auto branches = r.u32();
+    for (std::uint32_t i = 0; i < branches && r.ok() && i < 4096; ++i) {
+        const auto node = r.u32();
+        const auto branch = r.u32();
+        ask.branches.emplace_back(node, branch);
+    }
+    return ask;
+}
+
+} // namespace
+
+Bytes encode_console_route_ask(const ConsoleRouteAsk& ask) {
+    WireWriter w;
+    write_route_ask(w, ask);
+    return w.take();
+}
+
+std::optional<ConsoleRouteAsk> decode_console_route_ask(const ByteView body) {
+    ConsoleRouteAsk ask;
+    const bool ok = parse_body(body, [&](WireReader& r) { ask = read_route_ask(r); });
+    if (!ok) return std::nullopt;
+    return ask;
+}
+
+Bytes encode_console_route_answer(const ConsoleRouteAnswer& a) {
+    WireWriter w;
+    w.u8(static_cast<std::uint8_t>(a.kind));
+    w.u32(a.train);
+    w.u8(static_cast<std::uint8_t>((a.ok ? 1 : 0) | (a.request ? 2 : 0)));
+    w.text_u32(a.message);
+    w.u32(a.junctions);
+    w.u32(static_cast<std::uint32_t>(a.spans.size()));
+    for (const auto& s : a.spans) {
+        w.u32(s.node);
+        w.u8(s.forward ? 1 : 0);
+        w.f64(s.from);
+        w.f64(s.to);
+    }
+    if (a.request) write_route_ask(w, *a.request);
+    return w.take();
+}
+
+std::optional<ConsoleRouteAnswer> decode_console_route_answer(const ByteView body) {
+    ConsoleRouteAnswer a;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        a.kind = static_cast<ConsoleRouteAsk::Kind>(r.u8() % 3);
+        a.train = r.u32();
+        const auto flags = r.u8();
+        a.ok = (flags & 1) != 0;
+        a.message = r.text_u32();
+        a.junctions = r.u32();
+        const auto count = r.u32();
+        for (std::uint32_t i = 0; i < count && r.ok() && i < 65536; ++i) {
+            ConsoleRouteSpan s;
+            s.node = r.u32();
+            s.forward = r.u8() != 0;
+            s.from = r.f64();
+            s.to = r.f64();
+            a.spans.push_back(s);
+        }
+        if (flags & 2) a.request = read_route_ask(r);
+    });
+    if (!ok) return std::nullopt;
+    return a;
 }
 
 Bytes encode_console_next_ask(const ConsoleNextAsk& ask) {

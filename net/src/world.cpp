@@ -203,15 +203,24 @@ std::optional<double> track_distance(simulation::TrackNetwork& network, const si
 
 void RemoteMotion::add(simulation::TrackNetwork& network, const double time, const simulation::TrackLocation& front,
                        const float speed) {
-    Sample sample{time, front, speed, std::nullopt};
+    // After timed ones (the server's fast positions switched off): kept, the
+    // clock eased back to the longer delay instead of jumping.
+    const bool after_timed = timed_ || last_timed_;
+    untimed();
+    last_timed_ = false;
+    Sample sample{time, front, speed, 0.0f, std::nullopt};
     if (!samples_.empty()) {
         const auto& last = samples_.back();
         const double gap = time - last.time;
         // The interval: what the sender keeps to, smoothed. RTS also sends a
         // position out of turn (stopping, starting: 0.06 s after the last in
         // the live capture); those gaps say nothing of the interval. A
-        // server driving TRAFFIC every 0.5 s still counts.
-        if (gap > 0.45 && gap < 10.0) interval_ = std::clamp(0.7 * interval_ + 0.3 * gap, 0.4, 3.0);
+        // server driving TRAFFIC every 0.5 s still counts. Nor does a gap
+        // from a timed one, or from where it stood (a train that stood a
+        // minute and set off is not sent every minute: the delay grew to
+        // 3 s).
+        const bool counts = !after_timed && last.speed != 0.0f;
+        if (counts && gap > 0.45 && gap < 10.0) interval_ = std::clamp(0.7 * interval_ + 0.3 * gap, 0.4, 3.0);
         // As far as the train can go in twice the gap at 400 km/h, with room.
         const double limit = 50.0 + 2.0 * std::max(gap, 0.0) * 112.0;
         sample.from_previous = track_distance(network, last.front, front, limit);
@@ -226,9 +235,55 @@ void RemoteMotion::add(simulation::TrackNetwork& network, const double time, con
             if (std::abs(by_way - time) < 1.0) sample.time = by_way + 0.15 * (time - by_way);
         }
     }
+    if (!samples_.empty()) sample.time = std::max(sample.time, samples_.back().time + 1e-3);
     standing_ = false;
     samples_.push_back(sample);
     if (samples_.size() > 8) samples_.erase(samples_.begin());
+}
+
+void RemoteMotion::add_timed(simulation::TrackNetwork& network, double time, const simulation::TrackLocation& front, const float speed,
+                             const float acceleration) {
+    // After RTS ones (switched on, or the train set off again): kept, the
+    // clock eased forward to the shorter delay instead of jumping.
+    if (!timed_) {
+        timed_ = true;
+        easing_ = !samples_.empty();
+    }
+    last_timed_ = true;
+    // Late (by UDP): put among the others in time, the ways from and to its
+    // neighbours measured again; too old to be drawn any more, dropped.
+    if (!samples_.empty() && time < samples_.back().time - 1e-4) {
+        if (time <= samples_.front().time) return;
+        auto at = std::upper_bound(samples_.begin(), samples_.end(), time, [](const double t, const Sample& s) { return t < s.time; });
+        const auto& before = *(at - 1);
+        if (std::abs(before.time - time) < 1e-4) return;
+        Sample late{time, front, speed, acceleration, std::nullopt};
+        late.from_previous = track_distance(network, before.front, front, 50.0 + 2.0 * (time - before.time) * 112.0);
+        at = samples_.insert(at, late);
+        auto& next = *(at + 1);
+        next.from_previous = track_distance(network, front, next.front, 50.0 + 2.0 * (next.time - time) * 112.0);
+        return;
+    }
+    if (!samples_.empty() && std::abs(samples_.back().time - time) < 1e-4) return;
+    if (!samples_.empty()) time = std::max(time, samples_.back().time + 1e-3);
+    Sample sample{time, front, speed, acceleration, std::nullopt};
+    if (!samples_.empty()) {
+        const auto& last = samples_.back();
+        // As far as the train can go in twice the gap at 400 km/h, with room.
+        const double limit = 50.0 + 2.0 * (time - last.time) * 112.0;
+        sample.from_previous = track_distance(network, last.front, front, limit);
+    }
+    standing_ = false;
+    samples_.push_back(sample);
+    // Three seconds of them (20 a second by UDP): the delay stays under it,
+    // also while it eases down from the RTS positions' 1.75 s.
+    if (samples_.size() > 64) samples_.erase(samples_.begin());
+}
+
+void RemoteMotion::untimed() {
+    if (!timed_) return;
+    timed_ = false;
+    easing_ = true;
 }
 
 void RemoteMotion::stand(const double time) {
@@ -275,11 +330,27 @@ void RemoteMotion::tick(const double now) {
     const double target = now - delay();
     if (!ticked_ || now < tick_now_) {
         drawn_ = target;
+        easing_ = false;
     } else {
         const double step = now - tick_now_;
         const double off = target - (drawn_ + step);
-        if (std::abs(off) > 0.5) {
+        if (easing_ && std::abs(off) < 5.0) {
+            // Between timed and RTS positions: 10 % faster or slower until
+            // the clock trails by the new delay (1.55 s: some 15 s).
+            drawn_ += step * std::clamp(1.0 + off / std::max(step, 1e-3), 0.9, 1.1);
+            if (std::abs(off) < 0.02) easing_ = false;
+            rate_ = 1.0;
+        } else if (std::abs(off) > 0.5) {
             drawn_ = target;
+            easing_ = false;
+        } else if (timed_) {
+            // Timed positions: their delay moves by hundredths of a second.
+            // The clock eases towards it, at most 2 % off (a second's off
+            // a percent), its pace changing over half a second: a steady
+            // 12 m/s was drawn 11.8..12.7, jerking by 0.24 m/s in a frame.
+            const double target = 1.0 + std::clamp(off, -0.02, 0.02);
+            rate_ += (target - rate_) * std::min(step / 0.5, 1.0);
+            drawn_ += step * rate_;
         } else {
             const double rate = std::clamp(1.0 + off / std::max(step, 1e-3), 0.9, 1.1);
             drawn_ += step * rate;
@@ -303,10 +374,16 @@ std::optional<simulation::TrackLocation> RemoteMotion::at(simulation::TrackNetwo
         t.move(way);
         return simulation::TrackLocation{t.node(), t.offset(), t.forward()};
     }
-    // Past the last position: on at its speed for one more interval.
+    // Past the last position: on at its speed for one more interval (timed:
+    // half a second, at its acceleration too, never turning back).
     const auto& last = samples_.back();
     if (standing_ || last.speed == 0.0f) return last.front;
-    const double ahead = std::min(drawn - last.time, interval_) * last.speed;
+    const double past = std::min(drawn - last.time, timed_ ? 0.5 : interval_);
+    double ahead = past * last.speed;
+    if (timed_) {
+        const double with = ahead + 0.5 * last.acceleration * past * past;
+        ahead = with * ahead > 0.0 ? with : 0.0;
+    }
     simulation::TrackTraveller t(network, last.front.node, last.front.offset, last.front.forward);
     t.move(ahead);
     return simulation::TrackLocation{t.node(), t.offset(), t.forward()};

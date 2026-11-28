@@ -59,6 +59,9 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"msaa_samples", text(s.msaa)},
         {"launcher_experimental", text(s.experimental)},
         {"launcher_hdr", text(s.hdr)},
+        {"launcher_hdr_output", text(s.hdr_output)},
+        {"hdr_paper_white", text(s.hdr_paper_white)},
+        {"hdr_peak", text(s.hdr_peak)},
         {"tone_mode", text(s.tone_curve)},
         {"exposure", text(s.exposure)},
         {"night_exposure", text(s.night_exposure)},
@@ -77,6 +80,7 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"bloom_strength", text(e.bloom_strength)},
         {"bloom_textures", text(e.bloom_textures)},
         {"effect_shafts", text(e.light_shafts)},
+        {"effect_taa", text(e.temporal_aa)},
         {"shafts_strength", text(e.light_shafts_strength)},
         {"shadow_distance", text(e.shadow_distance)},
         {"shadow_quality", text(e.shadow_map_size)},
@@ -84,6 +88,7 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"shadow_softness", text(e.shadow_softness)},
         {"shadow_cache", text(e.cache_far_cascades)},
         {"shadow_cab", text(e.cab_shadows)},
+        {"shadow_rays", text(e.ray_shadows)},
         {"lamp_shadows", text(e.lamp_shadows)},
         {"lamps_daylight", text(e.lamps_in_daylight)},
         {"ground_bounce", text(e.ground_bounce)},
@@ -99,7 +104,6 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"light_range", text(s.light_range)},
         {"headlight_reach", text(s.headlight_reach)},
         {"night_ambient", text(s.night_ambient)},
-        {"light_fullbright", text(s.light_fullbright)},
         {"lamp_own_model", text(s.lamp_own_model)},
         {"native_sky", text(s.native_sky)},
         {"cloud_cover_weather", text(s.cloud_cover_weather)},
@@ -110,6 +114,10 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"native_water", text(s.native_water)},
         {"forest_clearance", text(s.forest_clearance)},
         {"forest_clearance_distance", text(s.forest_clearance_distance)},
+        {"grass", text(s.grass)},
+        {"grass_density", text(s.grass_density)},
+        {"grass_reach", text(s.grass_reach)},
+        {"world_draw_distance", text(s.world_draw_distance)},
         {"signal_lights_real_size", text(s.signal_lights_real_size)},
         {"night_textures", text(s.night_textures)},
         {"screen_supersampling", text(s.screen_supersampling)},
@@ -130,6 +138,9 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     }
     s.experimental = whole(value_of, "launcher_experimental", 0, 0, 1) != 0;
     s.hdr = whole(value_of, "launcher_hdr", 0, 0, 1) != 0;
+    s.hdr_output = whole(value_of, "launcher_hdr_output", 0, 0, 1) != 0;
+    s.hdr_paper_white = number(value_of, "hdr_paper_white", s.hdr_paper_white, 80.0f, 600.0f);
+    s.hdr_peak = number(value_of, "hdr_peak", s.hdr_peak, 200.0f, 10000.0f);
     s.tone_curve = whole(value_of, "tone_mode", s.tone_curve, 0, 5);
     s.exposure = number(value_of, "exposure", s.exposure, 0.25f, 4.0f);
     s.night_exposure = number(value_of, "night_exposure", s.night_exposure, 0.5f, 6.0f);
@@ -147,6 +158,7 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     e.bloom_strength = number(value_of, "bloom_strength", e.bloom_strength, 0.0f, 3.0f);
     e.bloom_textures = flag_not_zero(value_of, "bloom_textures", e.bloom_textures);
     e.light_shafts = flag_one(value_of, "effect_shafts", e.light_shafts);
+    e.temporal_aa = flag_one(value_of, "effect_taa", e.temporal_aa);
     e.light_shafts_strength = number(value_of, "shafts_strength", e.light_shafts_strength, 0.0f, 4.0f);
     e.aerial_perspective = flag_one(value_of, "effect_aerial", e.aerial_perspective);
     e.shadow_distance = number(value_of, "shadow_distance", e.shadow_distance, 100.0f, 1000.0f);
@@ -158,6 +170,7 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     e.shadow_softness = number(value_of, "shadow_softness", e.shadow_softness, 0.5f, 4.0f);
     e.cache_far_cascades = flag_one(value_of, "shadow_cache", e.cache_far_cascades);
     e.cab_shadows = flag_one(value_of, "shadow_cab", e.cab_shadows);
+    e.ray_shadows = flag_one(value_of, "shadow_rays", e.ray_shadows);
     e.lamp_shadows = static_cast<std::uint32_t>(
         whole(value_of, "lamp_shadows", static_cast<int>(e.lamp_shadows), 0, static_cast<int>(renderer::SceneEffects::max_lamp_shadows)));
     e.lamps_in_daylight = number(value_of, "lamps_daylight", e.lamps_in_daylight, 0.0f, 1.0f);
@@ -174,7 +187,6 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.light_range = number(value_of, "light_range", s.light_range, 0.0f, 3000.0f);
     s.headlight_reach = number(value_of, "headlight_reach", s.headlight_reach, 1.0f, 5.0f);
     s.night_ambient = number(value_of, "night_ambient", s.night_ambient, 0.5f, 8.0f);
-    s.light_fullbright = flag_one(value_of, "light_fullbright", s.light_fullbright);
     s.lamp_own_model = flag_not_zero(value_of, "lamp_own_model", s.lamp_own_model);
     s.native_sky = flag_not_zero(value_of, "native_sky", s.native_sky);
     s.cloud_cover_weather = flag_not_zero(value_of, "cloud_cover_weather", s.cloud_cover_weather);
@@ -185,6 +197,10 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     s.native_water = flag_not_zero(value_of, "native_water", s.native_water);
     s.forest_clearance = flag_not_zero(value_of, "forest_clearance", s.forest_clearance);
     s.forest_clearance_distance = number(value_of, "forest_clearance_distance", s.forest_clearance_distance, 0.5f, 20.0f);
+    s.grass = flag_not_zero(value_of, "grass", s.grass);
+    s.grass_density = number(value_of, "grass_density", s.grass_density, 0.25f, 2.0f);
+    s.grass_reach = number(value_of, "grass_reach", s.grass_reach, 20.0f, 120.0f);
+    s.world_draw_distance = number(value_of, "world_draw_distance", s.world_draw_distance, 500.0f, 4000.0f);
     s.signal_lights_real_size = flag_not_zero(value_of, "signal_lights_real_size", s.signal_lights_real_size);
     s.night_textures = flag_not_zero(value_of, "night_textures", s.night_textures);
     s.screen_supersampling = flag_not_zero(value_of, "screen_supersampling", s.screen_supersampling);

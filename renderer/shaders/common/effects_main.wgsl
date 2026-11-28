@@ -77,7 +77,28 @@ fn effects_lamp_shadow(index: u32, world: vec3<f32>, normal: vec3<f32>, frag: ve
     for (var s = 0u; s < count; s = s + 1u) {
         if (effects.lamp_shadow_ids[s / 4u][s % 4u] == index + 1u) { return effects_lamp_shadow_slot(s, world, normal, frag); }
     }
-    return 1.0;
+    // No map: by rays, when the pixel's ray went to it (ray_shadow).
+    return effects_ray_lamp(index, frag);
+}
+
+// Whether lamp `index` throws a shadow at this pixel: a map of its own or
+// a ray of this pixel's (ray_shadow).
+fn effects_lamp_has_shadow(index: u32, frag: vec4<f32>) -> bool {
+    let count = u32(effects.lamp_shadow_params.x);
+    for (var s = 0u; s < count; s = s + 1u) {
+        if (effects.lamp_shadow_ids[s / 4u][s % 4u] == index + 1u) { return true; }
+    }
+    return effects_ray_has_lamp(index, frag);
+}
+
+// The same for a ring's lamp (by its key; rays go to the clustered list's).
+fn effects_lamp_has_shadow_of(light: Light) -> bool {
+    let key = light.translation[3].xyz;
+    let count = u32(effects.lamp_shadow_params.x);
+    for (var s = 0u; s < count; s = s + 1u) {
+        if (distance(effects.lamp_shadow_keys[s].xyz, key) < 0.001) { return true; }
+    }
+    return false;
 }
 
 // The same for a lamp of the RTS light rings (the clustered list off): found
@@ -125,7 +146,8 @@ fn effects_lamp_shadow_slot(s: u32, world: vec3<f32>, normal: vec3<f32>, frag: v
 // The sun's light reaching a point: what things nearby leave of it, and the
 // clouds (effects_cloud_shadow).
 fn effects_shadow(world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f32 {
-    return effects_cascade_shadow(world, normal, frag) * effects_cloud_shadow(world);
+    // Rays (ray_shadow, the opaque models) with the maps (the cut-outs too).
+    return min(effects_cascade_shadow(world, normal, frag), effects_ray_shadow(world, normal, frag)) * effects_cloud_shadow(world);
 }
 
 // What things nearby leave of the sun's light: 1 lit, 0 in shadow (cascaded

@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <map>
+#include <set>
 #include <optional>
 #include <string>
 #include <vector>
@@ -44,6 +45,9 @@ struct PlanPoint {
     // "Switch junction"), overriding the shortest way.
     std::vector<std::uint32_t> through;
     std::map<std::uint32_t, std::uint32_t> branches;
+    // Vector nodes the way must not run onto (other trains standing there;
+    // the server's routes), but for the point's own node.
+    std::set<std::uint32_t> avoid;
 };
 
 // An editable train path.

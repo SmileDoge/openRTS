@@ -1,0 +1,549 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index 67290b7..c019d00 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -1077,6 +1077,7 @@ dependencies = [
+ name = "wgpu-native"
+ version = "0.0.0"
+ dependencies = [
++ "ash",
+  "bindgen",
+  "bitflags",
+  "log",
+@@ -1090,6 +1091,7 @@ dependencies = [
+  "wgpu-core",
+  "wgpu-hal",
+  "wgpu-types",
++ "windows",
+ ]
+ 
+ [[package]]
+diff --git a/Cargo.toml b/Cargo.toml
+index d941438..9f3a45c 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -107,6 +107,17 @@ workspace = true
+ [target.'cfg(all(unix, not(target_os = "ios"), not(target_os = "macos")))'.dependencies]
+ hal = { workspace = true, features = ["renderdoc"] }
+ 
++[target.'cfg(windows)'.dependencies.ash]
++# openRTS's fork: a D3D11 fence imported as a Vulkan timeline semaphore.
++version = "0.38"
++
++[target.'cfg(windows)'.dependencies.windows]
++# openRTS's fork: the HANDLE wgpu-hal's D3D11 shared-texture import takes,
++# and D3D12's OpenSharedHandle for the same on D3D12.
++version = "0.58"
++default-features = false
++features = ["Win32_Foundation", "Win32_Graphics_Direct3D12", "Win32_Graphics_Dxgi_Common"]
++
+ [target.'cfg(windows)'.dependencies]
+ hal = { workspace = true, features = ["dx12", "renderdoc"] }
+ 
+diff --git a/ffi/wgpu.h b/ffi/wgpu.h
+index f9ab182..9602dda 100644
+--- a/ffi/wgpu.h
++++ b/ffi/wgpu.h
+@@ -56,6 +56,8 @@ typedef enum WGPUNativeFeature {
+     WGPUNativeFeature_TimestampQueryInsideEncoders = 0x00030024,
+     WGPUNativeFeature_TimestampQueryInsidePasses = 0x00030025,
+     WGPUNativeFeature_ShaderInt64 = 0x00030026,
++    // openRTS's fork: VK_KHR_external_memory_win32 (wgpuDeviceImportD3D11SharedTexture).
++    WGPUNativeFeature_VulkanExternalMemoryWin32 = 0x00030100,
+     WGPUNativeFeature_Force32 = 0x7FFFFFFF
+ } WGPUNativeFeature;
+ 
+@@ -312,6 +314,33 @@ extern "C" {
+ #endif
+ 
+ void wgpuGenerateReport(WGPUInstance instance, WGPUGlobalReport * report);
++
++// openRTS's fork (Windows): a texture over a D3D11 texture shared by an NT
++// handle (D3D11_RESOURCE_MISC_SHARED_NTHANDLE). Vulkan: the device asked for
++// WGPUNativeFeature_VulkanExternalMemoryWin32; D3D12: the handle opened by
++// the device. NULL when it cannot.
++WGPUTexture wgpuDeviceImportD3D11SharedTexture(WGPUDevice device, void * sharedHandle, WGPUTextureDescriptor const * descriptor);
++// openRTS's fork (Windows): a fence shared by an NT handle (a D3D11 fence
++// made with D3D11_FENCE_FLAG_SHARED) opened by the device: D3D12's
++// OpenSharedHandle, or a Vulkan timeline semaphore importing it (the device
++// asked for WGPUNativeFeature_VulkanExternalMemoryWin32 gets
++// VK_KHR_external_semaphore_win32 when the GPU has it). An opaque pointer,
++// NULL when it cannot; released by wgpuDeviceReleaseSharedFence.
++void * wgpuDeviceOpenSharedFence(WGPUDevice device, void * sharedHandle);
++void wgpuDeviceReleaseSharedFence(void * fence);
++// The fence set to `value` on the queue after what was submitted so far, or
++// the queue's next work held until the fence reaches it (on the GPU).
++WGPUBool wgpuQueueSignalSharedFence(WGPUQueue queue, void * fence, uint64_t value);
++WGPUBool wgpuQueueWaitSharedFence(WGPUQueue queue, void * fence, uint64_t value);
++// openRTS's fork (Windows, D3D12): a fence shared by an NT handle (a D3D11
++// fence made with D3D11_FENCE_FLAG_SHARED) opened by the device, as an
++// ID3D12Fence* the caller releases; NULL when it cannot.
++void * wgpuDeviceOpenD3D12SharedFence(WGPUDevice device, void * sharedHandle);
++// openRTS's fork (D3D12): the fence (ID3D12Fence*) set to `value` on the
++// queue after what was submitted so far, or the queue's next work held until
++// the fence reaches it. Returns false on another API.
++WGPUBool wgpuQueueSignalD3D12Fence(WGPUQueue queue, void * fence, uint64_t value);
++WGPUBool wgpuQueueWaitD3D12Fence(WGPUQueue queue, void * fence, uint64_t value);
+ size_t wgpuInstanceEnumerateAdapters(WGPUInstance instance, WGPU_NULLABLE WGPUInstanceEnumerateAdapterOptions const * options, WGPUAdapter * adapters);
+ 
+ WGPUSubmissionIndex wgpuQueueSubmitForIndex(WGPUQueue queue, size_t commandCount, WGPUCommandBuffer const * commands);
+diff --git a/src/conv.rs b/src/conv.rs
+index f2514c2..80c78d5 100644
+--- a/src/conv.rs
++++ b/src/conv.rs
+@@ -1217,6 +1217,9 @@ pub fn features_to_native(features: wgt::Features) -> Vec<native::WGPUFeatureNam
+     if features.contains(wgt::Features::TEXTURE_FORMAT_NV12) {
+         temp.push(native::WGPUNativeFeature_TextureFormatNv12);
+     }
++    if features.contains(wgt::Features::VULKAN_EXTERNAL_MEMORY_WIN32) {
++        temp.push(native::WGPUNativeFeature_VulkanExternalMemoryWin32);
++    }
+     if features.contains(wgt::Features::EXPERIMENTAL_RAY_QUERY) {
+         temp.push(native::WGPUNativeFeature_RayQuery);
+     }
+@@ -1307,6 +1310,7 @@ pub fn map_feature(feature: native::WGPUFeatureName) -> Option<wgt::Features> {
+         native::WGPUNativeFeature_Subgroup => Some(Features::SUBGROUP),
+         native::WGPUNativeFeature_SubgroupVertex => Some(Features::SUBGROUP_VERTEX),
+         native::WGPUNativeFeature_SubgroupBarrier => Some(Features::SUBGROUP_BARRIER),
++        native::WGPUNativeFeature_VulkanExternalMemoryWin32 => Some(Features::VULKAN_EXTERNAL_MEMORY_WIN32),
+         // fallback, probably not available in wgpu-core
+         _ => None,
+     }
+diff --git a/src/lib.rs b/src/lib.rs
+index 34b38df..5751f1b 100644
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -815,7 +815,8 @@ pub unsafe extern "C" fn wgpuAdapterRequestDevice(
+         ),
+     };
+ 
+-    let result = context.adapter_request_device(adapter_id, &desc, None, None);
++    let result = request_device_with_shared_fences(context, adapter_id, &desc)
++        .unwrap_or_else(|| context.adapter_request_device(adapter_id, &desc, None, None));
+     match result {
+         Ok((device_id, queue_id)) => {
+             let device_impl = Arc::new_cyclic(|device| {
+@@ -2469,6 +2470,423 @@ pub unsafe extern "C" fn wgpuDeviceCreateTexture(
+     }))
+ }
+ 
++// openRTS's fork (Vulkan, Windows): a device asked for
++// VULKAN_EXTERNAL_MEMORY_WIN32 also gets VK_KHR_external_semaphore_win32
++// when the GPU has it (wgpuDeviceOpenSharedFence). None: the usual way.
++#[cfg(all(windows, feature = "vulkan"))]
++unsafe fn request_device_with_shared_fences(
++    context: &Context,
++    adapter_id: wgc::id::AdapterId,
++    desc: &wgc::device::DeviceDescriptor,
++) -> Option<Result<(wgc::id::DeviceId, wgc::id::QueueId), wgc::instance::RequestDeviceError>> {
++    if !desc.required_features.contains(wgt::Features::VULKAN_EXTERNAL_MEMORY_WIN32) {
++        return None;
++    }
++    let open = {
++        let hal_adapter = context.adapter_as_hal::<hal::api::Vulkan>(adapter_id)?;
++        let name = ash::khr::external_semaphore_win32::NAME;
++        if !hal_adapter.physical_device_capabilities().supports_extension(name) {
++            return None;
++        }
++        let callback: Box<hal::vulkan::CreateDeviceCallback> = Box::new(move |args| {
++            if !args.extensions.contains(&name) {
++                args.extensions.push(name);
++            }
++        });
++        match hal_adapter.open_with_callback(desc.required_features, &desc.memory_hints, Some(callback)) {
++            Ok(open) => open,
++            Err(error) => {
++                log::error!("openRTS: a Vulkan device with shared fences: {error:?}");
++                return None;
++            }
++        }
++    };
++    Some(context.create_device_from_hal(adapter_id, open.into(), desc, None, None))
++}
++
++#[cfg(not(all(windows, feature = "vulkan")))]
++unsafe fn request_device_with_shared_fences(
++    _context: &Context,
++    _adapter_id: wgc::id::AdapterId,
++    _desc: &wgc::device::DeviceDescriptor,
++) -> Option<Result<(wgc::id::DeviceId, wgc::id::QueueId), wgc::instance::RequestDeviceError>> {
++    None
++}
++
++// openRTS's fork (Windows): a fence shared by an NT handle (a D3D11 fence
++// made with D3D11_FENCE_FLAG_SHARED), opened by the device: D3D12's
++// OpenSharedHandle, or on Vulkan a timeline semaphore importing it
++// (VK_KHR_external_semaphore_win32, the D3D12 fence handle type). Signalled
++// and waited for on the queue (wgpuQueueSignal/WaitSharedFence), so wgpu and
++// D3D11 keep in step on the GPU.
++#[cfg(windows)]
++pub enum SharedFence {
++    #[cfg(feature = "dx12")]
++    D3d12(windows::Win32::Graphics::Direct3D12::ID3D12Fence),
++    #[cfg(feature = "vulkan")]
++    Vulkan {
++        device: ash::Device,
++        semaphore: ash::vk::Semaphore,
++    },
++}
++
++#[cfg(windows)]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuDeviceOpenSharedFence(
++    device: native::WGPUDevice,
++    shared_handle: *mut std::ffi::c_void,
++) -> *mut std::ffi::c_void {
++    let (device_id, context) = {
++        let device = device.as_ref().expect("invalid device");
++        (device.id, &device.context)
++    };
++    #[cfg(feature = "dx12")]
++    if let Some(hal_device) = context.device_as_hal::<hal::api::Dx12>(device_id) {
++        let mut fence: Option<windows::Win32::Graphics::Direct3D12::ID3D12Fence> = None;
++        if let Err(error) = hal_device
++            .raw_device()
++            .OpenSharedHandle(windows::Win32::Foundation::HANDLE(shared_handle), &mut fence)
++        {
++            log::error!("wgpuDeviceOpenSharedFence (D3D12): {error:?}");
++            return std::ptr::null_mut();
++        }
++        return match fence {
++            Some(fence) => Box::into_raw(Box::new(SharedFence::D3d12(fence))) as *mut std::ffi::c_void,
++            None => std::ptr::null_mut(),
++        };
++    }
++    #[cfg(feature = "vulkan")]
++    if let Some(hal_device) = context.device_as_hal::<hal::api::Vulkan>(device_id) {
++        use ash::vk;
++        if !hal_device.enabled_device_extensions().contains(&ash::khr::external_semaphore_win32::NAME) {
++            log::error!("wgpuDeviceOpenSharedFence (Vulkan): VK_KHR_external_semaphore_win32 not enabled");
++            return std::ptr::null_mut();
++        }
++        let raw = hal_device.raw_device().clone();
++        let instance = hal_device.shared_instance().raw_instance();
++        let mut timeline = vk::SemaphoreTypeCreateInfo::default()
++            .semaphore_type(vk::SemaphoreType::TIMELINE)
++            .initial_value(0);
++        let info = vk::SemaphoreCreateInfo::default().push_next(&mut timeline);
++        let semaphore = match raw.create_semaphore(&info, None) {
++            Ok(semaphore) => semaphore,
++            Err(error) => {
++                log::error!("wgpuDeviceOpenSharedFence (Vulkan): {error:?}");
++                return std::ptr::null_mut();
++            }
++        };
++        let import = ash::khr::external_semaphore_win32::Device::new(instance, &raw);
++        let import_info = vk::ImportSemaphoreWin32HandleInfoKHR::default()
++            .semaphore(semaphore)
++            .handle_type(vk::ExternalSemaphoreHandleTypeFlags::D3D12_FENCE)
++            .handle(shared_handle as isize);
++        if let Err(error) = import.import_semaphore_win32_handle(&import_info) {
++            log::error!("wgpuDeviceOpenSharedFence (Vulkan import): {error:?}");
++            raw.destroy_semaphore(semaphore, None);
++            return std::ptr::null_mut();
++        }
++        return Box::into_raw(Box::new(SharedFence::Vulkan { device: raw, semaphore })) as *mut std::ffi::c_void;
++    }
++    let _ = shared_handle;
++    log::error!("wgpuDeviceOpenSharedFence: neither D3D12 nor Vulkan");
++    std::ptr::null_mut()
++}
++
++#[cfg(windows)]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuDeviceReleaseSharedFence(fence: *mut std::ffi::c_void) {
++    if fence.is_null() {
++        return;
++    }
++    let fence = Box::from_raw(fence as *mut SharedFence);
++    match *fence {
++        #[cfg(feature = "dx12")]
++        SharedFence::D3d12(_) => {}
++        #[cfg(feature = "vulkan")]
++        SharedFence::Vulkan { ref device, semaphore } => device.destroy_semaphore(semaphore, None),
++    }
++}
++
++#[cfg(windows)]
++unsafe fn shared_fence_on_queue(
++    queue: native::WGPUQueue,
++    fence: *mut std::ffi::c_void,
++    value: u64,
++    signal: bool,
++) -> bool {
++    let (queue_id, context) = {
++        let queue = queue.as_ref().expect("invalid queue");
++        (queue.queue.id, &queue.queue.context)
++    };
++    let Some(fence) = (fence as *const SharedFence).as_ref() else {
++        return false;
++    };
++    match fence {
++        #[cfg(feature = "dx12")]
++        SharedFence::D3d12(fence) => {
++            let Some(hal_queue) = context.queue_as_hal::<hal::api::Dx12>(queue_id) else {
++                return false;
++            };
++            let result = if signal {
++                hal_queue.as_raw().Signal(fence, value)
++            } else {
++                hal_queue.as_raw().Wait(fence, value)
++            };
++            if let Err(error) = result {
++                log::error!("wgpuQueue*SharedFence (D3D12): {error:?}");
++                return false;
++            }
++            true
++        }
++        #[cfg(feature = "vulkan")]
++        SharedFence::Vulkan { device, semaphore } => {
++            use ash::vk;
++            let Some(hal_queue) = context.queue_as_hal::<hal::api::Vulkan>(queue_id) else {
++                return false;
++            };
++            let semaphores = [*semaphore];
++            let values = [value];
++            let stages = [vk::PipelineStageFlags::ALL_COMMANDS];
++            let result = if signal {
++                let mut timeline = vk::TimelineSemaphoreSubmitInfo::default().signal_semaphore_values(&values);
++                let submit = vk::SubmitInfo::default().signal_semaphores(&semaphores).push_next(&mut timeline);
++                device.queue_submit(hal_queue.as_raw(), &[submit], vk::Fence::null())
++            } else {
++                let mut timeline = vk::TimelineSemaphoreSubmitInfo::default().wait_semaphore_values(&values);
++                let submit = vk::SubmitInfo::default()
++                    .wait_semaphores(&semaphores)
++                    .wait_dst_stage_mask(&stages)
++                    .push_next(&mut timeline);
++                device.queue_submit(hal_queue.as_raw(), &[submit], vk::Fence::null())
++            };
++            if let Err(error) = result {
++                log::error!("wgpuQueue*SharedFence (Vulkan): {error:?}");
++                return false;
++            }
++            true
++        }
++    }
++}
++
++#[cfg(windows)]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuQueueSignalSharedFence(
++    queue: native::WGPUQueue,
++    fence: *mut std::ffi::c_void,
++    value: u64,
++) -> native::WGPUBool {
++    shared_fence_on_queue(queue, fence, value, true) as native::WGPUBool
++}
++
++#[cfg(windows)]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuQueueWaitSharedFence(
++    queue: native::WGPUQueue,
++    fence: *mut std::ffi::c_void,
++    value: u64,
++) -> native::WGPUBool {
++    shared_fence_on_queue(queue, fence, value, false) as native::WGPUBool
++}
++
++// openRTS's fork (D3D12): a fence shared by an NT handle (a D3D11 one made
++// with D3D11_FENCE_FLAG_SHARED) opened by the device; the ID3D12Fence* the
++// caller releases (IUnknown::Release), NULL when it cannot.
++#[cfg(all(windows, feature = "dx12"))]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuDeviceOpenD3D12SharedFence(
++    device: native::WGPUDevice,
++    shared_handle: *mut std::ffi::c_void,
++) -> *mut std::ffi::c_void {
++    let (device_id, context) = {
++        let device = device.as_ref().expect("invalid device");
++        (device.id, &device.context)
++    };
++    let Some(hal_device) = context.device_as_hal::<hal::api::Dx12>(device_id) else {
++        log::error!("wgpuDeviceOpenD3D12SharedFence: the device is not D3D12's");
++        return std::ptr::null_mut();
++    };
++    let mut fence: Option<windows::Win32::Graphics::Direct3D12::ID3D12Fence> = None;
++    if let Err(error) = hal_device
++        .raw_device()
++        .OpenSharedHandle(windows::Win32::Foundation::HANDLE(shared_handle), &mut fence)
++    {
++        log::error!("wgpuDeviceOpenD3D12SharedFence: {error:?}");
++        return std::ptr::null_mut();
++    }
++    match fence {
++        Some(fence) => windows::core::Interface::into_raw(fence),
++        None => std::ptr::null_mut(),
++    }
++}
++
++// openRTS's fork (D3D12): `fence` (an ID3D12Fence*) set to `value` on the
++// queue's timeline after what was submitted so far (Signal), or the queue's
++// next work held until it reaches it (Wait). false: not a D3D12 queue.
++#[cfg(all(windows, feature = "dx12"))]
++unsafe fn queue_fence(
++    queue: native::WGPUQueue,
++    fence: *mut std::ffi::c_void,
++    value: u64,
++    signal: bool,
++) -> bool {
++    let (queue_id, context) = {
++        let queue = queue.as_ref().expect("invalid queue");
++        (queue.queue.id, &queue.queue.context)
++    };
++    let Some(fence) =
++        windows::core::Interface::from_raw_borrowed(&fence) as Option<&windows::Win32::Graphics::Direct3D12::ID3D12Fence>
++    else {
++        return false;
++    };
++    let Some(hal_queue) = context.queue_as_hal::<hal::api::Dx12>(queue_id) else {
++        log::error!("wgpuQueue*D3D12Fence: the queue is not D3D12's");
++        return false;
++    };
++    let result = if signal {
++        hal_queue.as_raw().Signal(fence, value)
++    } else {
++        hal_queue.as_raw().Wait(fence, value)
++    };
++    if let Err(error) = result {
++        log::error!("wgpuQueue*D3D12Fence: {error:?}");
++        return false;
++    }
++    true
++}
++
++#[cfg(all(windows, feature = "dx12"))]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuQueueSignalD3D12Fence(
++    queue: native::WGPUQueue,
++    fence: *mut std::ffi::c_void,
++    value: u64,
++) -> native::WGPUBool {
++    queue_fence(queue, fence, value, true) as native::WGPUBool
++}
++
++#[cfg(all(windows, feature = "dx12"))]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuQueueWaitD3D12Fence(
++    queue: native::WGPUQueue,
++    fence: *mut std::ffi::c_void,
++    value: u64,
++) -> native::WGPUBool {
++    queue_fence(queue, fence, value, false) as native::WGPUBool
++}
++
++// openRTS's fork: a texture over a D3D11 texture shared by an NT handle, for
++// a frame handed to OpenXR's D3D11 swapchain or NVIDIA DLSS on D3D11 without
++// the CPU. Vulkan: wgpu-hal's `texture_from_d3d11_shared_handle` (the device
++// asked for VULKAN_EXTERNAL_MEMORY_WIN32); D3D12: the handle opened by the
++// device (`OpenSharedHandle`), the resource taken by `texture_from_raw`.
++#[cfg(all(windows, any(feature = "vulkan", feature = "dx12")))]
++#[no_mangle]
++pub unsafe extern "C" fn wgpuDeviceImportD3D11SharedTexture(
++    device: native::WGPUDevice,
++    shared_handle: *mut std::ffi::c_void,
++    descriptor: Option<&native::WGPUTextureDescriptor>,
++) -> native::WGPUTexture {
++    let (device_id, context, error_sink) = {
++        let device = device.as_ref().expect("invalid device");
++        (device.id, &device.context, &device.error_sink)
++    };
++    let descriptor = descriptor.expect("invalid descriptor");
++    let desc = wgt::TextureDescriptor {
++        label: string_view_into_label(descriptor.label),
++        size: conv::map_extent3d(&descriptor.size),
++        mip_level_count: descriptor.mipLevelCount,
++        sample_count: descriptor.sampleCount,
++        dimension: conv::map_texture_dimension(descriptor.dimension)
++            .unwrap_or(wgt::TextureDimension::D2),
++        format: conv::map_texture_format(descriptor.format)
++            .expect("invalid texture format for texture descriptor"),
++        usage: from_u64_bits(descriptor.usage)
++            .expect("invalid texture usage for texture descriptor"),
++        view_formats: Vec::new(),
++    };
++    let hal_desc = hal::TextureDescriptor {
++        label: None,
++        size: desc.size,
++        mip_level_count: desc.mip_level_count,
++        sample_count: desc.sample_count,
++        dimension: desc.dimension,
++        format: desc.format,
++        usage: wgt::TextureUses::COLOR_TARGET
++            | wgt::TextureUses::COPY_SRC
++            | wgt::TextureUses::COPY_DST
++            | wgt::TextureUses::RESOURCE,
++        memory_flags: hal::MemoryFlags::empty(),
++        view_formats: Vec::new(),
++    };
++    let mut made: Option<(wgc::id::TextureId, Option<wgc::resource::CreateTextureError>)> = None;
++    #[cfg(feature = "vulkan")]
++    if made.is_none() {
++        if let Some(hal_device) = context.device_as_hal::<hal::api::Vulkan>(device_id) {
++            let texture = match hal_device.texture_from_d3d11_shared_handle(
++                windows::Win32::Foundation::HANDLE(shared_handle),
++                &hal_desc,
++            ) {
++                Ok(texture) => texture,
++                Err(error) => {
++                    log::error!("wgpuDeviceImportD3D11SharedTexture (Vulkan): {error:?}");
++                    return std::ptr::null_mut();
++                }
++            };
++            drop(hal_device);
++            made = Some(context.create_texture_from_hal(Box::new(texture), device_id, &desc, None));
++        }
++    }
++    #[cfg(feature = "dx12")]
++    if made.is_none() {
++        if let Some(hal_device) = context.device_as_hal::<hal::api::Dx12>(device_id) {
++            let mut resource: Option<windows::Win32::Graphics::Direct3D12::ID3D12Resource> = None;
++            if let Err(error) = hal_device
++                .raw_device()
++                .OpenSharedHandle(windows::Win32::Foundation::HANDLE(shared_handle), &mut resource)
++            {
++                log::error!("wgpuDeviceImportD3D11SharedTexture (D3D12): {error:?}");
++                return std::ptr::null_mut();
++            }
++            let Some(resource) = resource else {
++                log::error!("wgpuDeviceImportD3D11SharedTexture (D3D12): no resource");
++                return std::ptr::null_mut();
++            };
++            drop(hal_device);
++            let texture = hal::dx12::Device::texture_from_raw(
++                resource,
++                desc.format,
++                desc.dimension,
++                desc.size,
++                desc.mip_level_count,
++                desc.sample_count,
++            );
++            made = Some(context.create_texture_from_hal(Box::new(texture), device_id, &desc, None));
++        }
++    }
++    let Some((texture_id, error)) = made else {
++        log::error!("wgpuDeviceImportD3D11SharedTexture: the device is neither Vulkan's nor D3D12's");
++        return std::ptr::null_mut();
++    };
++    if let Some(cause) = error {
++        handle_error(error_sink, cause, desc.label, "wgpuDeviceImportD3D11SharedTexture");
++    }
++    Arc::into_raw(Arc::new(WGPUTextureImpl {
++        context: context.clone(),
++        id: texture_id,
++        error_sink: error_sink.clone(),
++        surface_id: None,
++        has_surface_presented: Arc::default(),
++        data: TextureData {
++            usage: descriptor.usage,
++            dimension: descriptor.dimension,
++            size: descriptor.size,
++            format: descriptor.format,
++            mip_level_count: descriptor.mipLevelCount,
++            sample_count: descriptor.sampleCount,
++        },
++    }))
++}
++
+ #[no_mangle]
+ pub unsafe extern "C" fn wgpuDeviceDestroy(device: native::WGPUDevice) {
+     let (device_id, context) = {

@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstring>
 
+#include <openrts/net/datagram.hpp>
 #include <openrts/net/packages.hpp>
 
 #ifdef _WIN32
@@ -142,7 +143,7 @@ std::optional<ServerAddress> parse_address(const std::string& address) {
     return out;
 }
 
-RtsConnection::RtsConnection() : socket_(static_cast<std::uintptr_t>(no_socket)) {}
+RtsConnection::RtsConnection() : socket_(static_cast<std::uintptr_t>(no_socket)), udp_(static_cast<std::uintptr_t>(no_socket)) {}
 
 RtsConnection::~RtsConnection() { close(); }
 
@@ -163,6 +164,7 @@ LoginResult RtsConnection::connect(const std::string& address, const std::u16str
         result.error = "a nickname has 1 to 15 characters";
         return result;
     }
+    host_ = where->host;
     addrinfo hints{};
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
@@ -269,7 +271,94 @@ std::vector<ReceivedPackage> RtsConnection::receive() {
     return std::exchange(queue_, {});
 }
 
+namespace {
+
+long long steady_ms() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
+} // namespace
+
+bool RtsConnection::open_datagrams(const std::uint64_t token, const std::uint16_t port) {
+    close_datagrams();
+    if (!connected_ || host_.empty() || token == 0) return false;
+    addrinfo hints{};
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_protocol = IPPROTO_UDP;
+    addrinfo* found = nullptr;
+    if (getaddrinfo(host_.c_str(), std::to_string(port).c_str(), &hints, &found) != 0 || !found) return false;
+    Socket s = no_socket;
+    for (auto* a = found; a; a = a->ai_next) {
+        s = ::socket(a->ai_family, a->ai_socktype, a->ai_protocol);
+        if (s == no_socket) continue;
+        // Connected: only the server's datagrams come in, send() goes to it.
+        if (::connect(s, a->ai_addr, static_cast<int>(a->ai_addrlen)) == 0) break;
+        close_socket(s);
+        s = no_socket;
+    }
+    freeaddrinfo(found);
+    if (s == no_socket) return false;
+    udp_ = static_cast<std::uintptr_t>(s);
+    token_ = token;
+    heard_ms_ = -1000000;
+    udp_running_ = true;
+    udp_reader_ = std::thread([this] { datagram_loop(); });
+    return true;
+}
+
+void RtsConnection::datagram_loop() {
+    const auto s = as_socket(udp_);
+    long long hello_at = 0;
+    std::vector<std::uint8_t> buffer(2048);
+    while (udp_running_) {
+        const auto now = steady_ms();
+        if (now >= hello_at) {
+            const auto hello = make_datagram(DatagramKind::hello, token_);
+            ::send(s, reinterpret_cast<const char*>(hello.data()), static_cast<int>(hello.size()), 0);
+            hello_at = now + 1000;
+        }
+        if (!wait_readable(s, 100)) continue;
+        const auto got = ::recv(s, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0);
+        // An ICMP "unreachable" shows as an error on Windows: keep waiting.
+        if (got <= 0) continue;
+        const auto datagram = read_datagram(ByteView(buffer.data(), static_cast<std::size_t>(got)));
+        if (!datagram || datagram->token != token_) continue;
+        heard_ms_ = steady_ms();
+        if (datagram->kind != DatagramKind::package) continue;
+        const auto frame = datagram->payload;
+        if (frame.size() < 6) continue;
+        const auto length = le32(frame.data() + 2);
+        if (length != frame.size()) continue;
+        ReceivedPackage received{le16(frame.data()), Bytes(frame.begin() + 6, frame.end())};
+        std::lock_guard lock(queue_mutex_);
+        queue_.push_back(std::move(received));
+    }
+}
+
+bool RtsConnection::datagrams_live() const noexcept {
+    return udp_running_ && steady_ms() - heard_ms_ < static_cast<long long>(datagram_silence * 1000.0);
+}
+
+bool RtsConnection::send_datagram(const std::uint16_t package, const ByteView body) {
+    if (!datagrams_live()) return false;
+    WireWriter w;
+    w.frame(package, body);
+    const auto datagram = make_datagram(DatagramKind::package, token_, w.data());
+    if (datagram.size() > datagram_largest) return false;
+    return ::send(as_socket(udp_), reinterpret_cast<const char*>(datagram.data()), static_cast<int>(datagram.size()), 0) ==
+           static_cast<int>(datagram.size());
+}
+
+void RtsConnection::close_datagrams() {
+    udp_running_ = false;
+    if (udp_reader_.joinable()) udp_reader_.join();
+    if (as_socket(udp_) != no_socket) close_socket(as_socket(udp_));
+    udp_ = static_cast<std::uintptr_t>(no_socket);
+}
+
 void RtsConnection::close() {
+    close_datagrams();
     const auto s = as_socket(socket_);
     if (s != no_socket) {
 #ifdef _WIN32

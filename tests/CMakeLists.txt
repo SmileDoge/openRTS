@@ -86,6 +86,13 @@ openrts_configure_target(openrts_track_test)
 target_link_libraries(openrts_track_test PRIVATE openrts_simulation)
 add_test(NAME openrts.track COMMAND openrts_track_test)
 
+# The world's cars: ids given once, released, saved and restored, the
+# server's uids (docs/car-architecture.md, step 1).
+add_executable(openrts_car_registry_test car_registry_test.cpp)
+openrts_configure_target(openrts_car_registry_test)
+target_link_libraries(openrts_car_registry_test PRIVATE openrts_simulation)
+add_test(NAME openrts.car_registry COMMAND openrts_car_registry_test)
+
 add_executable(openrts_train_test train_test.cpp)
 openrts_configure_target(openrts_train_test)
 target_link_libraries(openrts_train_test PRIVATE openrts_simulation openrts_formats)
@@ -207,6 +214,16 @@ openrts_configure_target(openrts_world_parse_test)
 target_link_libraries(openrts_world_parse_test PRIVATE openrts_formats)
 add_test(NAME openrts.world_parse COMMAND openrts_world_parse_test)
 
+add_executable(openrts_cargo_test cargo_test.cpp)
+openrts_configure_target(openrts_cargo_test)
+target_link_libraries(openrts_cargo_test PRIVATE openrts_formats)
+add_test(NAME openrts.cargo COMMAND openrts_cargo_test)
+
+add_executable(openrts_cargo_sim_test cargo_sim_test.cpp)
+openrts_configure_target(openrts_cargo_sim_test)
+target_link_libraries(openrts_cargo_sim_test PRIVATE openrts_simulation openrts_formats)
+add_test(NAME openrts.cargo_sim COMMAND openrts_cargo_sim_test)
+
 # RTS scenarios (.act): header, services, trains, events; Kuban's with the content.
 add_executable(openrts_activity_test activity_test.cpp)
 openrts_configure_target(openrts_activity_test)
@@ -281,6 +298,12 @@ add_executable(openrts_cab_brakes_test cab_brakes_test.cpp)
 openrts_configure_target(openrts_cab_brakes_test)
 target_link_libraries(openrts_cab_brakes_test PRIVATE openrts_simulation)
 add_test(NAME openrts.cab_brakes COMMAND openrts_cab_brakes_test)
+
+# The speed recorder's УКБМ check and КПД-3 screen, openRTS's.
+add_executable(openrts_recorder_test recorder_test.cpp)
+openrts_configure_target(openrts_recorder_test)
+target_link_libraries(openrts_recorder_test PRIVATE openrts_simulation)
+add_test(NAME openrts.recorder COMMAND openrts_recorder_test)
 
 add_executable(openrts_klub_test klub_test.cpp)
 openrts_configure_target(openrts_klub_test)
@@ -439,9 +462,36 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.recorder_vl10 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub shadow)
+    # A ВЛ85 with САУТ (PB_SETUP 17): its vigilance waits for САУТ's power.
+    add_test(NAME openrts.content.recorder_vl85_saut COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL85-200 mdd_VL85-200a mdd_VL85-200b --start on --seconds 60
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl85_saut_recorder.script" --klub shadow)
+    # Without Brakes.dll: a ВЛ85 with САУТ alone and a ВЛ80с with the КПД
+    # stand silent.
+    add_test(NAME openrts.content.recorder_vl85_saut_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL85-165 mdd_VL85-165a mdd_VL85-165b --start on --seconds 31
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/recorder_no_brakes_dll.script" --klub openrts --brakes openrts --brakes-dll none)
+    add_test(NAME openrts.content.vl80s_kpd_gauges COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL80s-1274 vl80s-1274a vl80s-1274b --start on --seconds 10
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl80s_kpd_gauges.script" --klub openrts --brakes openrts --brakes-dll none)
+    add_test(NAME openrts.content.recorder_vl80_kpd_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL80cm-3001 mdd_VL80cm-3001a mdd_VL80cm-3001b --start on --seconds 31
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/recorder_no_brakes_dll.script" --klub openrts --brakes openrts --brakes-dll none)
+    # The ВЛ10's compressor on openRTS's brakes: none under 25 kV AC (a DC
+    # engine), its governor under 3 kV DC (testers 2026-11-23).
+    foreach(kind ac dc)
+        add_test(NAME openrts.content.vl10_compressor_${kind} COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+            --dll mdd_vl10u-053 mdd_VL10u-053A mdd_VL10u-053B --start on --brakes openrts --seconds 150
+            --script "${CMAKE_CURRENT_SOURCE_DIR}/data/vl10_compressor_${kind}.script")
+    endforeach()
     add_test(NAME openrts.content.recorder_vl10_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub openrts --brakes openrts)
+    # The same without Brakes.dll at all (2026-11-24): the cab without the
+    # КЛУБ, its vigilance the speed recorder's, the ALSN delay openRTS's.
+    add_test(NAME openrts.content.recorder_vl10_no_brakes_dll COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub openrts --brakes openrts --brakes-dll none)
     # САУТ (PB_SETUP 1) in openRTS's КЛУБ, working the train.
     add_test(NAME openrts.content.klub_ed9m_saut_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_ED9M-0060 mdd_ED9M-0060_G mdd_ED9M-0060_M mdd_ED9M-0060_P mdd_ED9M-0060_M mdd_ED9M-0060_MR mdd_ED9M-0060_GR
@@ -481,6 +531,13 @@ openrts_configure_target(openrts_brake_squeal_test)
 target_link_libraries(openrts_brake_squeal_test PRIVATE openrts_audio openrts_core)
 add_test(NAME openrts.brake_squeal COMMAND openrts_brake_squeal_test)
 
+# openRTS's pantograph arcs: at the touch and the leaving, on ice only at
+# the leading pantograph, none on a dead line; the made crack.
+add_executable(openrts_pantograph_arcs_test pantograph_arcs_test.cpp ../viewer/src/pantograph_arcs.cpp)
+openrts_configure_target(openrts_pantograph_arcs_test)
+target_link_libraries(openrts_pantograph_arcs_test PRIVATE openrts_audio openrts_core)
+add_test(NAME openrts.pantograph_arcs COMMAND openrts_pantograph_arcs_test)
+
 add_executable(openrts_discord_presence_test discord_presence_test.cpp)
 openrts_configure_target(openrts_discord_presence_test)
 target_link_libraries(openrts_discord_presence_test PRIVATE openrts_platform)
@@ -497,3 +554,13 @@ openrts_configure_target(openrts_console_place_test)
 openrts_copy_wgpu_runtime(openrts_console_place_test)
 target_link_libraries(openrts_console_place_test PRIVATE openrts_viewer_core)
 add_test(NAME openrts.console_place COMMAND openrts_console_place_test)
+
+add_executable(openrts_ray_mask_test ray_mask_test.cpp)
+openrts_configure_target(openrts_ray_mask_test)
+target_link_libraries(openrts_ray_mask_test PRIVATE openrts_renderer)
+add_test(NAME openrts.ray_mask COMMAND openrts_ray_mask_test)
+
+add_executable(openrts_opacity_micromap_test opacity_micromap_test.cpp)
+openrts_configure_target(openrts_opacity_micromap_test)
+target_link_libraries(openrts_opacity_micromap_test PRIVATE openrts_renderer)
+add_test(NAME openrts.opacity_micromap COMMAND openrts_opacity_micromap_test)

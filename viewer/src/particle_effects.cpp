@@ -64,21 +64,39 @@ void PrecipitationView::set_environment(const formats::EnvPrecipitation* precipi
 }
 
 void PrecipitationView::set_lamps(const std::vector<renderer::SceneLight>& lights, const glm::vec3& eye) {
-    // Some 25 m around the eye: the box the particles fill.
-    constexpr float box = 25.0f;
+    // Around the eye: the box the particles fill (the reach set, a margin).
+    const float box = renderer::precipitation_reach() + 7.0f;
+    // A photometric lamp (candela or lumen given): its light on the flakes
+    // by the inverse square from `from` (at least 3 m), not its colour's
+    // lightness (1 cd lights nothing, 200 000 cd blinds).
+    const auto lit = [&](const renderer::ModelExtraLight& light, const glm::vec3& from) {
+        const glm::vec3 own = glm::clamp(glm::vec3(light.diffuse), glm::vec3(0.0f), glm::vec3(1.0f));
+        if (light.photometric.w <= 0.0f) return own;
+        const float d = (std::max)(glm::distance(from, eye), 3.0f);
+        return glm::clamp(glm::vec3(light.photometric) / (d * d), glm::vec3(0.0f), glm::vec3(1.0f));
+    };
     struct Pick {
         float distance;
         renderer::ParticleLamp lamp;
     };
     std::vector<Pick> picks;
     for (const auto& entry : lights) {
-        const auto cone = renderer::extra_light_cone(entry.light);
+        auto cone = renderer::extra_light_cone(entry.light);
+        if (!cone && (static_cast<int>(entry.light.kind) & 31) == 2) {
+            // A sphere (a platform's lamp, an arc): round its place, its widest radius (at most 40 m).
+            const glm::vec3 centre{glm::inverse(entry.light.to_light)[3]};
+            const float radius = (std::min)((std::max)({entry.light.size.x, entry.light.size.y, entry.light.size.z}), 40.0f);
+            if (radius < 0.5f || glm::distance(centre, eye) > box + radius) continue;
+            const glm::vec3 colour = lit(entry.light, centre);
+            picks.push_back({(std::max)(glm::distance(centre, eye) - radius, 0.0f), {{centre, {0.0f, 1.0f, 0.0f}, radius, -1.0f}, colour}});
+            continue;
+        }
         if (!cone || cone->reach < 5.0f) continue; // a cab's or a salon's lamp, not a beam
         // The nearest point of its axis within its reach.
         const float t = std::clamp(glm::dot(eye - cone->apex, cone->axis), 0.0f, cone->reach);
         const float distance = glm::length(cone->apex + cone->axis * t - eye);
         if (distance > box + cone->reach * cone->tangent) continue;
-        const glm::vec3 colour = glm::clamp(glm::vec3(entry.light.diffuse), glm::vec3(0.0f), glm::vec3(1.0f));
+        const glm::vec3 colour = lit(entry.light, cone->apex);
         picks.push_back({distance, {*cone, colour}});
     }
     std::sort(picks.begin(), picks.end(), [](const Pick& a, const Pick& b) { return a.distance < b.distance; });
@@ -226,7 +244,10 @@ void SmokeView::update(const float elapsed, const std::vector<ExhaustSource>& so
         emitter.direction = source.direction;
         emitter.velocity = source.velocity;
         emitter.nozzle_size = (std::max)(source.nozzle, 0.01f);
-        if (emitter.texture == 0) emitter.texture = texture(source.texture);
+        emitter.brightness = source.brightness;
+        emitter.life = source.life;
+        if (!emitter.textured && !source.texture.empty()) emitter.texture = texture(source.texture);
+        emitter.textured = true;
         const float rate = source.rate;
         const float magnitude = source.magnitude;
         const float spread = magnitude * source.dispersion;
@@ -295,12 +316,21 @@ void SmokeView::update(const float elapsed, const std::vector<ExhaustSource>& so
                 if (particle.head_start > 0.0f) dt = particle.head_start;
             }
             particle.size += particle.growth * dt;
-            if (particle.size <= particle.growth || particle.growth <= 0.0f) {
+            particle.age += dt;
+            if (emitter.life > 0.0f) {
+                // A short puff: thickest at a fifth of its life, gone at its end.
+                const float t = particle.age / emitter.life;
+                particle.alpha = t >= 1.0f ? 0.0f : (t < 0.2f ? t / 0.2f : 1.0f - (t - 0.2f) / 0.8f);
+                if (t >= 1.0f) {
+                    p = emitter.particles.erase(p);
+                    continue;
+                }
+            } else if (particle.size <= particle.growth || particle.growth <= 0.0f) {
                 particle.alpha = 0.7f * particle.growth / particle.size;
             } else {
                 particle.alpha = (1.0f - particle.size / particle.growth) / (particle.dispersion + 9.0f) + 0.7f;
             }
-            if (particle.alpha < 0.01f) {
+            if (emitter.life <= 0.0f && particle.alpha < 0.01f) {
                 p = emitter.particles.erase(p);
                 continue;
             }
@@ -309,14 +339,14 @@ void SmokeView::update(const float elapsed, const std::vector<ExhaustSource>& so
             glm::vec3 step = particle.push * dt + particle.drift * dt + glm::vec3{0.0f, particle.lift * dt, 0.0f};
             for (const auto& layer : wind_) {
                 if (layer.max_height <= particle.position.y) continue;
-                const float k = (1.0f - particle.position.y / layer.max_height) * dt * 0.1f / particle.alpha;
+                const float k = (1.0f - particle.position.y / layer.max_height) * dt * 0.1f / (std::max)(particle.alpha, emitter.life > 0.0f ? 0.3f : 0.01f);
                 step += glm::vec3{layer.direction[0], layer.direction[1], layer.direction[2]} * k;
             }
             particle.position += step;
             renderer::GlowSprite sprite;
             sprite.position = particle.position;
             sprite.radius = particle.scale * particle.size * emitter.nozzle_size;
-            sprite.colour = pack_abgr(glm::vec4{glm::vec3{particle.colour} * glm::vec3{light}, std::clamp(particle.colour.a * particle.alpha, 0.0f, 1.0f)});
+            sprite.colour = pack_abgr(glm::vec4{glm::vec3{particle.colour} * glm::vec3{light} * emitter.brightness, std::clamp(particle.colour.a * particle.alpha, 0.0f, 1.0f)});
             sprite.texture = emitter.texture;
             sprites.push_back(sprite);
             ++p;
