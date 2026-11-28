@@ -2396,9 +2396,15 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
             }
         }
         const auto& shown = car.screens.front();
-        if (p.lamp >= 0 && static_cast<std::size_t>(p.lamp) < out.displays.size())
+        // The КЛУБ's power lamp and backlight (KLUB_PLAMP, KLUB_TCHNUM: 0
+        // when not given) only on an engine with a КЛУБ's screen: the
+        // ВЛ80с-1274 has the КПД alone, and its cab's object 0 is the
+        // gauges' light (sl_podsv), lit for ever by the КЛУБ's power lamp
+        // (testers 2026-11-26; Brakes.dll leaves it).
+        const bool has_klub = std::any_of(p.cabs.begin(), p.cabs.end(), [](const auto& c) { return c.screen >= 0; });
+        if (has_klub && p.lamp >= 0 && static_cast<std::size_t>(p.lamp) < out.displays.size())
             out.displays[static_cast<std::size_t>(p.lamp)].state = static_cast<std::uint32_t>(shown.lamp);
-        if (p.backlight >= 0 && static_cast<std::size_t>(p.backlight) < out.tex_changes.size())
+        if (has_klub && p.backlight >= 0 && static_cast<std::size_t>(p.backlight) < out.tex_changes.size())
             out.tex_changes[static_cast<std::size_t>(p.backlight)] = static_cast<std::uint16_t>(shown.backlight);
         out.cab_aspect = car.state.signal.aspect[0];
         // Its sounds on Brakes.sms in place of Brakes.dll's КЛУБ's.

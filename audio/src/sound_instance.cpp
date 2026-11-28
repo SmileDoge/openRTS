@@ -190,6 +190,12 @@ void SoundInstance::stop(VoiceSink& sink) {
 
 void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     active_ = true;
+    activating_ = true;
+    activated_at_ = clock_;
+    struct Done {
+        bool& flag;
+        ~Done() { flag = false; }
+    } done{activating_};
     if (!trace_.empty()) note(SIZE_MAX, activated_once_ ? "group on again" : "group on");
     // openRTS (RTS 0x4A9BA8 waits a random trigger's minimum delay again,
     // its first activation a whole delay): a random trigger comes in part
@@ -392,6 +398,27 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
         } else if (playback == VoicePlayback::loop && random_loop_phase_ && clip->frames > 1) {
             start_frame = std::uniform_int_distribution<std::uint64_t>(0, clip->frames - 1)(random_);
             sink.seek(id, start_frame);
+        } else if (playback == VoicePlayback::loop_region && random_loop_phase_ && clip->has_loop()
+                   && (activating_ || clock_ - activated_at_ < 1.0f)) {
+            // A loop with a region found going on when the group comes on,
+            // or in its first second (a DLL's variables start it a frame or
+            // two later): the train placed with its engines running, the
+            // camera come near. Somewhere in its region, past its start. The 2ТЭ116's
+            // two sections' x-diesel.wav, started in one frame at frame 0,
+            // played in step and, their revolutions a little apart, swept
+            // like a flanger (testers 2026-11-28).
+            start_frame = std::uniform_int_distribution<std::uint64_t>(clip->loop_start, clip->loop_end - 1)(random_);
+            sink.seek(id, start_frame);
+        } else if (playback == VoicePlayback::loop_region && random_loop_phase_ && clip->has_loop() && clip->sample_rate > 0) {
+            // Started by its trigger (an engine started): its attack, from a
+            // point up to a quarter of a second in (not past the region's
+            // start), so two sections started in one frame do not play in
+            // step (the flanger above).
+            const auto most = (std::min)(clip->loop_start, static_cast<std::uint64_t>(clip->sample_rate / 4));
+            if (most > 0) {
+                start_frame = std::uniform_int_distribution<std::uint64_t>(0, most)(random_);
+                sink.seek(id, start_frame);
+            }
         }
         sink.set(id, 0.0f, 1.0f, inputs.position); // real values follow in this update
         const bool region = playback == VoicePlayback::loop_region && clip->has_loop();
@@ -462,7 +489,7 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             stream.loop = start(action, action.kind == SoundActionKind::start_loop ? VoicePlayback::loop
                                                                                     : VoicePlayback::loop_region);
             stream.current = index;
-            if (!trace_.empty()) note(here, "loop " + stream.loop.file + (stream.loop.region ? " (region)" : ""));
+            if (!trace_.empty()) note(here, "loop " + stream.loop.file + (stream.loop.region ? " (region)" : "") + (stream.loop.start_frame ? " from frame " + std::to_string(stream.loop.start_frame) : std::string{}));
             break;
         case SoundActionKind::release_loop_release:
         case SoundActionKind::release_loop_release_with_jump: {

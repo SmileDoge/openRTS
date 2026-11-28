@@ -471,6 +471,9 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.recorder_vl85_saut_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_VL85-165 mdd_VL85-165a mdd_VL85-165b --start on --seconds 31
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/recorder_no_brakes_dll.script" --klub openrts --brakes openrts --brakes-dll none)
+    add_test(NAME openrts.content.vl80s_kpd_gauges COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL80s-1274 vl80s-1274a vl80s-1274b --start on --seconds 10
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl80s_kpd_gauges.script" --klub openrts --brakes openrts --brakes-dll none)
     add_test(NAME openrts.content.recorder_vl80_kpd_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_VL80cm-3001 mdd_VL80cm-3001a mdd_VL80cm-3001b --start on --seconds 31
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/recorder_no_brakes_dll.script" --klub openrts --brakes openrts --brakes-dll none)

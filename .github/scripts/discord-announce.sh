@@ -14,6 +14,7 @@ py=python3
 "$py" -c '' 2>/dev/null || py=python
 payload=$("$py" - "$tag" "$url" <<'PYEOF'
 import json
+import re
 import sys
 
 sys.stdout.reconfigure(encoding='utf-8')
@@ -49,10 +50,22 @@ if start is not None:
 
 def head(text):
     text = ' '.join(text.split())
+    # Asides in brackets left out, they do not end the head.
+    while True:
+        shorter = re.sub(r' ?\([^()]*\)', '', text)
+        if shorter == text:
+            break
+        text = shorter
+    # A short label before a colon ("Экспериментально: ...") keeps what
+    # follows it, up to the next mark.
+    start = 0
+    k = text.find(': ')
+    if 0 < k <= 20 and ' ' not in text[:k]:
+        start = k + 2
     cut = len(text)
-    for mark in (': ', '. ', ' (', '; '):
-        k = text.find(mark)
-        if 0 < k < cut:
+    for mark in (': ', '. ', '; '):
+        k = text.find(mark, start)
+        if start <= k < cut and k > 0:
             cut = k
     text = text[:cut].rstrip('.:,;')
     if len(text) > 110:

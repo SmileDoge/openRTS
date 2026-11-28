@@ -1,0 +1,13 @@
+# The ВЛ80с-1274 (the КПД, no КЛУБ) on openRTS's КЛУБ and brakes: its cab's object 0
+# is the gauges' light (sl_podsv), not lit by the КЛУБ's power lamp; the
+# switch 53 lights the gauges (pr_nig) and puts them out (testers 2026-11-26).
+0    voltage 25000 50
+0    line_limit 90
+2    switch 8 1
+3    expect disp0 == 0
+3    expect disp1 == 0
+4    switch 53 1
+6    expect disp1 == 1
+7    switch 53 0
+9    expect disp1 == 0
+9    expect disp0 == 0
