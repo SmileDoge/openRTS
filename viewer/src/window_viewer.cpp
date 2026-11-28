@@ -1187,6 +1187,12 @@ public:
                 set_key_hints(hints);
                 remember("key_hints", hints ? "1" : "0");
             }
+            bool klub_keypad = klub_numpad();
+            if (ImGui::Checkbox(tr("The КЛУБ on the numeric keypad while NumLock is on"), &klub_keypad)) {
+                set_klub_numpad(klub_keypad);
+                remember("klub_numpad", klub_keypad ? "1" : "0");
+            }
+            ImGui::TextDisabled("%s", tr("Digits, П on *, К on /, ВВОД on Enter; the keypad's own keys wait while NumLock is on."));
             bool wasd = wasd_walking();
             if (ImGui::Checkbox(tr("Walk on W A S D while standing (seated: the cab's keys)"), &wasd)) {
                 set_wasd_walking(wasd);
@@ -2616,12 +2622,15 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     // Ctrl+F: no cab of the installed content assigns it (their letters,
     // F among them, may all be the cab's; testers 2026-11-18).
     const bool free_camera = pressed(GLFW_KEY_F, input.free_camera_key_down) && ctrl && !alt;
-    const bool enter_now = down(GLFW_KEY_ENTER) || down(GLFW_KEY_KP_ENTER);
+    // The keypad the КЛУБ's (key_layout.hpp, klub_numpad: NumLock on, in a
+    // cab): its own keys wait, the openRTS layout's do their work.
+    const bool keypad_klub = klub_numpad_active() && input.keyboard_captured;
+    const bool enter_now = down(GLFW_KEY_ENTER) || (!keypad_klub && down(GLFW_KEY_KP_ENTER));
     const bool enter = enter_now && !input.enter_key_down;
     input.enter_key_down = enter_now;
     // The engineer's window and head out (key_layout.hpp): RTS's keypad
     // keys, or - and = on the top row.
-    const bool rts_keys = key_layout() == KeyLayout::rts;
+    const bool rts_keys = key_layout() == KeyLayout::rts && !keypad_klub;
     // - alone the window, Shift+- the clock (RTS: Num0 and Num4).
     const bool minus = pressed(rts_keys ? GLFW_KEY_KP_0 : GLFW_KEY_MINUS, input.kp0_down);
     const bool kp0 = minus && (rts_keys || !shift);
@@ -3489,6 +3498,7 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     if (const auto volume = remembered("thunder_volume")) thunder_volume() = std::clamp(std::strtof(volume->c_str(), nullptr), 0.0f, 2.0f);
     set_key_hints(remembered("key_hints").value_or("1") != "0");
     set_wasd_walking(remembered("wasd_walk").value_or("1") != "0");
+    set_klub_numpad(remembered("klub_numpad").value_or("0") == "1");
     set_mouse_sensitivity(parse_mouse_sensitivity(remembered("mouse_sensitivity").value_or("1").c_str()));
     set_mouse_smoothing(parse_mouse_smoothing(remembered("mouse_smoothing_ms").value_or("").c_str()));
     set_mouse_lock(remembered("mouse_lock").value_or("0") == "1");
@@ -3817,9 +3827,10 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
         apply_look(input, elapsed);
         update_camera_from_keyboard(window.get(), input, elapsed);
 #ifdef OPENRTS_HAS_IMGUI
-        const bool fov_keyboard_free = !ImGui::GetIO().WantCaptureKeyboard;
+        // Not while the keypad is the КЛУБ's (Num* its П).
+        const bool fov_keyboard_free = !ImGui::GetIO().WantCaptureKeyboard && !(klub_numpad_active() && input.keyboard_captured);
 #else
-        const bool fov_keyboard_free = true;
+        const bool fov_keyboard_free = !(klub_numpad_active() && input.keyboard_captured);
 #endif
         if (update_fov_keys(window.get(), fov_keys, panel.fov, elapsed, fov_keyboard_free)) remember("fov", std::to_string(panel.fov));
         camera.ease_zoom(elapsed);

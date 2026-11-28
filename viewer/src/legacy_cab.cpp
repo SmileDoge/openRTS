@@ -12,6 +12,7 @@
 #include <imgui.h>
 #endif
 
+#include "key_layout.hpp"
 #include "ui_text.hpp"
 
 namespace openrts::viewer {
@@ -147,6 +148,28 @@ void LegacyCab::bind_keys(const std::size_t car) {
             if (!key.key) continue;
             const int direction = s.keys.size() >= 2 ? (k == 0 ? 1 : -1) : 0;
             bindings_.push_back({s.id, key.key, key.shift, key.ctrl, direction});
+        }
+    }
+    // The КЛУБ's buttons on the numeric keypad (key_layout.hpp,
+    // klub_numpad): its cab's KLUB_B*ID switches there.
+    const auto* definition = consist_ ? consist_->car_definition(car) : nullptr;
+    if (definition && definition->engine) {
+        const auto klub = trainplugin::klub_parameters(*definition->engine);
+        if (klub.present) {
+            for (const auto& cab : klub.cabs) {
+                for (const auto& [id, press] : cab.keys) {
+                    if (id < 0 || !sd->find_switch(static_cast<std::uint32_t>(id))) continue;
+                    int key = 0;
+                    switch (press.key) {
+                    case simulation::KlubKey::digit: key = GLFW_KEY_KP_0 + static_cast<int>(press.digit); break;
+                    case simulation::KlubKey::track: key = GLFW_KEY_KP_MULTIPLY; break;
+                    case simulation::KlubKey::command: key = GLFW_KEY_KP_DIVIDE; break;
+                    case simulation::KlubKey::enter: key = GLFW_KEY_KP_ENTER; break;
+                    default: break;
+                    }
+                    if (key != 0) bindings_.push_back({static_cast<std::uint32_t>(id), key, false, false, 0, true});
+                }
+            }
         }
     }
 }
@@ -594,6 +617,8 @@ void LegacyCab::key(const KeyEvent& event, const std::optional<glm::vec3>& eye) 
     if (!working() || !keyboard()) return;
     const auto* out = out_of(player());
     for (const auto& b : bindings_) {
+        // The keypad's КЛУБ keys only while it is the КЛУБ's (NumLock on).
+        if (b.numpad && event.down && !klub_numpad_active()) continue;
         if (b.key != event.key || b.shift != event.shift || b.ctrl != event.ctrl) {
             // A release counts whatever the modifiers are now.
             if (event.down || b.key != event.key) continue;

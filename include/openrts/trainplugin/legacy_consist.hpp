@@ -454,6 +454,10 @@ public:
     [[nodiscard]] bool own_klub() const noexcept { return own_klub_; }
     // The cars it works on in the last step.
     [[nodiscard]] std::size_t klub_cars() const noexcept { return klub_working_; }
+    // Car `car`'s definition (nullptr past the train).
+    [[nodiscard]] const formats::WagonDefinition* car_definition(std::size_t car) const noexcept {
+        return car < cars_.size() ? cars_[car].definition : nullptr;
+    }
     // Its state on a car (nullptr: not there).
     [[nodiscard]] const simulation::KlubState* klub_state(std::size_t car) const;
 

@@ -2252,7 +2252,30 @@ void LegacyConsist::klub_after(const StepRequest& request, const LegacyWorld& wo
         // Switched on with the ЭПК key in (its Init's Switched, or the
         // setting turned on): the КЛУБ's beep.
         if (!car.state.started && in.epk_key) in.epk_key_turned = in.epk_key_to = true;
+        // OPENRTS_TEST_KLUB_TRACK=<n> (automated runs): the track entered
+        // as if keyed in, once the КЛУБ has none.
+        if (static const int test_track = [] {
+                const char* text = std::getenv("OPENRTS_TEST_KLUB_TRACK");
+                return text ? std::atoi(text) : 0;
+            }();
+            test_track > 0 && car.state.track == 0)
+            car.state.track = static_cast<std::uint32_t>(test_track) & 0x7Fu;
         simulation::step_klub(car.state, p.settings, in, car.out);
+        // OPENRTS_KLUB_TRACE=1: what the КЛУБ reckons, once a second.
+        if (static const bool trace = std::getenv("OPENRTS_KLUB_TRACE") != nullptr; trace) {
+            static double clock = 0.0, next = 0.0;
+            clock += in.dt;
+            if (clock >= next) {
+                next = clock + 1.0;
+                const auto& s = car.state;
+                std::fprintf(stderr,
+                             "klub trace %.1f s: car %zu v %.1f km/h permitted %.1f (drawn %.1f) limit %.1f target %.1f at %.0f m signal %.0f m "
+                             "track %u aspect %u ek %d saut %d km %.3f\n",
+                             clock, i, std::abs(in.speed) * 3.6, s.permitted, s.drawn_permitted, s.limit, s.target_speed,
+                             s.target_distance, s.signal_metres, s.track & 0x7Fu, static_cast<unsigned>(in.cab_signal.aspect[0]),
+                             in.ek.matched ? 1 : 0, s.saut_rules ? 1 : 0, static_cast<double>(out.engine.milepost));
+            }
+        }
         car.keys.clear();
         car.saut_keys.clear();
         // The screens and the lamps: each cab's (updateKLUB draws them all).

@@ -1,3 +1,12 @@
+#ifdef _WIN32
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#endif
 #include "key_layout.hpp"
 
 #include <cstdlib>
@@ -34,6 +43,22 @@ void set_key_hints(const bool shown) noexcept { hints = shown; }
 bool wasd_walking() noexcept { return wasd; }
 
 void set_wasd_walking(const bool on) noexcept { wasd = on; }
+
+namespace {
+bool klub_keypad = false;
+}
+
+bool klub_numpad() noexcept { return klub_keypad; }
+
+void set_klub_numpad(const bool on) noexcept { klub_keypad = on; }
+
+bool num_lock_on() noexcept {
+#ifdef _WIN32
+    return (GetKeyState(VK_NUMLOCK) & 1) != 0;
+#else
+    return false;
+#endif
+}
 
 bool panels_shown() noexcept { return panels; }
 

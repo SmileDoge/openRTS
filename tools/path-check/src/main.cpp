@@ -109,6 +109,8 @@ int main(int argc, char** argv) {
         } else if (arg == "--replan" || arg == "--savpe") {
         } else if (arg == "--ek" && i + 2 < argc) {
             i += 2;
+        } else if (arg == "--items") {
+            break; // the node numbers after it
         } else {
             wanted.push_back(arg);
         }
@@ -214,6 +216,32 @@ int main(int argc, char** argv) {
         std::printf("no paths\n");
         return 1;
     }
+    // --items <node...>: the track items on those vector nodes, at their
+    // offsets: speed posts (limit, resume, warning, passenger / freight, the
+    // speed), signals, platforms.
+    for (int a = 4; a < argc; ++a) {
+        if (std::string(argv[a]) != "--items") continue;
+        const auto& items = network->database().items;
+        for (int n = a + 1; n < argc; ++n) {
+            const auto id = static_cast<std::uint32_t>(std::atoi(argv[n]));
+            const auto* node = network->node(id);
+            if (!node) continue;
+            std::printf("node %u:\n", id);
+            for (const auto& entry : node->items) {
+                if (entry.item >= items.size()) continue;
+                const auto& item = items[entry.item];
+                std::printf("  at %7.1f item %u %s", entry.offset, entry.item, item.keyword.c_str());
+                if (const auto post = formats::speed_post(item)) {
+                    std::printf(" flags 0x%X limit %d resume %d warning %d pass %d freight %d speed %.0f km/h number %.0f", post->flags,
+                                post->limit, post->resume, post->warning, post->passenger, post->freight, post->speed * 3.6, post->number);
+                }
+                if (!item.name.empty()) std::printf(" '%s'", item.name.c_str());
+                if (!item.station.empty()) std::printf(" station '%s'", item.station.c_str());
+                std::printf(" data_flags 0x%X\n", item.data_flags);
+            }
+        }
+        return 0;
+    }
     // --ek <track> <station>: at each platform of that station on the paths
     // (its name containing the text), the КЛУБ's way to station track
     // <track> (ElectronicMap::way): its parts and the switches it takes off
@@ -239,16 +267,18 @@ int main(int argc, char** argv) {
             const auto& items = network->database().items;
             for (const auto& pass : simulation::platform_passes(*network, built)) {
                 if (pass.far_item >= items.size() || (station != "*" && items[pass.far_item].station.find(station) == std::string::npos)) continue;
-                for (const double back : {pass.length, 0.0}) {
+                for (const double back : {pass.length + 1500.0, pass.length + 1000.0, pass.length + 600.0, pass.length + 300.0, pass.length, 0.0}) {
                     const auto at = built.legs[pass.leg].at(pass.far - back);
                     if (!at) continue;
                     for (const bool turned : {false, true}) {
                     const auto way = map.way(*network, at->node, at->offset, turned ? !at->forward : at->forward, number);
                     if (turned) std::printf("  facing back: ");
                     std::printf("%s %s: %s, %s end (node %u at %.0f): way %zu parts", path.id.c_str(), path.file.c_str(),
-                                items[pass.far_item].station.c_str(), back > 0.0 ? "near" : "far", at->node, at->offset,
+                                items[pass.far_item].station.c_str(), back > pass.length + 1.0 ? "before" : back > 0.0 ? "near" : "far", at->node, at->offset,
                                 way.parts.size());
                     if (!way.parts.empty()) std::printf(" (to %.0f m, last node %u)", way.parts.back().distance, way.parts.back().node);
+                    for (const auto& part : way.parts)
+                        std::printf(" [%u %s %.0f..%.0f at %.0f m]", part.node, part.forward ? "+" : "-", part.entry, part.exit, part.distance);
                     for (const auto& t : way.turns) std::printf(", turn at %.0f m %.0f km/h", t.distance, t.speed * 3.6);
                     std::printf("\n");
                     }

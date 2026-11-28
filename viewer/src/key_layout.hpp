@@ -77,6 +77,17 @@ void set_key_hints(bool shown) noexcept;
 [[nodiscard]] bool wasd_walking() noexcept;
 void set_wasd_walking(bool on) noexcept;
 
+// The КЛУБ's keys on the numeric keypad while NumLock is on (testers
+// 2026-11-28): the digits, П on "*", К on "/", ВВОД on Enter; the keypad's
+// own keys (the window, the cameras) wait while it is. Off unless turned on
+// in the panel's General (remembered as klub_numpad).
+[[nodiscard]] bool klub_numpad() noexcept;
+void set_klub_numpad(bool on) noexcept;
+// NumLock is on (Windows; elsewhere false).
+[[nodiscard]] bool num_lock_on() noexcept;
+// Both: the keypad is the КЛУБ's now (in a cab with its keys).
+[[nodiscard]] inline bool klub_numpad_active() noexcept { return klub_numpad() && num_lock_on(); }
+
 // The openRTS panel and the DLL cab window: hidden until Esc shows them
 // (testers, 2026-11-12: they cluttered the top of the picture); Esc hides
 // them again. Each start begins with them hidden.

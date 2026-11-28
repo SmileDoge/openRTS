@@ -1162,6 +1162,21 @@ std::string TrainView::place_on_path(const formats::TrainPath& path) {
     // start (MSTS explore mode; RTS UNKNOWN).
     auto front = rear;
     front.move(driven().length(), simulation::JunctionMode::plain, placement_owner);
+    // OPENRTS_TEST_PLACE=<node>,<offset>,<0|1> (automated runs): the front
+    // put there instead (the path still the train's route).
+    if (const char* at = std::getenv("OPENRTS_TEST_PLACE")) {
+        unsigned node = 0;
+        double offset = 0.0;
+        int forward = 1;
+        double then = 0.0; // ,<m>: moved on that far along the switches as set, then turned round
+        if (std::sscanf(at, "%u,%lf,%d,%lf", &node, &offset, &forward, &then) >= 3) {
+            front = simulation::TrackTraveller(*network_, node, offset, forward != 0);
+            if (then > 0.0) {
+                front.move(then, simulation::JunctionMode::plain, placement_owner);
+                front = simulation::TrackTraveller(*network_, front.node(), front.offset(), !front.forward());
+            }
+        }
+    }
     auto error = place(front.node(), front.offset(), front.forward());
     if (!error.empty()) return error;
     message_ = path.name.empty() ? trf("on path %s", path.file.c_str()) : trf("on path %s (%s)", path.file.c_str(), path.name.c_str());
@@ -6576,13 +6591,37 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
     // OPENRTS_CHANGE_CAB=<car>:<seconds> (automated runs): the driven train's
     // cab changed to that car (1..) at that time, as walking there does;
     // every 5 s each engine's main reservoir and the player's gauges.
+    // OPENRTS_TEST_SWITCHES=<id>:<state>,... (automated runs): the player's
+    // cab's switches put there once, 3 s after the train stands (the ЭПК key,
+    // the КЛУБ's power, the 367's working position).
+    if (static const char* switches = std::getenv("OPENRTS_TEST_SWITCHES"); switches && legacy_ && placed()) {
+        static double since = 0.0;
+        static bool done = false;
+        since += elapsed;
+        if (!done && since >= 3.0) {
+            done = true;
+            for (std::string rest = switches; !rest.empty();) {
+                unsigned id = 0, state = 0;
+                if (std::sscanf(rest.c_str(), "%u:%u", &id, &state) == 2) {
+                    legacy_->set_switch(id, state);
+                    std::fprintf(stderr, "[test] switch %u -> %u\n", id, state);
+                }
+                const auto comma = rest.find(',');
+                rest = comma == std::string::npos ? std::string{} : rest.substr(comma + 1);
+            }
+        }
+    }
     // OPENRTS_DRIVE=<m/s> (automated runs): the player's train held at that speed.
     if (static const char* drive = std::getenv("OPENRTS_DRIVE"); drive && !units_.empty() && units_.front().train) {
         auto& tr = *units_.front().train;
-        const float want = static_cast<float>(std::atof(drive));
+        // <m/s>[:<until s>]: then slowing at 0.7 m/s² to a stand.
+        static double drive_clock = 0.0;
+        drive_clock += elapsed;
+        float want = static_cast<float>(std::atof(drive));
+        if (const char* colon = std::strchr(drive, ':'); colon && drive_clock >= std::atof(colon + 1)) want = 0.0f;
         const float v = tr.cars().front().velocity;
         tr.set_kinematic(true);
-        tr.set_drive_acceleration(v < want ? 0.5f : 0.0f);
+        tr.set_drive_acceleration(v < want ? 0.5f : v > want + 0.05f ? -0.7f : 0.0f);
     }
     if (static const char* hook = std::getenv("OPENRTS_CHANGE_CAB"); hook && !units_.empty() && units_.front().train) {
         static double clock = 0.0, logged = 0.0;

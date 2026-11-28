@@ -236,6 +236,7 @@ private:
         int key{};          // GLFW key code
         bool shift = false, ctrl = false;
         int direction{};    // +1 / -1 (two keys), 0 (one key: as a click)
+        bool numpad = false; // the КЛУБ's on the keypad: only while klub_numpad_active()
     };
     // RTS's switch activation (0x437AA4): the next state of switch `id` for
     // a click (0) or a step up / down (+1 / -1).
