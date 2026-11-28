@@ -611,7 +611,12 @@ int main(int argc, char** argv) {
             std::fprintf(stderr, "%s: %s\n", argv[3], decoded.error.c_str());
             return 1;
         }
-        std::FILE* out = fopen(argv[4], "wb");
+        std::FILE* out = nullptr;
+#ifdef _WIN32
+        if (fopen_s(&out, argv[4], "wb") != 0) out = nullptr;
+#else
+        out = std::fopen(argv[4], "wb");
+#endif
         if (out) {
             std::fwrite(decoded.image->pixels.data(), 1, decoded.image->pixels.size(), out);
             std::fclose(out);

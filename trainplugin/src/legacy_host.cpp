@@ -1,8 +1,9 @@
-#include <cstdio>
 #include <openrts/trainplugin/legacy_host.hpp>
 
-#include <openrts/core/profile.hpp>
+#include <cstdio>
 #include <string>
+
+#include <openrts/core/profile.hpp>
 
 #ifdef _WIN32
 #ifndef NOMINMAX
@@ -27,6 +28,10 @@
 #include <atomic>
 #include <utility>
 #include <cstring>
+
+#ifndef _WIN32
+extern "C" char** environ;
+#endif
 
 namespace openrts::trainplugin {
 
@@ -256,34 +261,36 @@ std::unique_ptr<LegacyHost> LegacyHost::start(std::string* error, const std::fil
     std::unique_ptr<LegacyHost> host(new LegacyHost());
     host->name_ = name;
 
-    int shm_fd = shm_open(name.c_str(), O_RDWR | O_CREAT, 0666);
+    // POSIX names start with a slash.
+    const std::string shm_name = "/" + name;
+    const int shm_fd = shm_open(shm_name.c_str(), O_RDWR | O_CREAT, 0600);
     if (shm_fd == -1) return fail("shm_open failed");
-    ftruncate(shm_fd, shared_size);
-
-    host->mapping_ = (void*)mmap(nullptr, shared_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
-    host->view_ = static_cast<std::uint8_t*>(host->mapping_);
-
-    host->request_ = sem_open((name + ".req").c_str(), O_CREAT, 0666, 0);
-    host->reply_ = sem_open((name + ".rep").c_str(), O_CREAT, 0666, 0);
-
-    if (host->view_ == MAP_FAILED || !host->request_ || !host->reply_) return fail("shared memory / semaphore setup failed");
-
-    // pid_t pid = fork();
-    // if (pid == 0) {
-    //     execlp("wine", "wine", exe.c_str(), "--serve", name.c_str(), "--parent", std::to_string(getpid()).c_str(), nullptr);
-    //     _exit(1);
-    // } else if (pid < 0) {
-    //     return fail("fork failed");
-    // }
-    pid_t pid = 0;
-    const char* argv[] = {"wine", exe.c_str(), "--serve", name.c_str(), "--parent", std::to_string(getpid()).c_str(), nullptr};
-    int result = posix_spawnp(&pid, "wine", nullptr, nullptr, (char**)argv, nullptr);
-    if (result == 0) {
-        host->process_ = pid;
-        host->alive_ = true;
-    } else {
-        fail("openrts-dllhost32.exe did not start (error " + std::to_string(result) + ")");
+    if (ftruncate(shm_fd, shared_size) != 0) {
+        close(shm_fd);
+        return fail("ftruncate failed");
     }
+    void* view = mmap(nullptr, shared_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    close(shm_fd);
+    if (view == MAP_FAILED) return fail("mmap failed");
+    host->mapping_ = view;
+    host->view_ = static_cast<std::uint8_t*>(view);
+    sem_t* request = sem_open(("/" + name + ".req").c_str(), O_CREAT, 0600, 0);
+    sem_t* reply = sem_open(("/" + name + ".rep").c_str(), O_CREAT, 0600, 0);
+    host->request_ = request == SEM_FAILED ? nullptr : request;
+    host->reply_ = reply == SEM_FAILED ? nullptr : reply;
+    if (!host->request_ || !host->reply_) return fail("semaphore setup failed");
+
+    // Experimental: the 32-bit host under Wine. Its side still opens
+    // Windows' named mapping and events, which Wine does not join to these
+    // POSIX ones: it answers nothing yet, and the hello below times out
+    // (a bridge on the host's side is to come).
+    pid_t pid = 0;
+    const std::string parent = std::to_string(getpid());
+    const char* argv[] = {"wine", exe.c_str(), "--serve", name.c_str(), "--parent", parent.c_str(), nullptr};
+    const int result = posix_spawnp(&pid, "wine", nullptr, nullptr, const_cast<char**>(argv), environ);
+    if (result != 0) return fail("wine openrts-dllhost32.exe did not start (error " + std::to_string(result) + ")");
+    host->process_ = pid;
+    host->alive_ = true;
 
     std::uint32_t version = 0, input_size = 0, output_size = 0, switch_size = 0, display_size = 0, signal_size = 0, limit_size = 0;
     const bool ok = host->call(
@@ -316,12 +323,13 @@ LegacyHost::~LegacyHost() {
         usleep(500000);
         ::kill((pid_t)process_, SIGTERM);
     }
-    if (view_) munmap(view_, shared_size);
-    sem_close((sem_t*)request_);
-    sem_close((sem_t*)reply_);
-    shm_unlink((name_ + ".req").c_str());
-    shm_unlink((name_ + ".rep").c_str());
-    shm_unlink(name_.c_str());
+    if (process_) waitpid(process_, nullptr, WNOHANG);
+    if (view_ && view_ != MAP_FAILED) munmap(view_, shared_size);
+    if (request_) sem_close(static_cast<sem_t*>(request_));
+    if (reply_) sem_close(static_cast<sem_t*>(reply_));
+    sem_unlink(("/" + name_ + ".req").c_str());
+    sem_unlink(("/" + name_ + ".rep").c_str());
+    shm_unlink(("/" + name_).c_str());
 }
 
 void LegacyHost::kill(const std::string& reason) {

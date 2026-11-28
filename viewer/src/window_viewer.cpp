@@ -2846,7 +2846,11 @@ void apply_view(const DebugView& view, const std::optional<formats::RoutePositio
 
     const auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
     std::tm local{};
-    local = *localtime(&now);
+#ifdef _WIN32
+    localtime_s(&local, &now);
+#else
+    localtime_r(&now, &local);
+#endif
     char stamp[32];
     std::strftime(stamp, sizeof(stamp), "%Y%m%d_%H%M%S", &local);
     auto name = view.content.substr(view.content.find_last_of('/') + 1);
@@ -3609,9 +3613,15 @@ int run_window_viewer(ViewerScene& scene, const WindowOptions& options) {
     panel.smooth_train_textures = remembered("smooth_train_textures").value_or("0") == "1";
     // Tests: OPENRTS_SMOOTH_TRAIN_TEXTURES turns it on for the run, not remembered.
     {
-      char* forced = getenv("OPENRTS_SMOOTH_TRAIN_TEXTURES");
-      if (forced && *forced == '1')
-        panel.smooth_train_textures = true;
+#ifdef _WIN32
+        char* forced = nullptr;
+        std::size_t length = 0;
+        if (_dupenv_s(&forced, &length, "OPENRTS_SMOOTH_TRAIN_TEXTURES") == 0 && forced && *forced == '1') panel.smooth_train_textures = true;
+        std::free(forced); // _dupenv_s's copy (getenv's is not to be freed)
+#else
+        const char* forced = std::getenv("OPENRTS_SMOOTH_TRAIN_TEXTURES");
+        if (forced && *forced == '1') panel.smooth_train_textures = true;
+#endif
     }
     renderer::texture_cache_directory() = user_data_directory() / "texture_cache" / "bc7";
     if (const auto kept = remembered("cab_near_plane")) panel.cab_near_plane = std::clamp(std::strtof(kept->c_str(), nullptr), 0.0f, 0.3f);

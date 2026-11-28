@@ -24,7 +24,9 @@
 #include <windows.h>
 #include <shellapi.h>
 #else
+#include <fcntl.h>
 #include <spawn.h>
+#include <sys/wait.h>
 #endif
 
 #ifdef OPENRTS_HAS_IMGUI
@@ -61,7 +63,7 @@
 namespace openrts::game {
 
 #if defined(__unix__) || defined(__APPLE__)
-extern "C" char** environ; 
+extern "C" char** environ;
 #endif
 
 namespace {
@@ -440,7 +442,7 @@ struct Launcher::State {
 #ifdef _WIN32
         return process != nullptr;
 #else
-        return false;
+        return process != 0;
 #endif
     }
     [[nodiscard]] bool server_running() const {
@@ -763,16 +765,16 @@ struct Launcher::State {
 
     [[nodiscard]] fs::path game_exe() const {
 #ifdef _WIN32
-        std::string viewer_name = "openrts_viewer.exe";
+        const std::string viewer_name = "openrts_viewer.exe";
 #else
-        std::string viewer_name = "openrts_viewer";
+        const std::string viewer_name = "openrts_viewer";
 #endif
-        const std::vector<fs::path>
-            candidates{
-                exe_dir / viewer_name,
-                exe_dir.parent_path().parent_path() / "viewer" /
-                        exe_dir.filename() / viewer_name,
-                exe_dir.parent_path() / "viewer" / viewer_name,
+        // Beside the menu; a build tree's (multi-config: viewer/<Config>/,
+        // single-config: viewer/).
+        const std::vector<fs::path> candidates{
+            exe_dir / viewer_name,
+            exe_dir.parent_path().parent_path() / "viewer" / exe_dir.filename() / viewer_name,
+            exe_dir.parent_path() / "viewer" / viewer_name,
         };
         std::error_code error;
         for (const auto& candidate : candidates)
@@ -925,16 +927,24 @@ struct Launcher::State {
             }
         }
         CloseHandle(file);
-#endif
-        const auto log_path = viewer::user_data_directory() / L"openrts.log";
-        std::ifstream file(log_path);
-        if (file.is_open()) {
-            std::string buffer;
-            while(std::getline(file, buffer)) {
-                take_status(buffer);
+#else
+        // From where the last reading stopped, as on Windows.
+        std::ifstream file(viewer::user_data_directory() / "openrts.log", std::ios::binary);
+        if (!file) return;
+        file.seekg(static_cast<std::streamoff>(log_read));
+        char buffer[16384];
+        while (file.read(buffer, sizeof buffer) || file.gcount() > 0) {
+            const auto got = static_cast<std::size_t>(file.gcount());
+            log_read += got;
+            log_line.append(buffer, got);
+            for (auto end = log_line.find('\n'); end != std::string::npos; end = log_line.find('\n')) {
+                auto line = log_line.substr(0, end);
+                log_line.erase(0, end + 1);
+                if (!line.empty() && line.back() == '\r') line.pop_back();
+                take_status(line);
             }
         }
-        file.close();
+#endif
     }
 
     void launch(const Tab which) {
@@ -1011,28 +1021,36 @@ struct Launcher::State {
         CloseHandle(info.hThread);
         process = info.hProcess;
         status = network_game ? net_message() : std::string(tr("The game is running. The menu comes back when it is closed."));
-#else                
-        posix_spawn_file_actions_t file_actions;
-        posix_spawn_file_actions_init(&file_actions);
-
-        posix_spawnattr_t attr;
-        posix_spawnattr_init(&attr);
-
-
+#else
+        // The game's output to openrts.log beside the settings (the last two
+        // runs' kept), its steps read back from it, as on Windows.
+        const auto log_path = viewer::user_data_directory() / "openrts.log";
+        {
+            std::error_code ignored;
+            fs::rename(viewer::user_data_directory() / "openrts.1.log", viewer::user_data_directory() / "openrts.2.log", ignored);
+            fs::rename(log_path, viewer::user_data_directory() / "openrts.1.log", ignored);
+        }
+        posix_spawn_file_actions_t actions;
+        posix_spawn_file_actions_init(&actions);
+        posix_spawn_file_actions_addopen(&actions, 1, log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        posix_spawn_file_actions_adddup2(&actions, 1, 2);
+        // argv[0] is the program itself (args' first).
         std::vector<char*> argv;
-        // start from 1 because the 0th argument is the name of the program itself, not needed here.
-        for (auto& a: args) {
-            argv.push_back((char*)a.data());
-        }
+        for (const auto& a : args) argv.push_back(const_cast<char*>(a.c_str()));
         argv.push_back(nullptr);
-
-        int result = posix_spawnp(&process, game_exe().c_str(), &file_actions, &attr, argv.data(), environ);
-        if (result == 0) {
-            status = tr("The game is running. The menu comes back when it is closed.");
-        } else {
+        // The dispatcher's password goes in the game's environment alone.
+        const bool with_password = network_game && net_role == net_role_dispatcher && password[0] != 0;
+        if (with_password) setenv("OPENRTS_MP_PASSWORD", password.data(), 1);
+        const int result = posix_spawn(&process, game_exe().c_str(), &actions, nullptr, argv.data(), environ);
+        if (with_password) unsetenv("OPENRTS_MP_PASSWORD");
+        posix_spawn_file_actions_destroy(&actions);
+        if (result != 0) {
+            process = 0;
+            net_step = NetStep::none;
             status = viewer::trf("The game did not start (error %lu).", static_cast<unsigned long>(result));
+            return;
         }
-        //status = tr("Starting the game is only done on Windows yet.");
+        status = network_game ? net_message() : std::string(tr("The game is running. The menu comes back when it is closed."));
 #endif
     }
 
@@ -1155,6 +1173,32 @@ struct Launcher::State {
             status = code == static_cast<DWORD>(viewer::exit_code::server_gone) ? std::string(tr("The server stopped: the network game is over."))
                    : code == 0 ? std::string(tr("The game is over."))
                                : viewer::trf("The game ended with code %lu: see openrts.log in %s.", static_cast<unsigned long>(code),
+                                             utf8(viewer::user_data_directory()).c_str());
+        }
+#else
+        if (!process) return;
+        int wait_status = 0;
+        const bool ended = waitpid(process, &wait_status, WNOHANG) == process;
+        const auto now = std::chrono::steady_clock::now();
+        if (joining() && !cancelled && (ended || now >= next_log_check)) {
+            next_log_check = now + std::chrono::milliseconds(250);
+            read_log();
+        }
+        if (!ended) return;
+        const unsigned long code = WIFEXITED(wait_status) ? static_cast<unsigned long>(WEXITSTATUS(wait_status)) : 1ul;
+        process = 0;
+        refresh_situations();
+        fps_limit = viewer::clamp_fps_limit(remembered_int("fps_limit", 0));
+        window_mode = viewer::parse_window_mode(remembered("window_mode").value_or("")).value_or(viewer::WindowMode::windowed);
+        load_graphics();
+        if (cancelled) {
+            net_step = NetStep::none;
+            status = tr("The connection was cancelled.");
+        } else if (!network_game || net_step != NetStep::failed) {
+            net_step = NetStep::none;
+            status = code == static_cast<unsigned long>(viewer::exit_code::server_gone) ? std::string(tr("The server stopped: the network game is over."))
+                   : code == 0 ? std::string(tr("The game is over."))
+                               : viewer::trf("The game ended with code %lu: see openrts.log in %s.", code,
                                              utf8(viewer::user_data_directory()).c_str());
         }
 #endif
