@@ -1,6 +1,7 @@
 #include <openrts/audio/sound_instance.hpp>
 
 #include <algorithm>
+#include <chrono>
 #include <cstdio>
 #include <string>
 #include <limits>
@@ -190,14 +191,23 @@ void SoundInstance::stop(VoiceSink& sink) {
 void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
     active_ = true;
     if (!trace_.empty()) note(SIZE_MAX, activated_once_ ? "group on again" : "group on");
+    // openRTS (RTS 0x4A9BA8 waits a random trigger's minimum delay again,
+    // its first activation a whole delay): a random trigger comes in part
+    // of its way through a delay, as if the group had played all along. A
+    // wagon's run is random one-shots every 1 to 5 s
+    // (evfr_tanker.sms): the cars near a camera put at the train's end
+    // (F3) were silent a second or more (2026-11-28).
+    const auto mid_delay = [&](const formats::SoundTrigger& trigger) {
+        std::uniform_real_distribution<float> pick(0.0f, (std::max)(trigger.minimum, trigger.maximum));
+        return pick(random_);
+    };
     if (activated_once_) {
-        // Again (RTS 0x4A9BA8): random triggers wait their minimum delay, the
-        // loops that played when the group went off start where they were;
-        // trigger and stream states stay as they were.
+        // Again: the loops that played when the group went off start where
+        // they were; trigger and stream states stay as they were.
         for (auto& stream : streams_) {
             const auto& triggers = stream.definition->triggers;
             for (std::size_t i = 0; i < triggers.size(); ++i) {
-                if (triggers[i].kind == SoundTriggerKind::random) stream.countdown[i] = triggers[i].minimum;
+                if (triggers[i].kind == SoundTriggerKind::random) stream.countdown[i] = mid_delay(triggers[i]);
             }
         }
         catch_up(inputs, sink);
@@ -222,8 +232,12 @@ void SoundInstance::activate(const SoundInputs& inputs, VoiceSink& sink) {
         stream.volume = stream.definition->volume;
         const auto& triggers = stream.definition->triggers;
         for (std::size_t i = 0; i < triggers.size(); ++i) {
-            std::uniform_real_distribution<float> pick(triggers[i].minimum, (std::max)(triggers[i].minimum, triggers[i].maximum));
-            stream.countdown[i] = pick(random_);
+            if (triggers[i].kind == SoundTriggerKind::random) {
+                stream.countdown[i] = mid_delay(triggers[i]);
+            } else {
+                std::uniform_real_distribution<float> pick(triggers[i].minimum, (std::max)(triggers[i].minimum, triggers[i].maximum));
+                stream.countdown[i] = pick(random_);
+            }
         }
     }
     for (auto& stream : streams_) {
@@ -329,10 +343,12 @@ void SoundInstance::run_codes(const std::vector<std::uint32_t>& codes, const Sou
 
 void SoundInstance::note(const std::size_t stream, const std::string& what) const {
     if (trace_.empty()) return;
+    // With the wall clock (steady), to line up with other traces.
+    const double wall = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     if (stream == SIZE_MAX) {
-        std::fprintf(stderr, "[sound %8.2f] %s: %s\n", clock_, trace_.c_str(), what.c_str());
+        std::fprintf(stderr, "[sound %8.2f wall %.3f] %s: %s\n", clock_, wall, trace_.c_str(), what.c_str());
     } else {
-        std::fprintf(stderr, "[sound %8.2f] %s stream %zu: %s\n", clock_, trace_.c_str(), stream + 1, what.c_str());
+        std::fprintf(stderr, "[sound %8.2f wall %.3f] %s stream %zu: %s\n", clock_, wall, trace_.c_str(), stream + 1, what.c_str());
     }
 }
 

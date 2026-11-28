@@ -3,6 +3,10 @@ fn effects_ray_shadow(world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f
     return 1.0;
 }
 
+fn effects_ray_has_lamp(index: u32, frag: vec4<f32>) -> bool {
+    return false;
+}
+
 fn effects_ray_lamp(index: u32, frag: vec4<f32>) -> f32 {
     return 1.0;
 }

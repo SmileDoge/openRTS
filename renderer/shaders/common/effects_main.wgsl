@@ -81,6 +81,26 @@ fn effects_lamp_shadow(index: u32, world: vec3<f32>, normal: vec3<f32>, frag: ve
     return effects_ray_lamp(index, frag);
 }
 
+// Whether lamp `index` throws a shadow at this pixel: a map of its own or
+// a ray of this pixel's (ray_shadow).
+fn effects_lamp_has_shadow(index: u32, frag: vec4<f32>) -> bool {
+    let count = u32(effects.lamp_shadow_params.x);
+    for (var s = 0u; s < count; s = s + 1u) {
+        if (effects.lamp_shadow_ids[s / 4u][s % 4u] == index + 1u) { return true; }
+    }
+    return effects_ray_has_lamp(index, frag);
+}
+
+// The same for a ring's lamp (by its key; rays go to the clustered list's).
+fn effects_lamp_has_shadow_of(light: Light) -> bool {
+    let key = light.translation[3].xyz;
+    let count = u32(effects.lamp_shadow_params.x);
+    for (var s = 0u; s < count; s = s + 1u) {
+        if (distance(effects.lamp_shadow_keys[s].xyz, key) < 0.001) { return true; }
+    }
+    return false;
+}
+
 // The same for a lamp of the RTS light rings (the clustered list off): found
 // by its to_light translation, as the light was packed from the same lamp.
 fn effects_lamp_shadow_of(light: Light, world: vec3<f32>, normal: vec3<f32>, frag: vec4<f32>) -> f32 {

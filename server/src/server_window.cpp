@@ -281,6 +281,7 @@ struct StartForm {
     bool discord = false; // the players' Discord "Join"
     char address[128]{};  // the address it hands over (empty: the one each connected to)
     bool fast_positions = true; // ServerOptions::fast_positions
+    bool udp_positions = false; // ServerOptions::udp_positions (experimental)
     std::string error;
     int loading = 0; // frames since "Start": the load runs after "Loading" is shown
 
@@ -322,6 +323,7 @@ struct StartForm {
                 else if (key == "weather_dynamic") weather_dynamic = value == "1";
                 else if (key == "public_address") std::snprintf(address, sizeof address, "%s", value.c_str());
                 else if (key == "fast_positions") fast_positions = value == "1";
+                else if (key == "udp_positions") udp_positions = value == "1";
             } catch (const std::exception&) {
                 // a number spoilt by hand: the default kept
             }
@@ -334,7 +336,8 @@ struct StartForm {
         out << "root=" << root << "\nroute=" << (route >= 0 ? routes[static_cast<std::size_t>(route)] : std::string()) << "\nseason=" << season
             << "\nweather=" << weather << "\ntime=" << time << "\nport=" << port << "\nadmit=" << (admit ? 1 : 0)
             << "\ndispatcher_password=" << password << "\nplaces=" << places << "\ndiscord_join=" << (discord ? 1 : 0) << "\npublic_address=" << address
-            << "\nweather_dynamic=" << (weather_dynamic ? 1 : 0) << "\nfast_positions=" << (fast_positions ? 1 : 0) << '\n';
+            << "\nweather_dynamic=" << (weather_dynamic ? 1 : 0) << "\nfast_positions=" << (fast_positions ? 1 : 0)
+            << "\nudp_positions=" << (udp_positions ? 1 : 0) << '\n';
     }
 };
 
@@ -2220,6 +2223,10 @@ bool draw_form(StartForm& form) {
     ImGui::Checkbox(tr("Fast train positions (10 times a second)"), &form.fast_positions);
     ImGui::TextDisabled("%s", form.fast_positions ? tr("The others' trains are seen 0.2 s behind (off: 1.75 s).")
                                                   : tr("As in RTS: the others' trains are seen 1.75 s behind."));
+    ImGui::BeginDisabled(!form.fast_positions);
+    ImGui::Checkbox(tr("Positions by UDP (experimental)"), &form.udp_positions);
+    ImGui::EndDisabled();
+    ImGui::TextDisabled("%s", tr("The fast positions by UDP on the same port number where it gets through (open the UDP port too), else by TCP."));
     ImGui::TextUnformatted(tr("The server's folder (the route database it saves)"));
     ImGui::SetNextItemWidth(-1.0f);
     ImGui::InputText("##data", form.data, sizeof form.data);
@@ -2304,6 +2311,7 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
         std::snprintf(form.password, sizeof form.password, "%s", settings.dispatcher_password.c_str());
         form.discord = settings.discord_join;
         form.fast_positions = settings.fast_positions;
+        form.udp_positions = settings.udp_positions;
         if (settings.max_players > 0) form.places = static_cast<int>(settings.max_players);
         std::snprintf(form.address, sizeof form.address, "%s", settings.public_address.c_str());
         form.list_routes();
@@ -2372,6 +2380,7 @@ int run_server_window(SessionSettings settings, const std::vector<std::string>& 
                 chosen.dispatcher_password = form.password;
                 chosen.discord_join = form.discord;
                 chosen.fast_positions = form.fast_positions;
+                chosen.udp_positions = form.udp_positions;
                 chosen.max_players = static_cast<std::uint32_t>(form.places);
                 chosen.public_address = form.address;
                 std::string error;

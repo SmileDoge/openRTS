@@ -78,6 +78,17 @@ The chosen car's lights or the chosen object's lamps, changed live
   the scene's light" (20 by default, `renderer/photometric.hpp`). The RTS
   path keeps the lamp's colour and fall-off. Written in the same blocks
   (Light, LightSource); RTS skips them.
+- **Shadow priority:** ORTSShadowPriority ( 0..5 ), which lamps get the
+  few lamp shadow maps (Graphics, up to 8). 0 never (it lights but throws
+  no shadow: a gantry's small side lamps), 1 ordinary (not written), 2 a
+  station lamp whose shadow falls into the cab, 5 a floodlight over most of
+  the station. The maps go to the lamps lighting most around the player,
+  each step doubling a lamp's claim: a floodlight a quarter as bright there
+  as an ordinary lamp still wins. The older ORTSNoShadow ( 1 ) reads as 0.
+  A lamp outside the cab or salon the eye is in (by more than 0.3 m) and
+  without a shadow there (no map, no ray) does not light the room inside:
+  it would through the walls. So a station lamp meant to light the cab
+  through its windows wants priority 2 or more.
 - **Kept in the mod** (the inspector's mod field): a car's lights in its
   companion `<file>.eng.openrts` / `.wag.openrts` (a `Lights` block with
   every light by LightID and an empty `RTSLights`, its other entries kept);

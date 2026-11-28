@@ -20,6 +20,13 @@ public:
     virtual void send(ConnectionId to, net::Bytes bytes) = 0;
     // Closes once what was queued for it has gone out.
     virtual void close(ConnectionId to) = 0;
+    // openRTS's positions by UDP (net/datagram.hpp, experimental): the
+    // token a connection's player says hello with (0: no more); a package
+    // by UDP while that player says hello (false: send it by TCP); the UDP
+    // port (0: none).
+    virtual void offer_datagrams(ConnectionId, std::uint64_t) {}
+    virtual bool send_datagram(ConnectionId, const net::Bytes&) { return false; }
+    [[nodiscard]] virtual std::uint16_t datagram_port() const { return 0; }
 };
 
 // What came in, for the game's thread.
@@ -58,6 +65,9 @@ public:
     [[nodiscard]] std::vector<NetEvent> take_events();
     void send(ConnectionId to, net::Bytes bytes) override;
     void close(ConnectionId to) override;
+    void offer_datagrams(ConnectionId to, std::uint64_t token) override;
+    bool send_datagram(ConnectionId to, const net::Bytes& bytes) override;
+    [[nodiscard]] std::uint16_t datagram_port() const override;
     // Closes everything and waits for the threads.
     void stop();
 

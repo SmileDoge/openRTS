@@ -1,5 +1,7 @@
 #include <openrts/server/transport.hpp>
 
+#include <openrts/net/datagram.hpp>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -21,6 +23,7 @@
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #endif
@@ -76,6 +79,24 @@ bool write_all(const Socket s, const std::uint8_t* data, std::size_t size) {
     return true;
 }
 
+bool readable_within(const Socket s, const int timeout_ms) {
+#ifdef _WIN32
+    WSAPOLLFD fd{};
+    fd.fd = s;
+    fd.events = POLLRDNORM;
+    return WSAPoll(&fd, 1, timeout_ms) > 0;
+#else
+    pollfd fd{};
+    fd.fd = s;
+    fd.events = POLLIN;
+    return poll(&fd, 1, timeout_ms) > 0;
+#endif
+}
+
+double steady_seconds() {
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 std::string address_text(const sockaddr_storage& address) {
     char host[INET6_ADDRSTRLEN]{};
     std::uint16_t port = 0;
@@ -115,6 +136,63 @@ struct TcpServer::Impl {
     std::vector<NetEvent> events;
     std::atomic<int> live = 0; // connection threads still running
     ConnectionId next_id = 1;
+
+    // The positions by UDP (net/datagram.hpp): one socket on the TCP
+    // port's number; each offered connection's token, its player's address
+    // as its hello came from and when.
+    struct Peer {
+        std::uint64_t token{};
+        sockaddr_storage address{};
+        socklen_t size = 0;
+        double heard = -1.0e9;
+    };
+    Socket udp = no_socket;
+    std::thread udp_reader;
+    std::mutex udp_mutex;
+    std::map<ConnectionId, Peer> peers;
+
+    void datagram_loop() {
+        std::vector<std::uint8_t> buffer(2048);
+        while (running) {
+            if (!readable_within(udp, 100)) continue;
+            sockaddr_storage from{};
+            socklen_t size = sizeof from;
+            const auto got = ::recvfrom(udp, reinterpret_cast<char*>(buffer.data()), static_cast<int>(buffer.size()), 0,
+                                        reinterpret_cast<sockaddr*>(&from), &size);
+            if (got <= 0) continue;
+            const auto datagram = net::read_datagram(net::ByteView(buffer.data(), static_cast<std::size_t>(got)));
+            if (!datagram || datagram->token == 0 || datagram->kind == net::DatagramKind::answer) continue;
+            ConnectionId connection = 0;
+            {
+                std::lock_guard lock(udp_mutex);
+                for (auto& [id, peer] : peers) {
+                    if (peer.token != datagram->token) continue;
+                    connection = id;
+                    peer.address = from;
+                    peer.size = size;
+                    peer.heard = steady_seconds();
+                    break;
+                }
+            }
+            if (connection == 0) continue;
+            if (datagram->kind == net::DatagramKind::hello) {
+                const auto answer = net::make_datagram(net::DatagramKind::answer, datagram->token);
+                ::sendto(udp, reinterpret_cast<const char*>(answer.data()), static_cast<int>(answer.size()), 0,
+                         reinterpret_cast<const sockaddr*>(&from), size);
+                continue;
+            }
+            // A package: only the trains' motion comes this way.
+            const auto frame = datagram->payload;
+            if (frame.size() < 6) continue;
+            const auto package = static_cast<std::uint16_t>(frame[0] | (frame[1] << 8));
+            const auto length = static_cast<std::uint32_t>(frame[2]) | (static_cast<std::uint32_t>(frame[3]) << 8) |
+                                (static_cast<std::uint32_t>(frame[4]) << 16) | (static_cast<std::uint32_t>(frame[5]) << 24);
+            if (length != frame.size() || package != 0x45EE) continue;
+            NetEvent event{.kind = NetEvent::Kind::package, .connection = connection, .id = package};
+            event.body.assign(frame.begin() + 6, frame.end());
+            push(std::move(event));
+        }
+    }
 
     // A connection thread: detached, counted so stop() can wait for it.
     template <class Body>
@@ -250,7 +328,62 @@ bool TcpServer::listen(const std::uint16_t port, std::string& error, const bool 
     impl.listener = s;
     impl.running = true;
     impl.acceptor = std::thread([&impl] { impl.accept_loop(); });
+    // UDP on the same number (the positions by UDP); without it, TCP alone.
+    {
+        Socket u = local ? no_socket : ::socket(AF_INET6, SOCK_DGRAM, IPPROTO_UDP);
+        bool bound = false;
+        if (u != no_socket) {
+            int off = 0;
+            setsockopt(u, IPPROTO_IPV6, IPV6_V6ONLY, reinterpret_cast<const char*>(&off), sizeof off);
+            sockaddr_in6 address{};
+            address.sin6_family = AF_INET6;
+            address.sin6_addr = in6addr_any;
+            address.sin6_port = htons(impl.bound_port);
+            bound = ::bind(u, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+            if (!bound) close_socket(u);
+        }
+        if (!bound) {
+            u = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+            if (u != no_socket) {
+                sockaddr_in address{};
+                address.sin_family = AF_INET;
+                address.sin_addr.s_addr = htonl(local ? INADDR_LOOPBACK : INADDR_ANY);
+                address.sin_port = htons(impl.bound_port);
+                bound = ::bind(u, reinterpret_cast<const sockaddr*>(&address), sizeof address) == 0;
+                if (!bound) close_socket(u);
+            }
+        }
+        if (bound) {
+            impl.udp = u;
+            impl.udp_reader = std::thread([&impl] { impl.datagram_loop(); });
+        }
+    }
     return true;
+}
+
+void TcpServer::offer_datagrams(const ConnectionId to, const std::uint64_t token) {
+    std::lock_guard lock(impl_->udp_mutex);
+    if (token == 0) {
+        impl_->peers.erase(to);
+    } else {
+        impl_->peers[to] = Impl::Peer{.token = token};
+    }
+}
+
+bool TcpServer::send_datagram(const ConnectionId to, const net::Bytes& bytes) {
+    auto& impl = *impl_;
+    if (impl.udp == no_socket) return false;
+    std::lock_guard lock(impl.udp_mutex);
+    const auto it = impl.peers.find(to);
+    if (it == impl.peers.end() || steady_seconds() - it->second.heard > net::datagram_silence) return false;
+    const auto datagram = net::make_datagram(net::DatagramKind::package, it->second.token, bytes);
+    if (datagram.size() > net::datagram_largest) return false;
+    return ::sendto(impl.udp, reinterpret_cast<const char*>(datagram.data()), static_cast<int>(datagram.size()), 0,
+                    reinterpret_cast<const sockaddr*>(&it->second.address), it->second.size) == static_cast<int>(datagram.size());
+}
+
+std::uint16_t TcpServer::datagram_port() const {
+    return impl_->udp != no_socket ? impl_->bound_port : std::uint16_t{0};
 }
 
 std::uint16_t TcpServer::port() const noexcept { return impl_->bound_port; }
@@ -265,6 +398,10 @@ std::vector<NetEvent> TcpServer::take_events() {
         {
             std::lock_guard connection_lock(it->second->mutex);
             done = it->second->gone && it->second->queue.empty();
+        }
+        if (done) {
+            std::lock_guard udp_lock(impl_->udp_mutex);
+            impl_->peers.erase(it->first);
         }
         it = done ? impl_->connections.erase(it) : std::next(it);
     }
@@ -309,6 +446,11 @@ void TcpServer::stop() {
         impl.listener = no_socket;
     }
     if (impl.acceptor.joinable()) impl.acceptor.join();
+    if (impl.udp_reader.joinable()) impl.udp_reader.join();
+    if (impl.udp != no_socket) {
+        close_socket(impl.udp);
+        impl.udp = no_socket;
+    }
     {
         std::lock_guard lock(impl.mutex);
         for (auto& [_, connection] : impl.connections) {

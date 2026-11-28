@@ -95,6 +95,7 @@ constexpr const char* help_text =
     "  kick <nick>                    drop a player\n"
     "  admit on|off                   take new players or not\n"
     "  fastpos on|off                 openRTS players send their trains' motion 10 times a second, or as RTS every 1.5 s\n"
+    "  udppos on|off                  experimental: that motion by UDP where it gets through, else TCP\n"
     "  quit                          stop the server\n";
 
 std::string time_text(const double seconds) {
@@ -1039,6 +1040,12 @@ std::string run_command(GameServer& server, ServerRoute& route, const std::strin
         if (w != "on" && w != "off") return std::string("usage: fastpos on|off (now ") + (server.fast_positions() ? "on" : "off") + ")";
         server.set_fast_positions(w == "on");
         return w == "on" ? "fast positions on" : "fast positions off";
+    }
+    if (command == "udppos") {
+        const auto w = lower(arg(1));
+        if (w != "on" && w != "off") return std::string("usage: udppos on|off (now ") + (server.udp_positions() ? "on" : "off") + ")";
+        server.set_udp_positions(w == "on");
+        return w == "on" ? "UDP positions on (experimental)" : "UDP positions off";
     }
     return "unknown command " + words[0] + " (help)";
 }

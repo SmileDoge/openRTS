@@ -102,7 +102,9 @@ public:
     // `time` the sender's clock put on ours (NetSession), so the network's
     // jitter does not move it, and no interval is measured; drawn
     // set_timed_delay() behind. Switching between timed and untimed
-    // positions starts the samples anew.
+    // positions starts the samples anew. One older than the last (by UDP,
+    // after a later one) goes to its place among them, as MTrain's buffer
+    // keeps its snapshots by tick; the same time again is dropped.
     void add_timed(simulation::TrackNetwork& network, double time, const simulation::TrackLocation& front, float speed,
                    float acceleration);
     // The delay for timed positions: their interval and how late they come.

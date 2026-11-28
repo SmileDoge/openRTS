@@ -2649,7 +2649,8 @@ private:
         renderer::ModelExtraLight light;
         const bool cone = lamp.flags.find("light_cone") != std::string::npos;
         light.kind = cone ? 4.0f : lamp.flags.find("light_sphere") != std::string::npos ? 2.0f : 3.0f;
-        if (lamp.no_shadow) light.kind += 64.0f; // no shadow (SceneEffects::choose_lamp_shadows)
+        if (lamp.shadow_priority <= 0) light.kind += 64.0f; // no shadow (SceneEffects::choose_lamp_shadows)
+        light.shadow_priority = static_cast<std::uint8_t>(std::clamp(lamp.shadow_priority, 0, 5));
         const float rx = (std::max)(lamp.radius[0], 0.01f);
         const float rz = (std::max)(lamp.radius[1] > 0.0f ? lamp.radius[1] : lamp.radius[0], 0.01f);
         light.size = cone ? glm::vec4{rx / reach, rz / reach, reach, lamp.source_radius} : glm::vec4{rx, rz, reach, lamp.source_radius};

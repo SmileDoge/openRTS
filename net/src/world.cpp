@@ -250,6 +250,21 @@ void RemoteMotion::add_timed(simulation::TrackNetwork& network, double time, con
         easing_ = !samples_.empty();
     }
     last_timed_ = true;
+    // Late (by UDP): put among the others in time, the ways from and to its
+    // neighbours measured again; too old to be drawn any more, dropped.
+    if (!samples_.empty() && time < samples_.back().time - 1e-4) {
+        if (time <= samples_.front().time) return;
+        auto at = std::upper_bound(samples_.begin(), samples_.end(), time, [](const double t, const Sample& s) { return t < s.time; });
+        const auto& before = *(at - 1);
+        if (std::abs(before.time - time) < 1e-4) return;
+        Sample late{time, front, speed, acceleration, std::nullopt};
+        late.from_previous = track_distance(network, before.front, front, 50.0 + 2.0 * (time - before.time) * 112.0);
+        at = samples_.insert(at, late);
+        auto& next = *(at + 1);
+        next.from_previous = track_distance(network, front, next.front, 50.0 + 2.0 * (next.time - time) * 112.0);
+        return;
+    }
+    if (!samples_.empty() && std::abs(samples_.back().time - time) < 1e-4) return;
     if (!samples_.empty()) time = std::max(time, samples_.back().time + 1e-3);
     Sample sample{time, front, speed, acceleration, std::nullopt};
     if (!samples_.empty()) {
@@ -260,9 +275,9 @@ void RemoteMotion::add_timed(simulation::TrackNetwork& network, double time, con
     }
     standing_ = false;
     samples_.push_back(sample);
-    // Three seconds of them: the delay stays under it, also while it eases
-    // down from the RTS positions' 1.75 s.
-    if (samples_.size() > 32) samples_.erase(samples_.begin());
+    // Three seconds of them (20 a second by UDP): the delay stays under it,
+    // also while it eases down from the RTS positions' 1.75 s.
+    if (samples_.size() > 64) samples_.erase(samples_.begin());
 }
 
 void RemoteMotion::untimed() {

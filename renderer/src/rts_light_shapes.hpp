@@ -31,6 +31,13 @@ inline void pack_light(GpuLight& to, const ModelExtraLight& from) {
     // Extra lights have no ambient of their own: it carries a photometric lamp.
     std::memcpy(to.ambient, &from.photometric[0], sizeof(to.ambient));
     std::memcpy(to.translation, &from.to_light[0][0], sizeof(to.translation));
+    // position: the lamp in the world (its first one in an array): the
+    // shaders keep a lamp outside the room the eye is in out of it
+    // (lamp_outside_room).
+    const glm::mat4 to_world = glm::inverse(from.to_light);
+    to.position[0] = to_world[3].x;
+    to.position[1] = to_world[3].y;
+    to.position[2] = to_world[3].z;
     to.direction[0] = from.direction.x;
     to.direction[1] = from.direction.y;
     to.direction[2] = from.direction.z;

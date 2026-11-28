@@ -80,6 +80,10 @@ struct ServerOptions {
     // (openrts_train_motion), relayed to the others, who draw them a fifth
     // of a second behind instead of 1.75 s. Off: positions as RTS's alone.
     bool fast_positions = true;
+    // Experimental (2026-11-28): the fast positions by UDP between this
+    // server and its openRTS players (net/datagram.hpp), TCP while UDP does
+    // not get through. Off: by TCP as all else.
+    bool udp_positions = false;
 };
 
 // A train the dispatcher puts on the track.
@@ -364,6 +368,9 @@ public:
     // players are told at once.
     void set_fast_positions(bool on);
     [[nodiscard]] bool fast_positions() const noexcept { return options_.fast_positions; }
+    // The fast positions by UDP on or off (ServerOptions::udp_positions).
+    void set_udp_positions(bool on);
+    [[nodiscard]] bool udp_positions() const noexcept { return options_.udp_positions; }
     [[nodiscard]] bool admits() const noexcept { return options_.admit; }
     // What a console's command line (console_command) runs: the server's
     // console commands; its answer goes back as console_reply.
@@ -418,6 +425,8 @@ private:
     // A helper's train gone or given to another: his help ends.
     void check_helpers();
     std::unique_ptr<Impl> impl_;
+    // The positions by UDP offered to an openRTS player (ServerOptions::udp_positions).
+    void offer_udp(User& user);
     Transport& transport_;
     ServerOptions options_;
     net::OpenrtsWeather weather_;

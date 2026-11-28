@@ -2583,6 +2583,30 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
     const bool f5 = pressed(GLFW_KEY_F5, input.info_key_down);
     const bool f4 = pressed(GLFW_KEY_F4, input.drive_key_down);
     const bool f7 = pressed(GLFW_KEY_F7, input.track_control_key_down);
+    // OPENRTS_TEST_CAR_VIEW=<s>[,<s>...] (automated runs): F3 pressed at
+    // those seconds from the start, each once.
+    const bool f3 = pressed(GLFW_KEY_F3, input.car_view_key_down) || [] {
+        static std::vector<double> at = [] {
+            std::vector<double> times;
+            if (const char* text = std::getenv("OPENRTS_TEST_CAR_VIEW")) {
+                std::string rest = text;
+                while (!rest.empty()) {
+                    times.push_back(std::atof(rest.c_str()));
+                    const auto comma = rest.find(',');
+                    rest = comma == std::string::npos ? std::string{} : rest.substr(comma + 1);
+                }
+            }
+            return times;
+        }();
+        static const auto start = std::chrono::steady_clock::now();
+        if (at.empty()) return false;
+        const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        if (now < at.front()) return false;
+        at.erase(at.begin());
+        std::fprintf(stderr, "[test] F3 at %.3f s (wall %.3f)\n", now,
+                     std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count());
+        return true;
+    }();
     const bool f12 = pressed(GLFW_KEY_F12, input.inspector_key_down);
     // Ctrl+F9 the tape window (F9 alone is RTS's objectives, 0x402C88).
     const bool f9 = pressed(GLFW_KEY_F9, input.tape_window_key_down);
@@ -2688,7 +2712,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
             .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
             .profile_strip = f4 && ctrl,
             .drive_card = f4 && !ctrl,
-            .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
+            .car_view = f3,
             .signal_names = f7 && ctrl && !alt,
             .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
             .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),
@@ -2731,7 +2755,7 @@ void update_camera_from_keyboard(GLFWwindow* window, CameraInput& input, const f
         .stations_panel = pressed(GLFW_KEY_F6, input.stations_key_down) && !ctrl,
         .profile_strip = f4 && ctrl,
         .drive_card = f4 && !ctrl,
-        .car_view = pressed(GLFW_KEY_F3, input.car_view_key_down),
+        .car_view = f3,
         .signal_names = f7 && ctrl && !alt,
         .activity_journal = pressed(GLFW_KEY_F11, input.journal_key_down),
         .activity_menu = pressed(GLFW_KEY_F8, input.menu_key_down),

@@ -25,6 +25,14 @@ fn effects_ray_sun_tint(frag: vec4<f32>) -> vec3<f32> {
 
 // A lamp's light by rays (`index` in scene_lights): the mask's when the
 // pixel traced this lamp (one of three), else none known (1).
+// Whether this pixel's rays went to lamp `index`.
+fn effects_ray_has_lamp(index: u32, frag: vec4<f32>) -> bool {
+    if (effects.views.w < 0.5) { return false; }
+    let t = effects_ray_texel(frag);
+    let key = index + 1u;
+    return (t.g & 65535u) == key || (t.g >> 16u) == key || (t.b & 65535u) == key;
+}
+
 fn effects_ray_lamp(index: u32, frag: vec4<f32>) -> f32 {
     if (effects.views.w < 0.5) { return 1.0; }
     let t = effects_ray_texel(frag);

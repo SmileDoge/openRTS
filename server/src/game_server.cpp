@@ -1,5 +1,7 @@
 #include <openrts/server/game_server.hpp>
 
+#include <openrts/net/datagram.hpp>
+
 #include <algorithm>
 #include <chrono>
 #include <cctype>
@@ -87,6 +89,7 @@ struct GameServer::User {
     bool played = false;       // had it once: may come back with no train (RTS +92 bit 1)
     std::optional<net::Bytes> position; // the last player_pos body (44 bytes)
     bool openrts = false;      // said openrts_hello: takes openRTS's own packages
+    std::uint64_t udp_token{}; // the positions by UDP offered with it (0: not)
     // A helper (docs/server.md, "Helpers"): the train he asked to help on,
     // its engineer not yet answering, or the train he helps on and whose it
     // was then (the help ends when it is another's).
@@ -515,6 +518,7 @@ void GameServer::closed(const ConnectionId connection) {
     user->connection = 0;
     user->playing = false;
     user->position.reset();
+    user->udp_token = 0;
     // A helper's help ends with him; an engineer's helpers stop with him.
     end_helping(*user, net::HelperState::ended);
     for (auto& [_, other] : impl.users) {
@@ -680,6 +684,7 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         if (!user->openrts) impl.note("user " + utf8(user->nick) + " plays openRTS");
         user->openrts = true;
         send_to(*user, hello_answer());
+        offer_udp(*user);
         // Its trains' own states, for its openRTS to put back (0x45FB).
         for (const auto& [tid, t] : impl.trains) {
             if (t.owner != user->id || t.own_state.empty()) continue;
@@ -701,8 +706,12 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         const auto* t = m ? impl.train(m->train) : nullptr;
         if (!t || t->record.kind != kind_player) return;
         const auto bytes = framed(id, body);
-        for (auto& [uid, other] : impl.users)
-            if (uid != user->id && other.playing && other.connection && other.openrts) transport_.send(other.connection, bytes);
+        for (auto& [uid, other] : impl.users) {
+            if (uid == user->id || !other.playing || !other.connection || !other.openrts) continue;
+            // By UDP while that player's hellos come (experimental), else TCP.
+            if (options_.udp_positions && other.udp_token != 0 && transport_.send_datagram(other.connection, bytes)) continue;
+            transport_.send(other.connection, bytes);
+        }
         return;
     }
     // A car menu item done (0x45FE): to the other openRTS players.
@@ -2984,6 +2993,34 @@ net::Bytes GameServer::hello_answer() const {
     }
     const auto features = static_cast<std::uint16_t>(net::openrts_features | (options_.fast_positions ? net::openrts_feature_fast_positions : 0));
     return framed(P(Package::openrts_hello), net::encode_openrts_hello(features, options_.storm, discord));
+}
+
+void GameServer::offer_udp(User& user) {
+    if (!options_.udp_positions || !user.openrts || user.console || !user.connection) return;
+    const auto port = transport_.datagram_port();
+    if (port == 0) return;
+    if (user.udp_token == 0) {
+        static std::mt19937_64 random{std::random_device{}()};
+        while (user.udp_token == 0) user.udp_token = random();
+    }
+    transport_.offer_datagrams(user.connection, user.udp_token);
+    transport_.send(user.connection, framed(P(Package::openrts_udp_offer), net::encode_openrts_udp_offer({.token = user.udp_token, .port = port})));
+}
+
+void GameServer::set_udp_positions(const bool on) {
+    if (options_.udp_positions == on) return;
+    options_.udp_positions = on;
+    impl_->note(on ? "UDP positions on (experimental): openRTS players' fast positions by UDP where it gets through"
+                   : "UDP positions off: the fast positions by TCP");
+    for (auto& [_, user] : impl_->users) {
+        if (!user.connection) continue;
+        if (on) {
+            offer_udp(user);
+        } else if (user.udp_token != 0) {
+            transport_.offer_datagrams(user.connection, 0);
+            user.udp_token = 0;
+        }
+    }
 }
 
 void GameServer::set_fast_positions(const bool on) {

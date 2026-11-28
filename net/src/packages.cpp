@@ -128,6 +128,7 @@ constexpr Named names[] = {
     {0x45FA, "openrts_weather"},
     {0x45EF, "openrts_clock"},
     {0x45EE, "openrts_train_motion"},
+    {0x45EB, "openrts_udp_offer"},
     {0x45FB, "openrts_train_state"},
     {0x45FC, "openrts_doors"},
     {0x45FD, "openrts_cab_doors"},

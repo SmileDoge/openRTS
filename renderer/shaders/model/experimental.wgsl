@@ -369,6 +369,8 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             let first = cluster * effects.clusters.w;
             for (var i = 0u; i < count; i = i + 1u) {
                 let index = cluster_lights[first + i];
+                // Outside the room the eye is in and shadowless: not in it.
+                if (in_room && lamp_outside_room(scene_lights[index]) && !effects_lamp_has_shadow(index, input.clip)) { continue; }
                 let light = lamp_light(scene_lights[index], input.world, n, physical);
                 if (any(light > vec3<f32>(0.0))) {
                     let lit = light * effects_lamp_shadow(index, input.world.xyz, n, input.clip);
@@ -386,6 +388,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             let extra_lights = ring_count(input.ring);
             for (var i = 0; i < extra_lights; i = i + 1) {
                 let ring_light = frame.rings[input.ring * 9u + u32(i)];
+                if (in_room && lamp_outside_room(ring_light) && !effects_lamp_has_shadow_of(ring_light)) { continue; }
                 let light = lamp_light(ring_light, input.world, n, physical);
                 if (any(light > vec3<f32>(0.0))) {
                     let lit = light * effects_lamp_shadow_of(ring_light, input.world.xyz, n, input.clip);

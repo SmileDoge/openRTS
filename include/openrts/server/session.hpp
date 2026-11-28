@@ -35,6 +35,7 @@ struct SessionSettings {
     std::string public_address;
     std::uint32_t max_players = 0; // places (ServerOptions::max_players), 0 no limit
     bool fast_positions = true;    // ServerOptions::fast_positions
+    bool udp_positions = false;    // ServerOptions::udp_positions (experimental)
     // Every train on the track saved as the placement "autosave" so often
     // and when the server stops (0: never); at the start the last run's is
     // kept as "autosave-previous" (docs/server.md, "Placements").

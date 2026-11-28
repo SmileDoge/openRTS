@@ -190,6 +190,7 @@ private:
             double least = 0.0;
             double base = 0.0;
             double late = 0.0;
+            double interval = 0.1; // between the sender's packages, smoothed (0.05 by UDP)
         } fast;
         double fast_heard = -1e9; // when the last one came
     };
@@ -202,6 +203,7 @@ private:
     struct Timed {
         double time{};
         float acceleration{};
+        bool late = false; // older than the last (by UDP): the record keeps the newer place
     };
     void position(Remote& remote, const net::TrainPos& pos, simulation::TrackNetwork& network, TrainView& trains,
                   double now, const Timed* timed = nullptr);
@@ -325,6 +327,7 @@ private:
     // The server's hello says its players send their trains' motion 10
     // times a second (net::openrts_feature_fast_positions).
     bool fast_positions_ = false;
+    bool udp_live_ = false; // the positions by UDP get through (RtsConnection::datagrams_live)
     std::optional<DiscordJoin> discord_join_;
     std::map<std::uint32_t, Player> players_;
     // Each player's places of the last seconds (heard time, place): one in

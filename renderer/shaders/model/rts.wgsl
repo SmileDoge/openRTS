@@ -108,8 +108,11 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
         var light_colour = vec4<f32>(0.0);
         var specular = vec4<f32>(0.0);
         let extra_lights = ring_count(input.ring);
+        let inside = in_eye_room(input.world.xyz);
         for (var i = 0; i < extra_lights; i = i + 1) {
             let light = frame.rings[input.ring * 9u + u32(i)];
+            // Outside the cab the eye is in: not through its walls.
+            if (inside && lamp_outside_room(light)) { continue; }
             let factor = light_factor(light, input.world, normal);
             if (factor < 0.0) { continue; }
             light_colour = max(light_colour, light.diffuse * factor);

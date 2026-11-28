@@ -564,3 +564,20 @@ fn fog_for(depth: f32, world: vec3<f32>) -> vec4<f32> {
     }
     return vec4<f32>(colour, frame.fog_colour.w);
 }
+
+// openRTS: a point inside the room the eye is in (the cab, a salon).
+fn in_eye_room(world: vec3<f32>) -> bool {
+    if (frame.room_lower.w < 0.5) { return false; }
+    let at = (frame.room * vec4<f32>(world, 1.0)).xyz;
+    return all(at >= frame.room_lower.xyz) && all(at <= frame.room_upper.xyz);
+}
+
+// openRTS: a lamp outside that room (by more than 0.3 m): without a shadow of
+// its own it would light the room through its walls, so a point inside the
+// room takes none of it (a window's light comes in by the shadowed lamps).
+fn lamp_outside_room(light: Light) -> bool {
+    if (frame.room_lower.w < 0.5) { return false; }
+    let at = (frame.room * vec4<f32>(light.position, 1.0)).xyz;
+    let margin = vec3<f32>(0.3);
+    return any(at < frame.room_lower.xyz - margin) || any(at > frame.room_upper.xyz + margin);
+}

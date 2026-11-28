@@ -37,6 +37,7 @@ openrts-server --route Kuban_RTS --root D:\Games\MDDRTS --port 800 --season summ
 | `--autosave <minutes>` | every train on the track saved as the placement `autosave` so often and at the stop (2 by default, 0 never); at the start the last run's kept as `autosave-previous` (Placements) |
 | `--discord-join`, `--public-address <host:port>` | openRTS players' Discord profiles get "Join" with that address (none given: the one each player connected to); net.md, "Joining from Discord" |
 | `--no-fast-positions` | the players send their trains' positions as RTS, every 1.5 s, not 10 times a second (net.md, "Fast positions"; the window's "Fast train positions", the console's `fastpos on\|off` at any time) |
+| `--udp-positions` | experimental: those positions by UDP on the same port number where it gets through, else TCP (net.md, "Positions by UDP"; the window's "Positions by UDP (experimental)", the console's `udppos on\|off`) |
 | `--dispatcher-password <text>` | the dispatcher's console from another computer logs in with it (none: only from this one; "The dispatcher's console (in the game)" below) |
 | `--data <folder>` | where the server keeps its files (the route database it saves); openRTS's user data folder by default (`%LOCALAPPDATA%\openRTS`, or next to the program with a `portable.txt`), never the RTS installation |
 | `--command "<line>"` | a console line run at the start (repeatable) |

@@ -554,6 +554,41 @@ Since the same day an RTS position after the train stood measures no
 interval (a train that stood a minute is not sent every minute: the delay
 grew to 2.6 s, 3 s at most).
 
+## Positions by UDP (experimental, 2026-11-28)
+
+The fast positions (`0x45EE`) may go by UDP instead of TCP: TCP holds back
+every package behind a lost one until it is sent again (100 to 300 ms),
+UDP lets the next position through. The server's setting "Positions by UDP
+(experimental)" (off by default; `--udp-positions`, the console's `udppos
+on|off`) with the fast positions on:
+
+- the server listens for UDP on its TCP port's number (open both in the
+  router or firewall);
+- after an openRTS player's hello it sends `0x45EB openrts_udp_offer`: a
+  random token (u64) and the port (u16);
+- the player sends a hello datagram with it once a second, the server
+  answers each from the address it came from (so a player behind NAT is
+  reached);
+- a datagram: `oRU1`, a kind (1 hello, 2 answer, 3 package), the token
+  (u64), then a package's frame as on TCP; at most 1200 bytes;
+  `include/openrts/net/datagram.hpp`;
+- while answers come (3 s) the player sends its motion by UDP and the
+  server sends it the others' by UDP; silent for 3 s, both by TCP again,
+  with no step of their own; the server takes only `0x45EE` by UDP;
+- by UDP a player sends its motion 20 times a second (each physics step,
+  0.05 s), by TCP 10; the others measure the interval and draw the train
+  one and a half of it behind, plus how late they come;
+- a motion older than the last one taken (UDP may reorder them) goes to
+  its place among the samples, the same one again is dropped (as the
+  snapshot buffer of the user's Unreal simulator, kept by tick).
+
+Everything else stays on TCP. Checked 2026-11-28 with the server and two
+players on one computer: both on UDP, 20 motions a second, the other's
+train drawn 0.14 to 0.22 s behind (median 0.20; by TCP 0.18 to 0.26,
+median 0.24). No loss on one computer: the main gain is where packages
+are lost. `openrts.net_world` puts shuffled and repeated motions in order. The test `openrts.server` runs the offer, the hello,
+a package each way and the way back to TCP on the loopback.
+
 ## Tests
 
 - `openrts.net`: fields and strings both ways, nested packages, broken

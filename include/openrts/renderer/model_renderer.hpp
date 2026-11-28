@@ -51,6 +51,9 @@ struct ModelExtraLight {
     // The instance it belongs to (ModelRenderer::set_owner), 0 none: with
     // lamp_skips_own_model() that instance is left out of its shadow.
     std::uint32_t owner{};
+    // Its shadow priority (formats::ShapeLight::shadow_priority), 0..5: the
+    // lamps' shadow maps go by it with their light where the player is.
+    std::uint8_t shadow_priority = 1;
     // A photometric lamp (photometric.hpp): rgb its light at 1 m in the
     // scene's units, w 1; the experimental path's physical light takes it
     // (inverse square) in place of `diffuse` and the fall-off. w 0: none.

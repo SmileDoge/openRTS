@@ -1606,6 +1606,10 @@ void SceneEffects::Impl::choose_lamp_shadows(const std::optional<ShadowFocus>& f
         }
         float score = strength * glm::dot(glm::vec3(light.diffuse), luma);
         if (score < 0.01f) continue;
+        // Its priority (ORTSShadowPriority): each step doubles its claim, so
+        // a floodlight (5) a quarter as bright here as an ordinary lamp still
+        // wins, one a twentieth does not; 0 never (skipped above).
+        score *= static_cast<float>(1u << (std::clamp<int>(light.shadow_priority, 1, 5) - 1));
         for (const auto& kept : lamp_shadow_kept) {
             if (glm::distance(kept, position) < 0.1f) {
                 score *= 1.5f;

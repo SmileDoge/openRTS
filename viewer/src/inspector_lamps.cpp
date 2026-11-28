@@ -565,7 +565,21 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
         flag(tr("Burns always (RUNNING)"), "running");
         flag(tr("By the light level or at night (NIGHT_AUTO)"), "night_auto");
         flag(tr("Never by day (NIGHT_ONLY)"), "night_only");
-        changed |= ImGui::Checkbox(tr("Throws no shadows (openRTS: takes no lamp shadow map)"), &l.no_shadow);
+        {
+            // ORTSShadowPriority: which lamps get the few shadow maps.
+            const char* names[6];
+            names[0] = tr("0: throws no shadows");
+            names[1] = tr("1: ordinary");
+            names[2] = tr("2: a station lamp, its shadow into the cab");
+            names[3] = tr("3: more wanted");
+            names[4] = tr("4: much more wanted");
+            names[5] = tr("5: a floodlight over the station");
+            int p = std::clamp(l.shadow_priority, 0, 5);
+            if (ImGui::Combo(tr("Shadow priority (openRTS: which lamps get the shadow maps)"), &p, names, 6)) {
+                l.shadow_priority = p;
+                changed = true;
+            }
+        }
         changed |= ImGui::DragFloat3(tr("Position (the shape's x, y, z), m"), l.position.data(), 0.01f);
         changed |= ImGui::DragFloat3(tr("Points to, m"), l.points_to.data(), 0.01f);
         {

@@ -194,7 +194,8 @@ std::vector<ShapeLight> read_light_sources(const TextNode& list) {
         light.candela = value(node.child("ortscandela"), 0);
         light.lumens = value(node.child("ortslumens"), 0);
         light.kelvin = value(node.child("ortskelvin"), 0);
-        light.no_shadow = value(node.child("ortsnoshadow"), 0) != 0.0f;
+        light.shadow_priority = std::clamp(static_cast<int>(value(node.child("ortsshadowpriority"), 0, 1.0f)), 0, 5);
+        if (value(node.child("ortsnoshadow"), 0) != 0.0f) light.shadow_priority = 0;
         if (const auto* n = node.child("ortsname"); n && !n->values.empty()) light.name = n->values.front();
         if (const auto* array = node.child("lightarray")) {
             const float count = value(array, 0);
@@ -244,7 +245,7 @@ std::string write_shape_lights(const std::vector<ShapeLight>& lights, const std:
         if (l.candela > 0.0f) out += numbers("ORTSCandela", {l.candela});
         if (l.lumens > 0.0f) out += numbers("ORTSLumens", {l.lumens});
         if (l.kelvin > 0.0f) out += numbers("ORTSKelvin", {l.kelvin});
-        if (l.no_shadow) out += " ORTSNoShadow ( 1 )";
+        if (l.shadow_priority != 1) out += numbers("ORTSShadowPriority", {static_cast<float>(l.shadow_priority)});
         if (!l.name.empty()) out += " ORTSName ( \"" + l.name + "\" )";
         if (l.array_count >= 2)
             out += numbers("LightArray", {static_cast<float>(l.array_count), l.array_step[0], l.array_step[1], l.array_step[2]});

@@ -1,5 +1,7 @@
 #include "net_session.hpp"
 
+#include <openrts/net/datagram.hpp>
+
 #include <openrts/net/placement.hpp>
 #include <openrts/core/profile.hpp>
 
@@ -433,6 +435,10 @@ void NetSession::update(simulation::TrackNetwork& network, simulation::SignalSys
         connection_->send(net::id(net::Package::openrts_hello), net::encode_openrts_hello());
     }
     if (connection_) {
+        if (const bool live = connection_->datagrams_live(); live != udp_live_) {
+            udp_live_ = live;
+            std::cout << (live ? "net: positions by UDP" : "net: positions by TCP (no UDP answer)") << std::endl;
+        }
         for (const auto& package : connection_->receive()) {
             ++received_[package.id];
             apply(package, network, signals, trains, t);
@@ -493,7 +499,7 @@ void NetSession::position(Remote& remote, const net::TrainPos& pos, simulation::
         std::cout << "net: train " << remote.record.id << ": " << why << std::endl;
         return;
     }
-    remote.record.pos = pos;
+    if (!timed || !timed->late) remote.record.pos = pos;
     if (remote.train == 0) {
         std::string error;
         remote.train = trains.add_remote(placed_train(remote.record, *front, trains, record_keys_but(remote.record)), &error);
@@ -513,9 +519,11 @@ void NetSession::position(Remote& remote, const net::TrainPos& pos, simulation::
     }
     if (timed) {
         remote.motion.add_timed(network, timed->time, *front, pos.speed, timed->acceleration);
-        // A package interval (0.1 s, up to a third more at the sender's
-        // frame rate), how late they come lately, a frame or two.
-        remote.motion.set_timed_delay(std::clamp(0.15 + remote.fast.late + 0.03, 0.15, 1.0));
+        // A package interval and a half (0.1 s by TCP, 0.05 by UDP; up to
+        // a third more at the sender's frame rate), how late they come
+        // lately, a frame or two.
+        const double interval = 1.5 * std::clamp(remote.fast.interval, 0.05, 0.1);
+        remote.motion.set_timed_delay(std::clamp(interval + remote.fast.late + 0.03, interval, 1.0));
         return;
     }
     if (now - remote.fast_heard < 2.0) return; // the timed ones move it
@@ -591,6 +599,14 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             if (it != remotes_.end()) position(it->second, update->pos, network, trains, now);
         }
         return;
+    case P(net::Package::openrts_udp_offer):
+        // The server's positions by UDP (experimental): hello with its token.
+        if (const auto offer = net::decode_openrts_udp_offer(body); offer && connection_) {
+            const bool open = connection_->open_datagrams(offer->token, offer->port);
+            std::cout << "net: the server offers positions by UDP on port " << offer->port << (open ? ": trying" : ": no UDP socket")
+                      << std::endl;
+        }
+        return;
     case P(net::Package::openrts_train_motion):
         if (const auto m = net::decode_openrts_motion(body); m && !owned_.contains(m->train)) {
             const auto it = remotes_.find(m->train);
@@ -600,6 +616,21 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
             // earliest arrival (the network's least delay), how late this one is.
             auto& c = remote.fast;
             const auto step = static_cast<std::int32_t>(m->sent_ms - c.last_ms);
+            // By UDP one may come after a later one, or twice: the same one
+            // dropped, a late one put in its place among the samples
+            // (RemoteMotion::add_timed), the clock left as it is.
+            if (c.set && step <= 0 && step > -2000 && now - remote.fast_heard <= 10.0) {
+                if (step == 0 || !remote.record.pos) return;
+                net::TrainPos pos = *remote.record.pos;
+                pos.node = m->node;
+                pos.offset = m->offset;
+                pos.direction = m->direction;
+                pos.speed = m->speed;
+                pos.acceleration = m->acceleration;
+                const Timed timed{.time = c.sent + step / 1000.0 + c.base, .acceleration = m->acceleration, .late = true};
+                position(remote, pos, network, trains, now, &timed);
+                return;
+            }
             if (!c.set || step < -2000 || step > 60000 || now - remote.fast_heard > 10.0) {
                 c = {};
                 c.set = true;
@@ -607,6 +638,8 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
                 c.least = c.base = now - c.sent;
             } else {
                 const double gap = (std::max)(step / 1000.0, 0.0);
+                // The sender's interval: 0.1 s by TCP, 0.05 by UDP.
+                if (gap > 0.02 && gap < 0.5) c.interval += (gap - c.interval) * 0.1;
                 c.sent += step / 1000.0;
                 c.least = (std::min)(c.least + 0.0001 * gap, now - c.sent);
                 c.base += std::clamp(c.least - c.base, -0.002 * gap, 0.002 * gap);
@@ -1946,11 +1979,20 @@ void NetSession::send_own(TrainView& trains, const double now) {
                 m.direction = pos->direction;
                 m.speed = moving ? pos->speed : 0.0f;
                 m.acceleration = moving ? pos->acceleration : 0.0f;
-                connection_->send(net::id(net::Package::openrts_train_motion), net::encode_openrts_motion(m));
+                {
+                    // By UDP while the server answers there (experimental), else TCP.
+                    const auto body = net::encode_openrts_motion(m);
+                    if (!connection_->send_datagram(net::id(net::Package::openrts_train_motion), body))
+                        connection_->send(net::id(net::Package::openrts_train_motion), body);
+                }
                 if (static const bool trace = std::getenv("OPENRTS_NET_TRACE") != nullptr; trace)
                     std::cout << "net trace sent: " << at << " train " << id << " node " << m.node << " offset " << m.offset << " speed "
                               << m.speed << " acceleration " << m.acceleration << std::endl;
-                own.next_motion = std::max(own.next_motion + 0.1, now + 0.05);
+                {
+                    // 20 a second by UDP (a step's 0.05 s), 10 by TCP.
+                    const double every = connection_->datagrams_live() ? 0.05 : 0.1;
+                    own.next_motion = std::max(own.next_motion + every, now + every * 0.5);
+                }
             }
         }
         // Derailed cars (0x4636, as rts1.exe): when a car comes off, and with

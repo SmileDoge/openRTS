@@ -14,12 +14,14 @@
 #include <memory>
 #include <set>
 #include <string>
+#include <mutex>
 #include <thread>
 #include <vector>
 
 #include <openrts/formats/route_database.hpp>
 #include <openrts/formats/track_database.hpp>
 #include <openrts/formats/track_sections.hpp>
+#include <openrts/net/datagram.hpp>
 #include <openrts/net/connection.hpp>
 #include <openrts/net/packages.hpp>
 #include <openrts/net/placement.hpp>
@@ -1187,6 +1189,117 @@ void over_tcp() {
     tcp.stop();
 }
 
+// The positions by UDP (experimental, net/datagram.hpp): on the loopback
+// the server offers a token, the player's hellos are answered, a motion
+// goes up and down by UDP, and without answers the player is back on TCP.
+void over_udp() {
+    {
+        const auto d = net::make_datagram(net::DatagramKind::package, 0x0123456789ABCDEFull, net::Bytes{1, 2, 3});
+        const auto back = net::read_datagram(d);
+        check(back && back->kind == net::DatagramKind::package && back->token == 0x0123456789ABCDEFull && back->payload.size() == 3 &&
+                  back->payload[2] == 3,
+              "a datagram written and read back");
+        check(!net::read_datagram(net::Bytes{'x', 'R', 'U', '1', 1, 0, 0, 0, 0, 0, 0, 0, 0}), "a stranger's datagram refused");
+        const auto offer = net::decode_openrts_udp_offer(net::encode_openrts_udp_offer({.token = 77, .port = 800}));
+        check(offer && offer->token == 77 && offer->port == 800, "the offer written and read back");
+    }
+    auto network = switch_track();
+    server::TcpServer tcp;
+    std::string error;
+    if (!tcp.listen(0, error, true)) {
+        check(false, "listen: " + error);
+        return;
+    }
+    check(tcp.datagram_port() == tcp.port(), "UDP on the TCP port's number");
+    server::ServerOptions options;
+    options.route_id = "testroute";
+    options.description = server::game_description("TestRoute", 2);
+    options.counts = {20, 0, 0, 0};
+    options.udp_positions = true;
+    server::GameServer game(tcp, options, *network, nullptr);
+    std::atomic<bool> done = false;
+    std::mutex seen_mutex;
+    std::vector<net::Bytes> motions; // 0x45EE as the server took them
+    // The game is the pump's: the player's connection read there, UDP off asked of it.
+    std::atomic<server::ConnectionId> connection = 0;
+    std::atomic<bool> udp_off = false;
+    std::thread pump([&] {
+        const auto start = std::chrono::steady_clock::now();
+        while (!done) {
+            for (auto& e : tcp.take_events()) {
+                if (e.kind == server::NetEvent::Kind::connected) {
+                    connection = e.connection; // the one player
+                    game.connected(e.connection, e.address);
+                }
+                if (e.kind == server::NetEvent::Kind::package) {
+                    if (e.id == 0x45EE) {
+                        std::lock_guard lock(seen_mutex);
+                        motions.push_back(e.body);
+                        continue;
+                    }
+                    game.received(e.connection, e.id, e.body);
+                }
+                if (e.kind == server::NetEvent::Kind::closed) game.closed(e.connection);
+            }
+            if (udp_off.exchange(false)) game.set_udp_positions(false);
+            game.tick(std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count());
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+        }
+    });
+    net::RtsConnection client;
+    const auto result = client.connect("127.0.0.1:" + std::to_string(tcp.port()), u"Udper", 5000);
+    check(result.ok(), "the player logs in: " + result.error);
+    if (result.ok()) {
+        client.send(P(Package::openrts_hello), net::encode_openrts_hello());
+        std::optional<net::OpenrtsUdpOffer> offer;
+        const auto until = [](const double seconds) { return std::chrono::steady_clock::now() + std::chrono::duration<double>(seconds); };
+        for (auto end = until(5.0); !offer && std::chrono::steady_clock::now() < end;) {
+            for (auto& package : client.receive())
+                if (package.id == P(Package::openrts_udp_offer)) offer = net::decode_openrts_udp_offer(package.body);
+            std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+        check(offer && offer->token != 0 && offer->port == tcp.port(), "the server offers its UDP after the hello");
+        if (offer) {
+            check(client.open_datagrams(offer->token, offer->port), "the player's UDP socket");
+            for (auto end = until(5.0); !client.datagrams_live() && std::chrono::steady_clock::now() < end;)
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            check(client.datagrams_live(), "the hello answered");
+            // Up: the server takes the motion by UDP.
+            const net::Bytes body{9, 8, 7, 6};
+            check(client.send_datagram(0x45EE, body), "a motion sent by UDP");
+            bool up = false;
+            for (auto end = until(3.0); !up && std::chrono::steady_clock::now() < end;) {
+                {
+                    std::lock_guard lock(seen_mutex);
+                    up = !motions.empty() && motions.front() == body;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(up, "the server takes it");
+            // Down: the server's to this player by UDP.
+            net::WireWriter frame;
+            frame.frame(0x45EE, net::Bytes{5, 4});
+            check(connection != 0 && tcp.send_datagram(connection, frame.data()), "the server sends one by UDP");
+            bool down = false;
+            for (auto end = until(3.0); !down && std::chrono::steady_clock::now() < end;) {
+                for (auto& package : client.receive()) down = down || (package.id == 0x45EE && package.body == net::Bytes{5, 4});
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            check(down, "the player takes it with the TCP ones");
+            // Off: no answers, back to TCP in 3 s.
+            udp_off = true;
+            for (auto end = until(5.0); client.datagrams_live() && std::chrono::steady_clock::now() < end;)
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            check(!client.datagrams_live() && !client.send_datagram(0x45EE, body), "without answers the player is on TCP again");
+            check(!tcp.send_datagram(connection, frame.data()), "and the server too");
+        }
+    }
+    client.close();
+    done = true;
+    pump.join();
+    tcp.stop();
+}
+
 // The numbers a TDB writes (TrackNodes ( n, TrItemTable ( n) and its
 // junction nodes, read from its text, not through formats.
 struct WrittenCounts {
@@ -2179,6 +2292,7 @@ int main(int argc, char** argv) {
     station_segments();
     hand_route();
     over_tcp();
+    over_udp();
     if (failures == 0) std::cout << "server: all checks passed\n";
     return failures == 0 ? 0 : 1;
 }

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Announces a version release on Discord: the title and the opening
-# paragraph of the version's CHANGELOG section, its subsections, and the
-# link to the release.
+# Announces a version release on Discord: the title, the opening paragraph
+# of the version's CHANGELOG section, each subsection with its items' heads
+# (up to the first colon or sentence end), and the link to the release.
 #   discord-announce.sh <tag> [--dry-run]
 # The webhook is DISCORD_WEBHOOK_URL (a repository secret: the URL itself is
 # the secret, it is never printed). --dry-run prints the message instead.
@@ -29,14 +29,46 @@ if start is not None:
     while i < len(lines) and lines[i].strip() and not lines[i].startswith('#'):
         intro.append(lines[i].strip())
         i += 1
+    # Each subsection with its items' heads: an item's text up to its
+    # first colon or sentence end, cut at a word.
+    item = None
     for line in lines[start + 1:]:
         if line.startswith('## '):
             break
         if line.startswith('### '):
-            sections.append(line[4:].strip())
+            sections.append((line[4:].strip(), []))
+            item = None
+        elif line.startswith('- ') and sections:
+            item = [line[2:].strip()]
+            sections[-1][1].append(item)
+        elif line.startswith('  ') and item is not None and line.strip():
+            item.append(line.strip())
+        elif not line.strip():
+            item = None
+
+
+def head(text):
+    text = ' '.join(text.split())
+    cut = len(text)
+    for mark in (': ', '. ', ' (', '; '):
+        k = text.find(mark)
+        if 0 < k < cut:
+            cut = k
+    text = text[:cut].rstrip('.:,;')
+    if len(text) > 110:
+        text = text[:110].rsplit(' ', 1)[0] + '…'
+    return text
+
+
 description = ' '.join(intro)
-if sections:
-    description += '\n\n**Что внутри:** ' + ', '.join(sections) + '.'
+for name, items in sections:
+    part = '\n\n**' + name + '**'
+    for it in items:
+        part += '\n• ' + head(' '.join(it))
+    if len(description) + len(part) > 3700:
+        description += '\n\n…'
+        break
+    description += part
 description += '\n\nСписок изменений и архив для Windows — в релизе.'
 print(json.dumps({'username': 'openRTS',
                   'embeds': [{'title': title[:256], 'url': url, 'description': description[:4000].strip(),

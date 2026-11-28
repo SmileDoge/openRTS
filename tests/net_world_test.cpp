@@ -224,6 +224,25 @@ void motion() {
                                                           std::to_string(timed_fastest) + ")");
     const auto now_at = timed.at(*net, 3.5 + 0.2);
     check(now_at && near(now_at->offset, 35.0), "timed positions: where it was 0.2 s ago");
+    // By UDP, 20 a second, every third one after the next (and some twice):
+    // each goes to its place, the train drawn on as with them in order.
+    net::RemoteMotion shuffled;
+    for (int k = 0; k <= 60; ++k) {
+        const int i = (k % 3 == 1 && k < 60) ? k + 1 : (k % 3 == 2) ? k - 1 : k;
+        shuffled.add_timed(*net, 1.0 + 0.05 * i, {1, 10.0 + i * 0.5, true}, 10.0f, 0.0f);
+        if (k % 7 == 0) shuffled.add_timed(*net, 1.0 + 0.05 * i, {1, 10.0 + i * 0.5, true}, 10.0f, 0.0f);
+    }
+    shuffled.set_timed_delay(0.1);
+    double shuffled_last = -1.0;
+    bool shuffled_on = true;
+    for (double t = 1.2; t < 4.0; t += 1.0 / 60.0) {
+        shuffled.tick(t);
+        const auto p = shuffled.at(*net, t);
+        if (!p || p->offset < shuffled_last) shuffled_on = false;
+        if (p) shuffled_last = p->offset;
+    }
+    const auto shuffled_at = shuffled.at(*net, 3.5 + 0.1);
+    check(shuffled_on && shuffled_at && near(shuffled_at->offset, 35.0), "late positions in their place: every frame further on, where it was");
     // Past the last one: on for half a second at most, slowing as it did,
     // never turned back.
     net::RemoteMotion braking;
