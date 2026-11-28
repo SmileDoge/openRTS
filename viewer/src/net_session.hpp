@@ -10,6 +10,7 @@
 #include <set>
 #include <string>
 #include <vector>
+#include <utility>
 
 #include <openrts/formats/route_world.hpp>
 #include <openrts/net/connection.hpp>

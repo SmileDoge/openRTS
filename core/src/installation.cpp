@@ -119,11 +119,11 @@ fs::path program_directory() {
         if (length < buffer.size()) return fs::path(buffer.substr(0, length)).parent_path();
         buffer.resize(buffer.size() * 2);
     }
+    std::error_code error;
 #else
     std::error_code error;
     if (const auto self = fs::read_symlink("/proc/self/exe", error); !error) return self.parent_path();
 #endif
-    std::error_code error;
     return fs::current_path(error);
 }
 

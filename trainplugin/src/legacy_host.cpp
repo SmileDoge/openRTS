@@ -1,5 +1,8 @@
 #include <openrts/trainplugin/legacy_host.hpp>
 
+#include <cstdio>
+#include <string>
+
 #include <openrts/core/profile.hpp>
 
 #ifdef _WIN32
@@ -10,10 +13,25 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#else
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <fcntl.h>
+#include <sys/wait.h>
+#include <unistd.h>
+#include <semaphore.h>
+#include <time.h>
+#include <signal.h>
+#include <spawn.h>
 #endif
 
 #include <atomic>
+#include <utility>
 #include <cstring>
+
+#ifndef _WIN32
+extern "C" char** environ;
+#endif
 
 namespace openrts::trainplugin {
 
@@ -218,16 +236,157 @@ bool LegacyHost::call(Command command, Write&& write, Read&& read, std::uint32_t
 
 #else
 
-std::filesystem::path LegacyHost::default_executable() { return {}; }
-std::unique_ptr<LegacyHost> LegacyHost::start(std::string* error, const std::filesystem::path&) {
-    if (error) *error = "legacy RTS DLLs need Windows";
-    return nullptr;
+std::filesystem::path LegacyHost::default_executable() {
+    char buf[4096];
+    ssize_t len = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (len == -1) return {};
+    buf[len] = '\0';
+    std::filesystem::path self(buf);
+    return self.parent_path() / "openrts-dllhost32.exe";
 }
-LegacyHost::~LegacyHost() = default;
-void LegacyHost::kill(const std::string& reason) { error_ = reason; }
+
+std::unique_ptr<LegacyHost> LegacyHost::start(std::string* error, const std::filesystem::path& executable) {
+    auto fail = [&](std::string why) -> std::unique_ptr<LegacyHost> {
+        if (error) *error = why;
+        return nullptr;
+    };
+
+    const auto exe = executable.empty() ? default_executable() : executable;
+    std::error_code ec;
+    if (!std::filesystem::exists(exe, ec)) return fail("openrts-dllhost32.exe not found: " + exe.string());
+
+    static std::atomic<unsigned> counter{0};
+    std::string name = "openrts_dllhost_" + std::to_string(getpid()) + "_" + std::to_string(counter++);
+
+    std::unique_ptr<LegacyHost> host(new LegacyHost());
+    host->name_ = name;
+
+    // POSIX names start with a slash.
+    const std::string shm_name = "/" + name;
+    const int shm_fd = shm_open(shm_name.c_str(), O_RDWR | O_CREAT, 0600);
+    if (shm_fd == -1) return fail("shm_open failed");
+    if (ftruncate(shm_fd, shared_size) != 0) {
+        close(shm_fd);
+        return fail("ftruncate failed");
+    }
+    void* view = mmap(nullptr, shared_size, PROT_READ | PROT_WRITE, MAP_SHARED, shm_fd, 0);
+    close(shm_fd);
+    if (view == MAP_FAILED) return fail("mmap failed");
+    host->mapping_ = view;
+    host->view_ = static_cast<std::uint8_t*>(view);
+    sem_t* request = sem_open(("/" + name + ".req").c_str(), O_CREAT, 0600, 0);
+    sem_t* reply = sem_open(("/" + name + ".rep").c_str(), O_CREAT, 0600, 0);
+    host->request_ = request == SEM_FAILED ? nullptr : request;
+    host->reply_ = reply == SEM_FAILED ? nullptr : reply;
+    if (!host->request_ || !host->reply_) return fail("semaphore setup failed");
+
+    // Experimental: the 32-bit host under Wine. Its side still opens
+    // Windows' named mapping and events, which Wine does not join to these
+    // POSIX ones: it answers nothing yet, and the hello below times out
+    // (a bridge on the host's side is to come).
+    pid_t pid = 0;
+    const std::string parent = std::to_string(getpid());
+    const char* argv[] = {"wine", exe.c_str(), "--serve", name.c_str(), "--parent", parent.c_str(), nullptr};
+    const int result = posix_spawnp(&pid, "wine", nullptr, nullptr, const_cast<char**>(argv), environ);
+    if (result != 0) return fail("wine openrts-dllhost32.exe did not start (error " + std::to_string(result) + ")");
+    host->process_ = pid;
+    host->alive_ = true;
+
+    std::uint32_t version = 0, input_size = 0, output_size = 0, switch_size = 0, display_size = 0, signal_size = 0, limit_size = 0;
+    const bool ok = host->call(
+        Command::hello, [](Writer&) {},
+        [&](Reader& r) {
+            version = r.get<std::uint32_t>();
+            input_size = r.get<std::uint32_t>();
+            output_size = r.get<std::uint32_t>();
+            switch_size = r.get<std::uint32_t>();
+            display_size = r.get<std::uint32_t>();
+            signal_size = r.get<std::uint32_t>();
+            limit_size = r.get<std::uint32_t>();
+        },
+        10000);
+
+    if (!ok) return fail("dllhost: " + host->error_);
+    if (version != protocol_version || input_size != sizeof(CarInput) || output_size != sizeof(EngineOutput) ||
+        switch_size != sizeof(SwitchState) || display_size != sizeof(DisplayState) ||
+        signal_size != sizeof(SignalInput) || limit_size != sizeof(SpeedLimitInput)) {
+        host->kill("protocol layout differs between the game and openrts-dllhost32.exe (rebuild both)");
+        return fail(host->error_);
+    }
+
+    return host;
+}
+
+LegacyHost::~LegacyHost() {
+    if (alive_) {
+        call(Command::shutdown, [](Writer&) {}, [](Reader&) {}, 2000);
+        usleep(500000);
+        ::kill((pid_t)process_, SIGTERM);
+    }
+    if (process_) waitpid(process_, nullptr, WNOHANG);
+    if (view_ && view_ != MAP_FAILED) munmap(view_, shared_size);
+    if (request_) sem_close(static_cast<sem_t*>(request_));
+    if (reply_) sem_close(static_cast<sem_t*>(reply_));
+    sem_unlink(("/" + name_ + ".req").c_str());
+    sem_unlink(("/" + name_ + ".rep").c_str());
+    shm_unlink(("/" + name_).c_str());
+}
+
+void LegacyHost::kill(const std::string& reason) {
+    error_ = reason;
+    alive_ = false;
+    if (process_) ::kill((pid_t)process_, SIGTERM);
+}
+
 template <class Write, class Read>
-bool LegacyHost::call(Command, Write&&, Read&&, std::uint32_t) {
-    return false;
+bool LegacyHost::call(Command command, Write&& write, Read&& read, std::uint32_t timeout_ms) {
+    if (!alive_) return false;
+    core::SequentialZone part;
+    part.open("DLL: write the request");
+    auto* header = reinterpret_cast<Header*>(view_);
+    std::uint8_t* payload = view_ + payload_offset;
+    Writer w(payload, payload_capacity);
+    write(w);
+    if (w.overflow()) {
+        error_ = "request too large";
+        return false;
+    }
+    header->magic = protocol_magic;
+    header->version = protocol_version;
+    header->command = static_cast<std::uint32_t>(command);
+    header->status = 0;
+    header->request_size = w.size();
+    header->reply_size = 0;
+    header->sequence = ++sequence_;
+    header->message[0] = 0;
+
+    part.open("DLL: waiting for the host");
+    sem_post((sem_t*)request_);
+
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += timeout_ms / 1000;
+
+    if (sem_timedwait((sem_t*)reply_, &ts) == -1) {
+        kill("openrts-dllhost32 did not answer in " + std::to_string(timeout_ms) + " ms (a DLL hung?)");
+        return false;
+    }
+
+    part.open("DLL: read the reply");
+    std::size_t n = 0;
+    while (n < std::size(header->message) && header->message[n]) ++n;
+    if (n) messages_ += utf16_to_utf8({header->message, n});
+    Reader rd(payload, (std::min)(header->reply_size, payload_capacity));
+    read(rd);
+    if (header->status != 0) {
+        error_ = "host status " + std::to_string(header->status);
+        return false;
+    }
+    if (rd.failed()) {
+        error_ = "malformed reply";
+        return false;
+    }
+    return true;
 }
 
 #endif

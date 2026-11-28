@@ -612,7 +612,12 @@ int main(int argc, char** argv) {
             return 1;
         }
         std::FILE* out = nullptr;
-        if (fopen_s(&out, argv[4], "wb") == 0 && out) {
+#ifdef _WIN32
+        if (fopen_s(&out, argv[4], "wb") != 0) out = nullptr;
+#else
+        out = std::fopen(argv[4], "wb");
+#endif
+        if (out) {
             std::fwrite(decoded.image->pixels.data(), 1, decoded.image->pixels.size(), out);
             std::fclose(out);
         }

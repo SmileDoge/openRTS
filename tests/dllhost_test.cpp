@@ -92,7 +92,11 @@ int main(int argc, char** argv) {
     }
     // Every by-name answer the host gives from its cache is scanned again;
     // a difference is logged ("the scan"), checked at the end.
+#ifdef _WIN32
     _putenv_s("OPENRTS_DLLHOST_NAME_CHECK", "1");
+#else
+    setenv("OPENRTS_DLLHOST_NAME_CHECK", "1", 1);
+#endif
     std::string error;
     auto host = trainplugin::LegacyHost::start(&error, argv[1]);
     if (!host) {

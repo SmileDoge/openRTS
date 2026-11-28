@@ -24,12 +24,17 @@ using namespace openrts::dllhost;
 namespace {
 
 DWORD call_init(abi::InitRTSLibraryFn init, Module* module, bool& accepted) {
+#ifdef __MINGW32__
+    accepted = init(GetModuleHandleW(nullptr), module);
+    return 0;
+#else
     __try {
         accepted = init(GetModuleHandleW(nullptr), module);
         return 0;
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return GetExceptionCode();
     }
+#endif
 }
 
 int probe(const std::vector<std::wstring>& targets, const std::wstring& rts_root) {

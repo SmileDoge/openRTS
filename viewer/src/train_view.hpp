@@ -162,7 +162,7 @@ public:
         float draw_distance = 0.0f;  // <= 0: no limit
         float shadow_range = 0.0f;
     };
-    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = {});
+    void submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary& library, const SubmitView& view = { nullptr, {}, 0.0f, 0.0f });
     // The engineer into the driving cab's seat (--capture-cab).
     void enter_cab() { set_engineer(true); }
     // The id of the train put on the track last (OPENRTS_SPAWN_CHECK).

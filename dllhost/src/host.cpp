@@ -12,6 +12,10 @@
 #include <type_traits>
 #include <utility>
 
+#ifdef __MINGW32__
+#include <excpt.h>
+#endif
+
 namespace openrts::dllhost {
 
 namespace {
@@ -41,12 +45,21 @@ int record_crash(EXCEPTION_POINTERS* info) {
 
 template <class F>
 DWORD guarded(F&& f) {
+#ifdef __MINGW32__
+    __try1(record_crash) {
+        f();
+        return 0;
+    } __except1 {
+        return GetExceptionCode();
+    }
+#else
     __try {
         f();
         return 0;
     } __except (record_crash(GetExceptionInformation())) {
         return GetExceptionCode();
     }
+#endif
 }
 
 // "module+0xRVA" for a code address.
