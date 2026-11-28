@@ -1984,9 +1984,13 @@ std::optional<CabView::AirGauges> TrainView::air_gauges(const Unit& unit, const 
     // brake's, as Brakes.dll's (Wagon +52 / +96) and openRTS's cab brakes'
     // (testers 2026-11-19: on the 2ТЭ116 the gauge stood at 0 with the 254
     // applied, F5 "3.70 (вспом.)").
+    float equalising = -1.0f;
+    if (const auto* asked = unit.train->demands_of(car); asked && asked->equalising_kept >= 0.0f)
+        equalising = asked->equalising_kept;
     return CabView::AirGauges{.pipe = state.pipe,
                               .cylinder = (std::max)(state.cylinder, state.independent),
-                              .main_reservoir = state.main_reservoir};
+                              .main_reservoir = state.main_reservoir,
+                              .equalising = equalising};
 }
 
 const trainplugin::BrakesParameters& TrainView::brakes_parameters_of(const formats::EngineDefinition& engine) const {
@@ -6982,6 +6986,13 @@ void TrainView::update(const SceneInput& given_input, ViewerCamera& camera, cons
         ++steps_;
         // The cab as it stands before the step, to draw between (CabView::Blend).
         cab_before_car_ = SIZE_MAX;
+        cab_air_before_valid_ = false;
+        if (cab_car_ != SIZE_MAX && !units_.empty()) {
+            if (const auto air = air_gauges(units_.front(), cab_car_)) {
+                cab_air_before_ = *air;
+                cab_air_before_valid_ = true;
+            }
+        }
         if (const auto* before = cab_car_ != SIZE_MAX ? cab_state(cab_car_) : nullptr) {
             cab_switch_frames_before_.resize(before->switches.size());
             for (std::size_t s = 0; s < before->switches.size(); ++s) cab_switch_frames_before_[s] = before->switches[s].current_frame;
@@ -12229,6 +12240,22 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
     cab_room_.reset();
     if (!placed()) return;
     const float t = alpha();
+    // The air is read at the simulation's 20 Hz, while the cab is drawn at
+    // the display's rate: blend it between the two steps as the DLL's own
+    // displays are blended, or the needles step (testers: a gauge jumped
+    // from 5 to 0 instead of falling over half a second).
+    const auto air_for = [&](const Unit& unit, const std::size_t car) -> std::optional<CabView::AirGauges> {
+        auto air = air_gauges(unit, car);
+        if (!air || &unit != &units_.front() || car != cab_car_ || !cab_air_before_valid_) return air;
+        const float a = alpha();
+        const auto between = [a](const float before, const float now) { return before + (now - before) * a; };
+        air->pipe = between(cab_air_before_.pipe, air->pipe);
+        air->cylinder = between(cab_air_before_.cylinder, air->cylinder);
+        air->main_reservoir = between(cab_air_before_.main_reservoir, air->main_reservoir);
+        if (cab_air_before_.equalising >= 0.0f && air->equalising >= 0.0f)
+            air->equalising = between(cab_air_before_.equalising, air->equalising);
+        return air;
+    };
     std::vector<renderer::NodeAdjustment> adjustments;
     for (auto& unit : units_) {
     if (unit.current.empty()) continue;
@@ -12270,7 +12297,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 adjustments.clear();
                 const CabView::Blend blend{&cab_switch_frames_before_, &cab_display_values_before_, alpha(),
                                            legacy_ ? legacy_->dragged_switch() : std::nullopt};
-                const auto gauges = air_gauges(unit, i);
+                const auto gauges = air_for(unit, i);
                 inside->adjustments(&unit == &units_.front() ? cab_state(i) : nullptr, adjustments, signal_aspect(unit),
                                     i == cab_before_car_ ? &blend : nullptr, gauges ? &*gauges : nullptr);
                 const glm::mat4 to_scene = transform * inside->placement();
@@ -12433,7 +12460,7 @@ void TrainView::submit(renderer::ModelRenderer& renderer, renderer::ModelLibrary
                 const auto code = static_cast<std::int32_t>(room.portal + 1);
                 renderer.set_portal(-code);
                 std::vector<renderer::NodeAdjustment> room_adjustments;
-                const auto room_gauges = air_gauges(unit, i);
+                const auto room_gauges = air_for(unit, i);
                 room_cab->adjustments(cab_state(i), room_adjustments, signal_aspect(unit), nullptr, room_gauges ? &*room_gauges : nullptr);
                 renderer.submit(*room_model, transform * room_cab->placement(), room_adjustments);
                 renderer.set_portal(code);

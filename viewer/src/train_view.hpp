@@ -1206,6 +1206,10 @@ private:
     // The cab's switch frames and display values one step back (CabView::Blend).
     std::vector<float> cab_switch_frames_before_, cab_display_values_before_;
     std::size_t cab_before_car_ = SIZE_MAX;
+    // The air the cab's gauges showed one simulation step back: the model's
+    // air is read at 20 Hz, so without this the needles stepped with it.
+    CabView::AirGauges cab_air_before_;
+    bool cab_air_before_valid_ = false;
     std::string save_when_placed_;
     std::array<char, 64> situation_name_{}; // the Train window's name for a situation to save
     int situation_choice_ = -1;

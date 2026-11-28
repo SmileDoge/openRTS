@@ -29,6 +29,10 @@ if(TARGET openrts_viewer_core)
         COMMENT "Copying the menu assets")
     # The game next to the menu, so that a build folder starts as is.
     add_dependencies(openrts_game openrts_viewer)
+    add_custom_command(TARGET openrts_game POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "$<TARGET_FILE:openrts_viewer>" "$<TARGET_FILE_DIR:openrts_game>/openrts_viewer.exe"
+        COMMENT "Copying the viewer next to the menu")
 else()
     add_executable(openrts_game src/main.cpp)
     openrts_configure_target(openrts_game)

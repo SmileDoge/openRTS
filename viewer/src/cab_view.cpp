@@ -1046,18 +1046,78 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
             if (d.type == formats::CabDisplayType::arrow) value = between(blend ? blend->display_values : nullptr, d.id, value);
             lit = state->displays[d.id].state;
         }
-        // The air gauges by their names (AirGauges), the model's air.
+        // The air gauges by their names (AirGauges), the model's air. The
+        // VL80's cab calls them ARR10/ARR11/... and only the hint says ТМ,
+        // УР, ТЦ, ГР; the 2ES6 writes "Давление ТМ" and so on. Match the
+        // hint too (the DLL leaves those needles on its own lagging air).
         if (air && d.type == formats::CabDisplayType::arrow) {
             const auto named = [&](const char* name) {
-                if (d.name.size() != std::strlen(name)) return false;
-                for (std::size_t c = 0; c < d.name.size(); ++c)
-                    if (std::toupper(static_cast<unsigned char>(d.name[c])) != name[c]) return false;
-                return true;
+                const std::size_t length = std::strlen(name);
+                const auto matches = [&](const std::string& text) {
+                    if (text.size() != length) return false;
+                    for (std::size_t c = 0; c < text.size(); ++c)
+                        if (std::toupper(static_cast<unsigned char>(text[c])) !=
+                            static_cast<unsigned char>(name[c]))
+                            return false;
+                    return true;
+                };
+                return matches(d.name) || matches(d.hint);
             };
-            if (named("DTM")) value = air->pipe;
-            else if (named("DTC1") || named("DTC2")) value = air->cylinder;
-            else if (named("DGR")) value = air->main_reservoir;
-            else if (named("DURA") && air->equalising >= 0.0f) value = air->equalising;
+            // "Давление ТМ" / "Давление в ТМ" / "Манометр ТМ" as well as
+            // the bare "ТМ". The TU2 says "Давление в ...", the VL80k-125
+            // "Манометр ...".
+            const auto pressure = [&](const char* token) {
+                if (named(token)) return true;
+                const std::size_t token_length = std::strlen(token);
+                constexpr const char* prefixes[] = {
+                    "\xD0\x94\xD0\xB0\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 ",
+                    "\xD0\x94\xD0\xB0\xD0\xB2\xD0\xBB\xD0\xB5\xD0\xBD\xD0\xB8\xD0\xB5 \xD0\xB2 ",
+                    "\xD0\x9C\xD0\xB0\xD0\xBD\xD0\xBE\xD0\xBC\xD0\xB5\xD1\x82\xD1\x80 "};
+                for (const char* prefix : prefixes) {
+                    const std::size_t length = std::strlen(prefix);
+                    if (d.hint.size() >= length + token_length &&
+                        d.hint.compare(0, length, prefix) == 0 &&
+                        d.hint.compare(length, token_length, token) == 0)
+                        return true;
+                }
+                return false;
+            };
+            // Older cabs spell the whole name out: the D_TM / ST_TM family
+            // says "Тормозная магистраль", D_UR / ST_UR "Уравнительный
+            // резервуар", D_TC / ST_TC "Тормозной цилиндр". DM_TM is the
+            // control circuit ("Давление в ЦУ"), not the brake pipe.
+            const auto contains = [&](const char* phrase) {
+                return d.hint.find(phrase) != std::string::npos;
+            };
+            constexpr const char* full_pipe =
+                "\xD0\xA2\xD0\xBE\xD1\x80\xD0\xBC\xD0\xBE\xD0\xB7\xD0\xBD\xD0\xB0\xD1\x8F\x20"
+                "\xD0\xBC\xD0\xB0\xD0\xB3\xD0\xB8\xD1\x81\xD1\x82\xD1\x80\xD0\xB0\xD0\xBB\xD1\x8C";
+            constexpr const char* full_equalising =
+                "\xD0\xA3\xD1\x80\xD0\xB0\xD0\xB2\xD0\xBD\xD0\xB8\xD1\x82\xD0\xB5\xD0\xBB\xD1\x8C"
+                "\xD0\xBD\xD1\x8B\xD0\xB9\x20\xD1\x80\xD0\xB5\xD0\xB7\xD0\xB5\xD1\x80\xD0\xB2"
+                "\xD1\x83\xD0\xB0\xD1\x80";
+            constexpr const char* full_cylinder =
+                "\xD0\xA2\xD0\xBE\xD1\x80\xD0\xBC\xD0\xBE\xD0\xB7\xD0\xBD\xD0\xBE\xD0\xB9\x20"
+                "\xD1\x86\xD0\xB8\xD0\xBB\xD0\xB8\xD0\xBD\xD0\xB4\xD1\x80";
+            constexpr const char* full_main =
+                "\xD0\x93\xD0\xBB\xD0\xB0\xD0\xB2\xD0\xBD\xD1\x8B\xD0\xB9\x20\xD1\x80\xD0\xB5"
+                "\xD0\xB7\xD0\xB5\xD1\x80\xD0\xB2\xD1\x83\xD0\xB0\xD1\x80";
+            constexpr const char* full_feed =
+                "\xD0\x9D\xD0\xB0\xD0\xBF\xD0\xBE\xD1\x80\xD0\xBD\xD0\xB0\xD1\x8F\x20"
+                "\xD0\xBC\xD0\xB0\xD0\xB3\xD0\xB8\xD1\x81\xD1\x82\xD1\x80\xD0\xB0\xD0\xBB\xD1\x8C";
+            if (named("DTM") || pressure("\xD0\xA2\xD0\x9C") || contains(full_pipe)) {
+                value = air->pipe;
+            } else if (named("DTC1") || named("DTC2") || pressure("\xD0\xA2\xD0\xA6") ||
+                       contains(full_cylinder)) {
+                value = air->cylinder;
+            } else if (named("DGR") || pressure("\xD0\x93\xD0\xA0") ||
+                       pressure("\xD0\x9D\xD0\x9C") || contains(full_main) ||
+                       contains(full_feed)) {
+                value = air->main_reservoir;
+            } else if ((named("DURA") || pressure("\xD0\xA3\xD0\xA0") || contains(full_equalising)) &&
+                       air->equalising >= 0.0f) {
+                value = air->equalising;
+            }
         }
         // RTS 0x525DB0: with a blink the display is hidden for the second
         // half of each 2 x blink period.
