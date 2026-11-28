@@ -78,8 +78,11 @@ CabKey parse_cab_key(std::string_view text) {
         else if (c == '-') out.key = GLFW_KEY_MINUS;
         else if (c == '=') out.key = GLFW_KEY_EQUAL;
         else if (c == '`') out.key = GLFW_KEY_GRAVE_ACCENT;
-        else if (c == '<') { out.key = GLFW_KEY_COMMA; out.shift = true; }
-        else if (c == '>') { out.key = GLFW_KEY_PERIOD; out.shift = true; }
+        // "<" and ">" (the handbrakes' wheels) are the keys they are on, as
+        // RTS reads them: "," and "." without Shift (testers 2026-11-27:
+        // Shift+, asked here, the wheel never turned by its keys).
+        else if (c == '<') out.key = GLFW_KEY_COMMA;
+        else if (c == '>') out.key = GLFW_KEY_PERIOD;
     }
 #else
     (void)text;

@@ -51,6 +51,9 @@ struct ShapeLight {
     // openRTS's own label (ORTSName ( "..." )), to tell lamps apart in the
     // inspector; RTS skips it.
     std::string name;
+    // openRTS: ORTSNoShadow ( 1 ): it lights but never throws a shadow (it
+    // takes none of the lamps' shadow maps; a gantry's small side lamps).
+    bool no_shadow = false;
 };
 
 // A box the engineer walks on, climbs or is stopped by (RTS 0x4BB7BC,

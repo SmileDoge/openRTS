@@ -33,6 +33,7 @@ const char* gpu_pass_name(const GpuPass pass) noexcept {
     case GpuPass::sky_light: return "sky light";
     case GpuPass::exposure: return "auto exposure";
     case GpuPass::sun_shadow_cache: return "sun shadows' cache";
+    case GpuPass::ray_shadows: return "ray shadows";
     case GpuPass::count: break;
     }
     return "";

@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.24)
 
 project(openRTS
-    VERSION 0.49.2
+    VERSION 0.50.0
     DESCRIPTION "Modular RTS/MSTS-compatible train simulator"
     LANGUAGES C CXX)
 if(WIN32)
@@ -257,6 +257,15 @@ if(OPENRTS_BUILD_VIEWER)
             "${OPENRTS_WGPU_INCLUDE_DIR}")
         target_compile_definitions(openrts_imgui PRIVATE IMGUI_IMPL_WEBGPU_BACKEND_WGPU=1)
         target_link_libraries(openrts_imgui PUBLIC glfw openrts_wgpu_native)
+        # ImGuizmo (MIT): the inspector's lamp gizmo, rings to turn and
+        # arrows to move (viewer/src/inspector_lamps.cpp).
+        FetchContent_Declare(imguizmo
+            GIT_REPOSITORY https://github.com/CedricGuillemet/ImGuizmo.git
+            GIT_TAG 5b473bc30438dc128520b90b688745bca85c4a91
+            SOURCE_SUBDIR openrts-no-cmake)
+        FetchContent_MakeAvailable(imguizmo)
+        target_sources(openrts_imgui PRIVATE "${imguizmo_SOURCE_DIR}/src/ImGuizmo.cpp")
+        target_include_directories(openrts_imgui SYSTEM PUBLIC "${imguizmo_SOURCE_DIR}/src")
         add_subdirectory(ui)
         add_subdirectory(trackmap)
         # The server's window (server/src/server_window.cpp: its start form and

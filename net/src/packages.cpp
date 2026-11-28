@@ -123,6 +123,8 @@ constexpr Named names[] = {
     {0x45F3, "console_place"},
     {0x45F8, "console_next"},
     {0x45F9, "console_next_reply"},
+    {0x45ED, "console_route"},
+    {0x45EC, "console_route_reply"},
     {0x45FA, "openrts_weather"},
     {0x45EF, "openrts_clock"},
     {0x45EE, "openrts_train_motion"},

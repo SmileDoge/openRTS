@@ -129,6 +129,8 @@ enum class Package : std::uint16_t {
     console_place = 0x45F3,   // console -> server: a consist's cars to put on the track
     console_next = 0x45F8,       // console -> server: the station routes a train can take next (net::ConsoleNextAsk)
     console_next_reply = 0x45F9, // server -> console: those routes (net::ConsoleNext)
+    console_route = 0x45ED,       // console -> server: a route set on the map, as the server's own (net::ConsoleRouteAsk)
+    console_route_reply = 0x45EC, // server -> console: its way, or the answer to setting it (net::ConsoleRouteAnswer)
     openrts_weather = 0x45FA,    // server -> openRTS players and consoles: the game's weather (net::OpenrtsWeather)
     openrts_clock = 0x45EF,      // server -> openRTS players and consoles: the clock's pace and the season (net::OpenrtsClock)
     openrts_train_state = 0x45FB, // owner <-> server: a train's own state (air, switches, DLLs), in parts (net::TrainStatePart)

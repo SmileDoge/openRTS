@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <openrts/formats/route_world.hpp>
+#include <openrts/net/play.hpp>
 #include <openrts/simulation/signals.hpp>
 #include <openrts/simulation/track_network.hpp>
 #include <openrts/simulation/train_route.hpp>
@@ -80,6 +81,11 @@ public:
         // проезда"), not through another train; what was wrong, or empty.
         std::function<std::string(std::uint64_t train, const std::vector<simulation::TrackLocation>& via, const simulation::TrackLocation& to)> route_to;
         std::function<void(std::uint64_t train)> cancel_route;
+        // Setting a route on the map as the server's own map does
+        // (console_route): the ask (its train the server's, from `train`
+        // drawn here), and the server's answers as they come.
+        std::function<bool(std::uint64_t train, net::ConsoleRouteAsk ask)> console_route;
+        std::function<std::optional<net::ConsoleRouteAnswer>()> console_route_answer;
         // RTS's own way: the route's length from the train's head (its rear,
         // `rear_first`) along the junctions as they stand (0x4619); the
         // dispatcher throws them first, then sets the end on the line.
@@ -199,6 +205,22 @@ private:
     // The consist put down: its chocks (0 none, 1 head, 2 tail, 3 both).
     int spawn_chocks_ = 0;
     // The network's hand route: the points to pass, for train route_via_train_.
+    // A route set on the map as the server's (console_route): the request,
+    // the server's way for it, asked again when the request changes.
+    struct Routing {
+        bool active = false;
+        std::uint64_t train = 0;
+        net::ConsoleRouteAsk ask;
+        std::optional<net::ConsoleRouteAnswer> preview;
+        bool dirty = true;
+        double asked_at = -10.0;
+    } routing_;
+    void start_routing(std::uint64_t train, bool edit);
+    void send_routing(net::ConsoleRouteAsk::Kind kind);
+    void poll_routing();
+    void routing_banner();
+    void routing_menu();
+    void draw_routing(ImDrawList* draw);
     std::vector<simulation::TrackLocation> route_via_;
     std::uint64_t route_via_train_ = 0;
     // The way a train would go from its head (or rear) along the junctions

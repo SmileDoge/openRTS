@@ -306,6 +306,8 @@ struct TrainView::Unit {
     // scenario's speeds and rates, else default_traffic_settings.
     std::unique_ptr<simulation::TrafficDriver> traffic;
     std::optional<simulation::TrafficSettings> traffic_settings;
+    TrafficTuning tuning; // Track control's own (not a scenario's)
+    simulation::TrafficPlatformStops platform_stops;
     // A scenario's traffic train: removed at its path's end (not NO_REMOVE)
     // or at its remove time, and then only away from the player unless
     // FORCE_REMOVAL; WaitHere's time left (infinity: for good).
@@ -2542,15 +2544,47 @@ void TrainView::step_trains() {
     std::vector<simulation::Train*> placed_trains;
     for (auto& unit : units_)
         if (unit.train->placed()) placed_trains.push_back(unit.train.get());
+    std::vector<std::pair<std::size_t, bool>> traffic_couplings; // unit, its leading end the front
     for (auto& unit : units_) {
         if (unit.role != Role::ai || !unit.traffic || !unit.train->placed() || unit.remote) continue;
         auto orders = simulation::traffic_orders(*unit.train, *dispatcher_, signals_, *limits_, unit.speed_category(),
                                                  unit.traffic->settings(), unit.wait_left, placed_trains);
+        if (unit.tuning.stop_at_platforms)
+            simulation::platform_stop_orders(*unit.train, *dispatcher_, (std::max)(unit.tuning.platform_wait, 1.0f), unit.platform_stops, orders);
+        // Coupling to a train standing ahead (Track control's "couples"):
+        // no stop 10 m short of it, a creep at 1 m/s over the last 15 m, the
+        // couplers met (coupled after the step, the units then merged).
+        if (unit.tuning.couple && !orders.hold) {
+            const auto* progress = dispatcher_->progress(unit.train->id());
+            const bool lead = progress ? progress->front_leads : true;
+            if (const auto contact = simulation::end_contact(*unit.train, lead, placed_trains, 80.0);
+                contact && std::abs(contact->other->speed()) < 0.01) {
+                const double gap = contact->gap;
+                std::erase_if(orders.targets, [&](const simulation::TrafficTarget& t) {
+                    return t.speed <= 0.0f && t.distance >= gap - 15.0 && t.distance <= gap + 1.0;
+                });
+                orders.targets.push_back({1.0f, gap - 15.0});
+                orders.targets.push_back({0.0f, gap - 0.2});
+                if (gap < 1.0 && std::abs(unit.train->speed()) < 0.02)
+                    traffic_couplings.push_back({static_cast<std::size_t>(&unit - units_.data()), lead});
+            }
+        }
         if (unit.wait_here > 0.0) {
             orders.hold = true;
             if (std::abs(unit.train->speed()) < 0.05) unit.wait_here -= simulation::train_step;
         }
         unit.traffic->step(simulation::train_step, *unit.train, orders);
+    }
+    // The traffic trains up against the cars they couple to: coupled, the
+    // traffic train going on with them (its path and settings kept).
+    for (auto it = traffic_couplings.rbegin(); it != traffic_couplings.rend(); ++it) {
+        const auto [u, front] = *it;
+        if (u >= units_.size()) continue;
+        const auto n = units_[u].cars.size();
+        if (n == 0) continue;
+        const auto name = units_[u].name;
+        if (couple_standing(u, front ? 0 : n - 1, front, true))
+            std::cout << "traffic " << name << ": coupled, " << message_ << std::endl;
     }
     std::vector<std::pair<std::size_t, std::size_t>> breaks;
     for (std::size_t u = 0; u < units_.size(); ++u) {
@@ -2621,6 +2655,11 @@ void TrainView::attach_role(Unit& unit) {
         const bool engine = std::any_of(train.cars().begin(), train.cars().end(),
                                         [](const simulation::CarState& car) { return car.definition && car.definition->engine; });
         auto settings = unit.traffic_settings ? *unit.traffic_settings : simulation::default_traffic_settings(train, limits_->route_limit());
+        if (!unit.traffic_settings) {
+            if (unit.tuning.max_speed > 0.0f) settings.max_speed = unit.tuning.max_speed;
+            if (unit.tuning.acceleration > 0.0f) settings.acceleration = unit.tuning.acceleration;
+            if (unit.tuning.deceleration > 0.0f) settings.deceleration = unit.tuning.deceleration;
+        }
         const auto problem = !unit.traffic_settings && !engine ? std::string("no engine") : settings.problem();
         if (!problem.empty()) {
             std::cout << unit.name << ": not traffic: " << problem << std::endl;
@@ -2633,6 +2672,33 @@ void TrainView::attach_role(Unit& unit) {
     } else if (unit.role == Role::driven && &unit == &units_.front()) {
         reattach_driver();
     }
+}
+
+TrainView::TrafficTuning TrainView::traffic_tuning(const std::uint64_t id, const bool in_force) const {
+    const auto* unit = find_unit(id);
+    if (!unit) return {};
+    if (!in_force) return unit->tuning;
+    if (unit->traffic) {
+        const auto& s = unit->traffic->settings();
+        return {s.max_speed, s.acceleration, s.braking(), unit->tuning.stop_at_platforms, unit->tuning.platform_wait, unit->tuning.couple};
+    }
+    const auto s = simulation::default_traffic_settings(*unit->train, limits_->route_limit());
+    return {unit->tuning.max_speed > 0.0f ? unit->tuning.max_speed : s.max_speed,
+            unit->tuning.acceleration > 0.0f ? unit->tuning.acceleration : s.acceleration,
+            unit->tuning.deceleration > 0.0f ? unit->tuning.deceleration : s.braking(), unit->tuning.stop_at_platforms,
+            unit->tuning.platform_wait, unit->tuning.couple};
+}
+
+void TrainView::set_traffic_tuning(const std::uint64_t id, const TrafficTuning& tuning) {
+    auto* unit = find_unit(id);
+    if (!unit || unit->traffic_settings) return; // a scenario's train keeps the scenario's
+    unit->tuning = tuning;
+    if (!unit->traffic) return;
+    auto& s = unit->traffic->settings();
+    const auto defaults = simulation::default_traffic_settings(*unit->train, limits_->route_limit());
+    s.max_speed = tuning.max_speed > 0.0f ? tuning.max_speed : defaults.max_speed;
+    s.acceleration = tuning.acceleration > 0.0f ? tuning.acceleration : defaults.acceleration;
+    s.deceleration = tuning.deceleration > 0.0f ? tuning.deceleration : defaults.deceleration;
 }
 
 TrainView::Unit* TrainView::find_unit(const std::uint64_t id) {
@@ -3248,6 +3314,9 @@ std::string TrainView::save_situation(const std::string& name) const {
         if (!front) continue;
         output << "\n[train]\nname=" << unit.name << "\nrole=" << role_key(unit.role) << "\nfront=" << front->node() << ' '
                << std::setprecision(17) << front->offset() << ' ' << (front->forward() ? 1 : 0) << '\n';
+        if (!unit.tuning.empty())
+            output << "traffic=" << unit.tuning.max_speed << ' ' << unit.tuning.acceleration << ' ' << unit.tuning.deceleration << ' '
+                << (unit.tuning.stop_at_platforms ? 1 : 0) << ' ' << unit.tuning.platform_wait << ' ' << (unit.tuning.couple ? 1 : 0) << '\n';
         const auto& states = unit.train->cars();
         for (std::size_t k = 0; k < unit.cars.size(); ++k) {
             const auto& car = unit.cars[k];
@@ -3328,6 +3397,9 @@ std::string TrainView::save_game() const {
         if (!front) continue;
         out << "[train]\nname=" << unit.name << "\nrole=" << role_key(unit.role) << "\nfront=" << front->node() << ' ' << front->offset()
             << ' ' << (front->forward() ? 1 : 0) << '\n';
+        if (!unit.tuning.empty())
+            out << "traffic=" << unit.tuning.max_speed << ' ' << unit.tuning.acceleration << ' ' << unit.tuning.deceleration << ' '
+                << (unit.tuning.stop_at_platforms ? 1 : 0) << ' ' << unit.tuning.platform_wait << ' ' << (unit.tuning.couple ? 1 : 0) << '\n';
         const auto& states = unit.train->cars();
         for (std::size_t k = 0; k < unit.cars.size(); ++k) {
             const auto& car = unit.cars[k];
@@ -3450,6 +3522,16 @@ std::string TrainView::load_game(const std::string& text) {
             train.name = value;
         } else if (key == "role") {
             train.role = value == "driven" ? Role::driven : value == "ai" ? Role::ai : Role::standing;
+        } else if (key == "traffic") {
+            std::istringstream fields(value);
+            fields >> train.tuning.max_speed >> train.tuning.acceleration >> train.tuning.deceleration;
+            int stops = 0;
+            if (fields >> stops) {
+                train.tuning.stop_at_platforms = stops != 0;
+                fields >> train.tuning.platform_wait;
+                int couples = 0;
+                if (fields >> couples) train.tuning.couple = couples != 0;
+            }
         } else if (key == "front") {
             std::istringstream fields(value);
             simulation::TrackLocation where;
@@ -4121,6 +4203,16 @@ std::string TrainView::load_situation(const std::filesystem::path& file) {
             train.name = value;
         } else if (key == "role") {
             train.role = value == "driven" ? Role::driven : value == "ai" ? Role::ai : Role::standing;
+        } else if (key == "traffic") {
+            std::istringstream fields(value);
+            fields >> train.tuning.max_speed >> train.tuning.acceleration >> train.tuning.deceleration;
+            int stops = 0;
+            if (fields >> stops) {
+                train.tuning.stop_at_platforms = stops != 0;
+                fields >> train.tuning.platform_wait;
+                int couples = 0;
+                if (fields >> couples) train.tuning.couple = couples != 0;
+            }
         } else if (key == "front") {
             std::istringstream fields(value);
             simulation::TrackLocation where;
@@ -4577,6 +4669,7 @@ std::string TrainView::put_back(std::vector<PlacedTrain> saved, const std::strin
             continue;
         }
         unit.role = train.role;
+        unit.tuning = train.tuning;
         unit.activity_id = train.activity_id;
         for (auto& car : unit.cars) car.activity_origin = train.activity_id;
         built.push_back(std::move(unit));
@@ -9545,7 +9638,7 @@ void TrainView::do_car_menu_item(const CarMenu& menu, const int id) {
     }
 }
 
-bool TrainView::couple_standing(const std::size_t unit_index, const std::size_t car, const bool front) {
+bool TrainView::couple_standing(const std::size_t unit_index, const std::size_t car, const bool front, const bool keep_this_train) {
     if (unit_index >= units_.size()) return false;
     using Flags = simulation::Train::CarFlags;
     auto& train = *units_[unit_index].train;
@@ -9574,6 +9667,7 @@ bool TrainView::couple_standing(const std::size_t unit_index, const std::size_t 
     // takes the other); else the earlier unit survives.
     const bool keep_this = other_unit < units_.size() && units_[other_unit].remote ? true
                          : units_[unit_index].remote                             ? false
+                         : keep_this_train                                       ? true
                                                                                  : unit_index < other_unit;
     auto* survivor = keep_this ? &train : other;
     auto* absorbed = keep_this ? other : &train;

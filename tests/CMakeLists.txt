@@ -462,6 +462,18 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.recorder_vl10 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_vl10-127 mdd_VL10-127A mdd_VL10-127B --start on --seconds 680
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl10_recorder.script" --klub shadow)
+    # A ВЛ85 with САУТ (PB_SETUP 17): its vigilance waits for САУТ's power.
+    add_test(NAME openrts.content.recorder_vl85_saut COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL85-200 mdd_VL85-200a mdd_VL85-200b --start on --seconds 60
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/vl85_saut_recorder.script" --klub shadow)
+    # Without Brakes.dll: a ВЛ85 with САУТ alone and a ВЛ80с with the КПД
+    # stand silent.
+    add_test(NAME openrts.content.recorder_vl85_saut_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL85-165 mdd_VL85-165a mdd_VL85-165b --start on --seconds 31
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/recorder_no_brakes_dll.script" --klub openrts --brakes openrts --brakes-dll none)
+    add_test(NAME openrts.content.recorder_vl80_kpd_own COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_VL80cm-3001 mdd_VL80cm-3001a mdd_VL80cm-3001b --start on --seconds 31
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/recorder_no_brakes_dll.script" --klub openrts --brakes openrts --brakes-dll none)
     # The ВЛ10's compressor on openRTS's brakes: none under 25 kV AC (a DC
     # engine), its governor under 3 kV DC (testers 2026-11-23).
     foreach(kind ac dc)
@@ -539,3 +551,13 @@ openrts_configure_target(openrts_console_place_test)
 openrts_copy_wgpu_runtime(openrts_console_place_test)
 target_link_libraries(openrts_console_place_test PRIVATE openrts_viewer_core)
 add_test(NAME openrts.console_place COMMAND openrts_console_place_test)
+
+add_executable(openrts_ray_mask_test ray_mask_test.cpp)
+openrts_configure_target(openrts_ray_mask_test)
+target_link_libraries(openrts_ray_mask_test PRIVATE openrts_renderer)
+add_test(NAME openrts.ray_mask COMMAND openrts_ray_mask_test)
+
+add_executable(openrts_opacity_micromap_test opacity_micromap_test.cpp)
+openrts_configure_target(openrts_opacity_micromap_test)
+target_link_libraries(openrts_opacity_micromap_test PRIVATE openrts_renderer)
+add_test(NAME openrts.opacity_micromap COMMAND openrts_opacity_micromap_test)

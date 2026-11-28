@@ -281,6 +281,7 @@ std::optional<core::VirtualPath> resolve_terrain_texture(const core::Vfs& vfs,
 
 #include <openrts/renderer/frustum.hpp>
 #include <openrts/renderer/scene_effects.hpp>
+#include <openrts/renderer/ray_scene.hpp>
 
 #include "rts_light_shapes.hpp"
 #include "shader_code.hpp"
@@ -454,6 +455,9 @@ struct TerrainRenderer::Impl {
         WGPUBuffer surface_vertices = nullptr; // the openRTS water
         WGPUBuffer surface_indices = nullptr;
         std::uint32_t surface_index_count = 0;
+#ifdef OPENRTS_HAS_RAY_QUERY
+        WGPUBlas blas = nullptr; // the ground's, for the ray scene (ray_scene.hpp)
+#endif
     };
 
     // An openRTS water draw render() prepared for render_water().
@@ -592,6 +596,9 @@ struct TerrainRenderer::Impl {
         if (flat_view) wgpuTextureViewRelease(flat_view);
         if (white_view) wgpuTextureViewRelease(white_view);
         if (plain_material) wgpuBufferRelease(plain_material);
+#ifdef OPENRTS_HAS_RAY_QUERY
+        detail::RayScene::get().remove_adder(this);
+#endif
         for (auto& [_, tile] : tiles) release_tile(tile);
         for (auto& [_, texture] : textures) {
             if (texture.view) wgpuTextureViewRelease(texture.view);
@@ -635,6 +642,9 @@ struct TerrainRenderer::Impl {
         return bytes;
     }
     static void release_tile(GpuTile& tile) {
+#ifdef OPENRTS_HAS_RAY_QUERY
+        if (tile.blas) wgpuBlasRelease(tile.blas);
+#endif
         terrain_tile_bytes -= tile_bytes(tile);
         if (tile.surface_indices) wgpuBufferRelease(tile.surface_indices);
         if (tile.surface_vertices) wgpuBufferRelease(tile.surface_vertices);
@@ -833,10 +843,44 @@ struct TerrainRenderer::Impl {
         }
         grass.add_tile(mesh);
         GpuTile tile;
-        tile.vertices = create_buffer(device, WGPUBufferUsage_Vertex, mesh.vertices.size() * sizeof(TerrainVertex),
+        WGPUBufferUsage rays = WGPUBufferUsage_None;
+#ifdef OPENRTS_HAS_RAY_QUERY
+        if (ray_queries()) rays = WGPUBufferUsage_BlasInput;
+#endif
+        tile.vertices = create_buffer(device, WGPUBufferUsage_Vertex | rays, mesh.vertices.size() * sizeof(TerrainVertex),
                                       mesh.vertices.data());
-        tile.indices = create_buffer(device, WGPUBufferUsage_Index, mesh.indices.size() * sizeof(std::uint32_t),
+        tile.indices = create_buffer(device, WGPUBufferUsage_Index | rays, mesh.indices.size() * sizeof(std::uint32_t),
                                      mesh.indices.data());
+#ifdef OPENRTS_HAS_RAY_QUERY
+        // The ground in the ray scene: the tile's whole mesh, built now.
+        if (rays && tile.vertices && tile.indices && mesh.indices.size() >= 3) {
+            const WGPUBlasTriangleGeometrySize size{
+                .vertexFormat = WGPUVertexFormat_Float32x3,
+                .vertexCount = static_cast<std::uint32_t>(mesh.vertices.size()),
+                .indexFormat = WGPUIndexFormat_Uint32,
+                .indexCount = static_cast<std::uint32_t>(mesh.indices.size()),
+                .flags = WGPUAccelerationStructureGeometryFlag_Opaque,
+            };
+            const WGPUBlasDescriptor descriptor{
+                .label = {.data = "terrain tile", .length = WGPU_STRLEN},
+                .flags = WGPUAccelerationStructureFlag_PreferFastTrace,
+                .updateMode = WGPUAccelerationStructureUpdateMode_Build,
+                .geometryCount = 1,
+                .geometries = &size,
+            };
+            tile.blas = wgpuDeviceCreateBlas(device, &descriptor);
+            if (tile.blas) {
+                const WGPUBlasTriangleGeometry geometry{
+                    .size = size,
+                    .vertexBuffer = tile.vertices,
+                    .firstVertex = 0,
+                    .vertexStride = sizeof(TerrainVertex),
+                    .indexBuffer = tile.indices,
+                };
+                detail::RayScene::get().build_blas(device, {.blas = tile.blas, .geometryCount = 1, .geometries = &geometry});
+            }
+        }
+#endif
         tile.patches = std::move(mesh.patches);
         if (!mesh.water.empty()) {
             tile.water = create_buffer(device, WGPUBufferUsage_Vertex, mesh.water.size() * sizeof(TerrainWaterVertex), mesh.water.data());
@@ -1215,6 +1259,23 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
                                  const int radius)
     : impl_(std::make_unique<Impl>()) {
     impl_->device = device;
+#ifdef OPENRTS_HAS_RAY_QUERY
+    // The ground's tiles in each build of the ray scene, as they are then.
+    if (ray_queries()) {
+        detail::RayScene::get().set_adder(impl_.get(), [impl = impl_.get()](detail::RayScene& scene) {
+            if (!ray_shadows_wanted()) return;
+            constexpr double size = formats::route_tile_size;
+            for (const auto& [key, tile] : impl->tiles) {
+                if (!tile.blas) continue;
+                glm::mat4 place{1.0f};
+                place[3] = glm::vec4{static_cast<float>((key.first - impl->origin.tile_x) * size - impl->origin.x),
+                                     static_cast<float>(-impl->origin.y),
+                                     static_cast<float>((key.second - impl->origin.tile_z) * size - impl->origin.z), 1.0f};
+                scene.add(tile.blas, place);
+            }
+        });
+    }
+#endif
     impl_->vfs = std::move(vfs);
     impl_->route = std::move(route);
     impl_->origin = origin;
@@ -1254,7 +1315,7 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
 
     // One module for both paths (the `experimental` override): both read
     // the effects (group 2), so both layouts have it.
-    const auto shader_code = std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::shader_code("common/fog_ring") + detail::shader_code("common/pbr") + detail::shader_code("terrain/terrain");
+    const auto shader_code = std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::ray_shadow_code() + detail::shader_code("common/fog_ring") + detail::shader_code("common/pbr") + detail::shader_code("terrain/terrain");
     const WGPUShaderSourceWGSL source{
         .chain = {.sType = WGPUSType_ShaderSourceWGSL},
         .code = {.data = shader_code.data(), .length = shader_code.size()},
@@ -1285,7 +1346,7 @@ TerrainRenderer::TerrainRenderer(const WGPUDevice device,
     // uniforms and the effects.
     {
         const auto water_code =
-            std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::shader_code("common/fog_ring") + detail::shader_code("terrain/water");
+            std::string(detail::shader_code("common/light_shapes")) + detail::shader_code("common/effects_struct") + detail::shader_code("common/effects_main") + detail::ray_shadow_code() + detail::shader_code("common/fog_ring") + detail::shader_code("terrain/water");
         const WGPUShaderSourceWGSL water_source{
             .chain = {.sType = WGPUSType_ShaderSourceWGSL},
             .code = {.data = water_code.data(), .length = water_code.size()},
@@ -1482,7 +1543,7 @@ void TerrainRenderer::render_depth(const WGPURenderPassEncoder pass, const std::
     const auto queue = wgpuDeviceGetQueue(impl.device);
     wgpuQueueWriteBuffer(queue, impl.depth_buffer, base, uniforms.data(), uniforms.size());
     if (queue) wgpuQueueRelease(queue);
-    wgpuRenderPassEncoderSetPipeline(pass, kind == DepthPassKind::shadow ? impl.shadow_pipeline : impl.camera_depth_pipeline);
+    wgpuRenderPassEncoderSetPipeline(pass, kind != DepthPassKind::camera ? impl.shadow_pipeline : impl.camera_depth_pipeline);
     const auto frustum = Frustum::from_view_projection(view_projection);
     index = 0;
     for (auto& [key, tile] : impl.tiles) {

@@ -1930,6 +1930,9 @@ void Launcher::State::draw_graphics(const float height) {
             group_row(tr("Sharp shadows in the cab"), Load::medium, Load::medium);
             ImGui::Checkbox("##shadow_cab", &e.cab_shadows);
             row_note(tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));
+            group_row(tr("Shadows by rays"), Load::negligible, Load::medium);
+            ImGui::Checkbox("##shadow_rays", &e.ray_shadows);
+            row_note(tr("The models' shadows from the sun traced by rays: exact and sharp, wires and posts too. Only graphics cards with ray tracing (GeForce RTX, Radeon RX 6000 and later, Arc); without it the shadow maps."));
             ImGui::EndDisabled();
             ImGui::EndTable();
         }

@@ -87,6 +87,21 @@ public:
     // Who drives a train: the keyboard, the test driver along its path, or
     // nobody (it stands with its brakes as they are).
     enum class Role : std::uint8_t { driven, ai, standing };
+    // A Track control traffic train's own settings (testers 2026-11-27),
+    // kept in placements and situations ("traffic=" line): its top speed
+    // (m/s) and rates (m/s^2), 0: the defaults (default_traffic_settings).
+    struct TrafficTuning {
+        float max_speed{}, acceleration{}, deceleration{};
+        // Stopping at every platform its path passes, for this long (s).
+        bool stop_at_platforms = false;
+        float platform_wait = 30.0f;
+        // Coupling to a train standing ahead on its way: it creeps up to it,
+        // couples and goes on with it (the cars its own).
+        bool couple = false;
+        [[nodiscard]] bool empty() const noexcept {
+            return max_speed <= 0.0f && acceleration <= 0.0f && deceleration <= 0.0f && !stop_at_platforms && !couple;
+        }
+    };
     struct Summary {
         std::uint64_t id{};
         std::string name;
@@ -475,6 +490,7 @@ public:
     struct PlacedTrain {
         std::string name;
         Role role = Role::standing;
+        TrafficTuning tuning;
         std::optional<simulation::TrackLocation> front;
         // Without a front: the last car's rear here, the train ahead of it
         // the way `rear` faces (a scenario's placement, a path's start).
@@ -896,6 +912,10 @@ public:
     [[nodiscard]] std::string assign_route_path(std::uint64_t id, const formats::TrainPath& path);
     void clear_path(std::uint64_t id);
     [[nodiscard]] std::string set_role(std::uint64_t id, Role role);
+    // A traffic train's settings: as set (zeros: the defaults), and the
+    // values it runs by now (the defaults filled in); set: in force at once.
+    [[nodiscard]] TrafficTuning traffic_tuning(std::uint64_t id, bool in_force) const;
+    void set_traffic_tuning(std::uint64_t id, const TrafficTuning& tuning);
     // RTS's Cast to PLAYER (true: its DLLs run beside the driven train's)
     // or STATIC (false: asleep, its DLLs parked with their state).
     [[nodiscard]] std::string set_live(std::uint64_t id, bool live);
@@ -1873,7 +1893,9 @@ private:
     // The car menu's "Couple" (0x469ED8): unit `unit_index` coupled at its
     // end car `car` (front or rear) to the train standing within 5 m there,
     // both standing; ours takes another client's in. False with message_.
-    bool couple_standing(std::size_t unit_index, std::size_t car, bool front);
+    // `keep_this`: this train goes on as the coupled one (a traffic train
+    // coupling to cars), else the earlier unit does.
+    bool couple_standing(std::size_t unit_index, std::size_t car, bool front, bool keep_this_train = false);
     // Joins `absorbed`'s unit into `survivor`'s after Train::couple (as
     // resolve_contacts reports it); returns the survivor's index.
     // `announce` false: the server's own coupling, not told to it again.

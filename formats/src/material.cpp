@@ -80,6 +80,8 @@ void MaterialPatch::merge(const MaterialPatch& over) {
     take(snow, over.snow);
     take(alpha_mode, over.alpha_mode);
     take(alpha_cutoff, over.alpha_cutoff);
+    take(shadow_mode, over.shadow_mode);
+    take(shadow_transmission, over.shadow_transmission);
     take(double_sided, over.double_sided);
     take(wet, over.wet);
 }
@@ -118,7 +120,34 @@ Material resolve_material(const Material& rts, const std::span<const MaterialPat
     if (merged.height_reference) m.height_reference = *merged.height_reference;
     if (merged.snow) m.snow = merged.snow;
     if (merged.wet) m.wet = *merged.wet;
+    m.alpha_mode = merged.alpha_mode;
+    m.alpha_cutoff = merged.alpha_cutoff;
+    if (merged.shadow_mode) m.shadow_mode = *merged.shadow_mode;
+    if (merged.shadow_transmission) m.shadow_transmission = *merged.shadow_transmission;
     return m;
+}
+
+ShadowCaster shadow_caster(const Material* own, const bool alpha_test, const bool blended, const std::uint8_t max_alpha) {
+    using Kind = ShadowCaster::Kind;
+    ShadowCaster c;
+    c.cutoff = own && own->alpha_cutoff ? *own->alpha_cutoff : alpha_test ? 0.3f : blended ? 0.9f : 0.5f;
+    const auto mode = own ? own->shadow_mode : ShadowMode::automatic;
+    if (mode == ShadowMode::none) c.kind = Kind::none;
+    else if (mode == ShadowMode::opaque) c.kind = Kind::solid;
+    else if (mode == ShadowMode::mask) c.kind = Kind::mask;
+    else if (mode == ShadowMode::transmission) c.kind = Kind::transmission;
+    else if (own && own->alpha_mode == AlphaMode::opaque) c.kind = Kind::solid;
+    else if (own && own->alpha_mode == AlphaMode::mask) c.kind = Kind::mask;
+    else if (!alpha_test && !blended) c.kind = Kind::solid;
+    else if (max_alpha < 230) c.kind = Kind::none;
+    else c.kind = Kind::mask;
+    if (c.kind == Kind::transmission) c.transmission = own->shadow_transmission;
+    return c;
+}
+
+std::uint8_t cutoff_byte(const float cutoff) noexcept {
+    const float at = std::clamp(cutoff, 0.0f, 1.0f) * 255.0f + 1e-3f;
+    return static_cast<std::uint8_t>(std::clamp(std::floor(at), 0.0f, 255.0f));
 }
 
 namespace {
@@ -190,11 +219,21 @@ public:
         } else if (key == "alpha_mode") {
             if (const auto text = word(key, value, {"opaque", "mask", "blend"})) {
                 patch.alpha_mode = *text == "opaque" ? AlphaMode::opaque : *text == "mask" ? AlphaMode::mask : AlphaMode::blend;
-                warn(value, "alpha_mode is read but not applied yet");
+                warn(value, "alpha_mode is applied to the ray shadows only so far (the drawing keeps RTS's)");
             }
         } else if (key == "alpha_cutoff") {
             patch.alpha_cutoff = number(key, value, 0.0f, 1.0f);
-            if (patch.alpha_cutoff) warn(value, "alpha_cutoff is read but not applied yet");
+        } else if (key == "shadow_mode") {
+            if (const auto text = word(key, value, {"auto", "opaque", "mask", "none", "transmission"})) {
+                patch.shadow_mode = *text == "opaque"     ? ShadowMode::opaque
+                    : *text == "mask"                     ? ShadowMode::mask
+                    : *text == "transmission"             ? ShadowMode::transmission
+                    : *text == "none"                     ? ShadowMode::none
+                                                          : ShadowMode::automatic;
+            }
+        } else if (key == "shadow_transmission") {
+            if (const auto c = colour<3>(key, value, 0.0f, 1.0f, false))
+                patch.shadow_transmission = std::array<float, 3>{(*c)[0], (*c)[1], (*c)[2]};
         } else if (key == "double_sided") {
             if (value.is_boolean()) {
                 patch.double_sided = value.boolean;
@@ -426,6 +465,18 @@ void write_patch(std::ostream& out, const MaterialPatch& p) {
     if (p.height_reference) field("height_reference", num(*p.height_reference));
     if (p.snow) field("snow", json5::quote(p.snow->path));
     if (p.wet) field("wet", *p.wet ? "true" : "false");
+    if (p.alpha_mode)
+        field("alpha_mode", json5::quote(*p.alpha_mode == AlphaMode::opaque ? "opaque" : *p.alpha_mode == AlphaMode::mask ? "mask" : "blend"));
+    if (p.alpha_cutoff) field("alpha_cutoff", num(*p.alpha_cutoff));
+    if (p.shadow_mode) {
+        const auto m = *p.shadow_mode;
+        field("shadow_mode", json5::quote(m == ShadowMode::opaque ? "opaque"
+                                              : m == ShadowMode::mask ? "mask"
+                                              : m == ShadowMode::transmission ? "transmission"
+                                              : m == ShadowMode::none ? "none"
+                                                                      : "auto"));
+    }
+    if (p.shadow_transmission) field("shadow_transmission", colour(*p.shadow_transmission, 3));
 }
 
 } // namespace

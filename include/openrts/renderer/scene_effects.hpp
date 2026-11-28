@@ -34,6 +34,9 @@ inline constexpr float cab_lamps_in_daylight = 0.5f;
 
 struct SceneEffectSettings {
     bool shadows = true;
+    // The sun's shadows of the models by rays too (ray_scene.hpp), where the
+    // GPU has ray queries.
+    bool ray_shadows = false;
     bool clustered_lights = true;
     bool ambient_occlusion = true;
     // The occlusion's quality. High: two slices of six steps each way at the

@@ -1,5 +1,6 @@
 #include "window_viewer.hpp"
 #include "vr_session.hpp"
+#include "inspector.hpp"
 
 #include <glm/gtc/matrix_transform.hpp>
 
@@ -46,6 +47,7 @@
 
 #include <openrts/renderer/route_space.hpp>
 #include <openrts/renderer/scene_effects.hpp>
+#include <openrts/renderer/ray_scene.hpp>
 #include <openrts/renderer/webgpu_context.hpp>
 
 #include "controls_help.hpp"
@@ -78,6 +80,7 @@
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
+#include <ImGuizmo.h>
 #include <imgui_impl_glfw.h>
 #include <imgui_impl_wgpu.h>
 #endif
@@ -1001,6 +1004,7 @@ public:
         ImGui_ImplWGPU_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
         draw_loading_screen({.done = false, .progress = 0.0f, .stage = stage, .title = title});
         ImGui::Render();
     }
@@ -1017,6 +1021,7 @@ public:
         // nowhere for them (on_cursor_moved does not pass its moves on).
         if (panel.mouse_locked) ImGui::GetIO().AddMousePosEvent(-FLT_MAX, -FLT_MAX);
         ImGui::NewFrame();
+        ImGuizmo::BeginFrame();
         // The console (F2): the game's messages, on every screen (the
         // loading's too).
         draw_log_console(panel.console);
@@ -1675,6 +1680,14 @@ public:
                     ImGui::SetTooltip("%s", tr("The terrain, trees and buildings are drawn into the sun's shadows once and kept, only the strips the view moves into again; trains, cars and moving parts every frame. Video memory: a map a cascade more (64 MB at 4096)."));
                 if (ImGui::Checkbox(tr("Sharp shadows in the cab"), &panel.effects.cab_shadows))
                     remember("shadow_cab", panel.effects.cab_shadows ? "1" : "0");
+                {
+                    // Ray-traced shadows (ray_scene.hpp): only where the GPU has ray queries.
+                    ImGui::BeginDisabled(!renderer::ray_queries());
+                    if (ImGui::Checkbox(renderer::ray_queries() ? tr("Shadows by rays") : tr("Shadows by rays (this graphics card has no ray tracing)"),
+                                        &panel.effects.ray_shadows))
+                        remember("shadow_rays", panel.effects.ray_shadows ? "1" : "0");
+                    ImGui::EndDisabled();
+                }
                 if (ImGui::IsItemHovered())
                     ImGui::SetTooltip("%s", tr("A shadow map of its own around the cab: sharp edges on the desk, one more pass."));
                 ImGui::Unindent();
@@ -1921,6 +1934,9 @@ public:
             ImGui::SetNextWindowPos({viewport->WorkPos.x + viewport->WorkSize.x * 0.5f, viewport->WorkPos.y + viewport->WorkSize.y - 20.0f},
                                     ImGuiCond_Always, {0.5f, 1.0f});
             ImGui::SetNextWindowSize({620.0f, 0.0f}, ImGuiCond_Always);
+            // Opaque: the pattern's thousands of nits through a translucent
+            // window bleached it white.
+            ImGui::SetNextWindowBgAlpha(1.0f);
             bool open = true;
             if (ImGui::Begin(tr("HDR calibration"), &open, ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize)) {
                 if (panel.hdr_calibration == 1) {
@@ -2183,9 +2199,12 @@ private:
 };
 #endif
 
-[[nodiscard]] bool overlay_wants_mouse() {
+// `left`: for the left button (the lamp gizmo's square takes only that one;
+// the right and middle buttons and the wheel stay the camera's there).
+[[nodiscard]] bool overlay_wants_mouse(const bool left = true) {
 #ifdef OPENRTS_HAS_IMGUI
-    return ImGui::GetIO().WantCaptureMouse;
+    if (!left && lamp_gizmo_square_hovered() && !lamp_gizmo_wants_mouse()) return false;
+    return ImGui::GetIO().WantCaptureMouse || lamp_gizmo_wants_mouse();
 #else
     return false;
 #endif
@@ -2315,7 +2334,9 @@ void on_mouse_button(GLFWwindow* window, const int button, const int action, [[m
     if (button == GLFW_MOUSE_BUTTON_LEFT && action == GLFW_RELEASE) {
         if (auto* held = camera_input(window)) ++held->releases;
     }
-    if (overlay_wants_mouse()) return;
+    // A release always reaches the camera: a turn begun outside a panel and
+    // let go over one (the lamp gizmo's square) went on turning.
+    if (action == GLFW_PRESS && overlay_wants_mouse(button == GLFW_MOUSE_BUTTON_LEFT)) return;
     auto* input = camera_input(window);
     if (!input) return;
 
@@ -2367,7 +2388,9 @@ void on_cursor_moved(GLFWwindow* window, const double x, const double y) {
 #ifdef OPENRTS_HAS_IMGUI
     if (!locked) ImGui_ImplGlfw_CursorPosCallback(window, x, y);
 #endif
-    if (!input || (!locked && overlay_wants_mouse())) return;
+    // A turn under way goes on over a panel too.
+    const bool turning = input && (input->orbit_dragging || input->fly_looking);
+    if (!input || (!locked && !turning && overlay_wants_mouse())) return;
 
     const double dx = x - input->last_x;
     const double dy = y - input->last_y;
@@ -2399,7 +2422,7 @@ void on_scroll(GLFWwindow* window, [[maybe_unused]] const double x, const double
 #ifdef OPENRTS_HAS_IMGUI
     ImGui_ImplGlfw_ScrollCallback(window, x, y);
 #endif
-    if (overlay_wants_mouse()) return;
+    if (overlay_wants_mouse(false)) return;
     if (auto* input = camera_input(window)) {
         // Ctrl and the wheel zoom the view (the field of view), in the cab
         // too (its controls then keep still); else outside the cab the wheel
@@ -2911,7 +2934,12 @@ struct FrameCapture {
 };
 
 [[nodiscard]] FrameCapture begin_capture(const WGPUDevice device, const WGPUCommandEncoder encoder, const WGPUTexture texture,
-                                         const std::uint32_t width, const std::uint32_t height, const std::uint32_t texel_bytes = 4) {
+                                         std::uint32_t width, std::uint32_t height, const std::uint32_t texel_bytes = 4) {
+    // No more than the texture has (an upscaler's frame is smaller than the window's).
+    if (texture) {
+        width = (std::min)(width, wgpuTextureGetWidth(texture));
+        height = (std::min)(height, wgpuTextureGetHeight(texture));
+    }
     FrameCapture shot{.width = width, .height = height, .row_bytes = (width * texel_bytes + 255) / 256 * 256};
     const WGPUBufferDescriptor descriptor{.usage = WGPUBufferUsage_MapRead | WGPUBufferUsage_CopyDst,
                                           .size = static_cast<std::uint64_t>(shot.row_bytes) * height};

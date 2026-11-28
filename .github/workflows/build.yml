@@ -23,7 +23,7 @@ jobs:
       # openRTS's wgpu-native (github.com/SmileDoge/wgpu-native, branch
       # openrts: the official one with the D3D11 shared-texture import, for
       # VR and DLSS; built and released by its own GitHub Actions).
-      WGPU_VERSION: v27.0.4.0-openrts.4
+      WGPU_VERSION: v27.0.4.0-openrts.6
       WGPU_REPO: SmileDoge/wgpu-native
       # NVIDIA Streamline (DLSS): its official SDK release; the game loads
       # its DLLs at run time (LICENSE-EXCEPTIONS.md).

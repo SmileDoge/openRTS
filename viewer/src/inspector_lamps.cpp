@@ -14,10 +14,12 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 
 #include <glm/exponential.hpp>
 #include <glm/geometric.hpp>
 #include <glm/gtc/matrix_transform.hpp>
+#include <glm/gtc/quaternion.hpp>
 
 #include <openrts/renderer/model_assets.hpp>
 #include <openrts/renderer/model_library.hpp>
@@ -29,6 +31,8 @@
 
 #ifdef OPENRTS_HAS_IMGUI
 #include <imgui.h>
+#include <ImGuizmo.h>
+#include <imgui_internal.h>
 #endif
 
 namespace openrts::viewer {
@@ -78,6 +82,24 @@ void set_flag(std::string& flags, const std::string_view word, const bool on) {
     flags = out;
 }
 
+// Unity's rotation (degrees X, Y, Z: Ry Rx Rz) as a matrix.
+glm::mat3 euler_rotation(const glm::vec3& e) {
+    const glm::mat4 r = glm::rotate(glm::mat4{1.0f}, glm::radians(e.y), glm::vec3{0.0f, 1.0f, 0.0f})
+        * glm::rotate(glm::mat4{1.0f}, glm::radians(e.x), glm::vec3{1.0f, 0.0f, 0.0f})
+        * glm::rotate(glm::mat4{1.0f}, glm::radians(e.z), glm::vec3{0.0f, 0.0f, 1.0f});
+    return glm::mat3{r};
+}
+
+// A rotation (orthonormal columns) as Unity's angles: Y and X from its +z,
+// Z from its +x against the unrolled one's.
+glm::vec3 euler_of(const glm::mat3& r) {
+    const glm::vec3 f = glm::normalize(r[2]);
+    glm::vec3 e{glm::degrees(std::asin(std::clamp(-f.y, -1.0f, 1.0f))), glm::degrees(std::atan2(f.x, f.z)), 0.0f};
+    const glm::mat3 unrolled = euler_rotation(e);
+    e.z = glm::degrees(std::atan2(glm::dot(r[0], unrolled[1]), glm::dot(r[0], unrolled[0])));
+    return e;
+}
+
 // A lamp's light space for a shape's LightSource: z towards PointsTo, x
 // along the shape's x (TrainView::update_lights' cab lamps, the scenery's).
 glm::mat4 shape_lamp_place(const formats::ShapeLight& lamp) {
@@ -116,16 +138,12 @@ void diamond(const glm::vec3& at, const float size, const std::uint32_t colour, 
     }
 }
 
-// The gizmo: the lamp's place and axes (x red, y green, z blue: the way it
-// shines), and its light: a cone (`tangent` of its half angles) to `reach`,
-// or a sphere of `reach`.
+// The lamp's light: a cone (`tangent` of its half angles) to `reach`, or a
+// sphere of `reach` (its axes: the ImGuizmo gizmo's, draw_lamp_gizmo).
 void lamp_gizmo(const glm::mat4& place, const bool cone, const float tangent_x, const float tangent_y, const float reach,
                 const std::uint32_t colour, std::vector<renderer::WideLine>& lines, const float source = 0.0f) {
     const glm::vec3 at{place[3]};
     const auto axis = [&](const int k) { return glm::normalize(glm::vec3{place[k]}); };
-    lines.push_back({at, at + axis(0) * 0.4f, 0xff3040ffu, 3.0f});
-    lines.push_back({at, at + axis(1) * 0.4f, 0xff40ff40u, 3.0f});
-    lines.push_back({at, at + axis(2) * 0.8f, 0xffff8040u, 3.0f});
     const float d = std::clamp(reach, 0.05f, gizmo_reach);
     constexpr int segments = 32;
     constexpr float two_pi = 6.2831853f;
@@ -261,6 +279,29 @@ void Inspector::draw_lamps(const InspectorWorld& world, const core::VirtualPath&
         lamp_redo_.clear();
         lamp_editing_ = false;
     }
+    // The gizmo on the chosen lamp: arrows to move it (its way: the yaw and
+    // pitch fields; the format has no roll about the beam, so rings to turn
+    // it were more confusing than useful, testers 2026-11-27).
+    // The tools' own small window, as an editor's: what the gizmo does.
+    {
+        ImGui::SetNextWindowSize(ImVec2{0.0f, 0.0f});
+        if (ImGui::Begin(tr("Tools##lamp_tools"), nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoCollapse)) {
+            const auto tool = [&](const char* label, const int operation) {
+                const bool on = gizmo_operation_ == operation;
+                if (on) ImGui::PushStyleColor(ImGuiCol_Button, ImGui::GetStyleColorVec4(ImGuiCol_ButtonActive));
+                if (ImGui::Button(label, ImVec2{170.0f, 0.0f})) gizmo_operation_ = operation;
+                if (on) ImGui::PopStyleColor();
+            };
+            tool(tr("Move (arrows)"), 1);
+            tool(tr("Rotate (X, Y, Z rings)"), 0);
+            ImGui::RadioButton(tr("Local: the lamp's axes"), &gizmo_space_, 0);
+            ImGui::SameLine();
+            ImGui::RadioButton(tr("World: the world's axes"), &gizmo_space_, 1);
+            ImGui::TextDisabled("%s", tr("Shift: by 1 cm / 1 degree; Ctrl: turn slower"));
+        }
+        ImGui::End();
+    }
+    draw_lamp_gizmo(world);
     const bool car = selection_.kind == Selection::Kind::car;
     if (world.trains) world.trains->hold_car_light(selection_.train, selection_.car, std::nullopt);
     if (!ImGui::CollapsingHeader(tr("Lamps"), ImGuiTreeNodeFlags_DefaultOpen)) return;
@@ -488,6 +529,15 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
     }
     ImGui::SameLine();
     ImGui::BeginDisabled(lamps.empty());
+    // A copy of the chosen lamp, right after it, chosen (where it is: move it).
+    if (ImGui::Button(tr("Duplicate it")) && !lamps.empty()) {
+        const auto at = static_cast<std::size_t>(lamp_);
+        const auto copy = lamps[at];
+        lamps.insert(lamps.begin() + static_cast<std::ptrdiff_t>(at) + 1, copy);
+        lamp_ = static_cast<int>(at) + 1;
+        changed = true;
+    }
+    ImGui::SameLine();
     if (ImGui::Button(tr("Remove it"))) {
         lamps.erase(lamps.begin() + lamp_);
         lamp_ = (std::max)(lamp_ - 1, 0);
@@ -515,9 +565,30 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
         flag(tr("Burns always (RUNNING)"), "running");
         flag(tr("By the light level or at night (NIGHT_AUTO)"), "night_auto");
         flag(tr("Never by day (NIGHT_ONLY)"), "night_only");
+        changed |= ImGui::Checkbox(tr("Throws no shadows (openRTS: takes no lamp shadow map)"), &l.no_shadow);
         changed |= ImGui::DragFloat3(tr("Position (the shape's x, y, z), m"), l.position.data(), 0.01f);
         changed |= ImGui::DragFloat3(tr("Points to, m"), l.points_to.data(), 0.01f);
-        changed |= ImGui::DragFloat2(tr("Radius at the points-to plane (x, z), m"), l.radius.data(), 0.02f, 0.0f, 500.0f);
+        {
+            // The same point as two angles (the distance kept): the turn
+            // about the shape's up (0: along +z, 90: along +x) and the tilt
+            // (-90 straight down, 90 straight up).
+            const glm::vec3 from{l.position[0], l.position[1], l.position[2]};
+            glm::vec3 way = glm::vec3{l.points_to[0], l.points_to[1], l.points_to[2]} - from;
+            float length = glm::length(way);
+            if (length < 1e-3f) {
+                way = {0.0f, -1.0f, 0.0f};
+                length = 1.0f;
+            }
+            way /= length;
+            auto& euler = lamp_euler_for(way);
+            if (ImGui::DragFloat3(tr("Rotation X, Y, Z, degrees (as Unity: X tilt, Y left/right, Z roll: not saved)"), &euler.x, 0.5f, -360.0f,
+                                  360.0f, "%.1f")) {
+                const glm::vec3 to = from + euler_rotation(euler)[2] * length;
+                l.points_to = {to.x, to.y, to.z};
+                changed = true;
+            }
+        }
+        changed |= ImGui::DragFloat2(tr("Light spot's radius at the point's distance (across x, across z), m"), l.radius.data(), 0.02f, 0.0f, 500.0f);
         float rgba[4];
         to_rgba(l.colour, rgba);
         if (ImGui::ColorEdit3(tr("Colour (its lightness: the brightness)"), rgba)) {
@@ -561,6 +632,11 @@ void Inspector::draw_shape_lamps(const InspectorWorld& world, const core::Virtua
             lamp_status_ = status_;
             lamp_dirty_ = false;
         }
+    }
+    ImGui::SameLine();
+    if (ImGui::Button(tr("Save to the original .sd"))) {
+        save_lamps_to_sd(world, shape);
+        lamp_status_ = status_;
     }
     ImGui::SameLine();
     if (ImGui::Button(tr("As in the .sd"))) {
@@ -654,6 +730,139 @@ void Inspector::save_edit_to_route(const InspectorWorld& world, const core::Virt
         status_ += std::string("\n") + trf("A mod's file of it is above the route's and still wins: %s", in_effect->source_name.c_str());
 }
 
+namespace {
+
+// A text file as UTF-8, and whether it was UTF-16 (LE, with its mark).
+std::string read_text(const std::filesystem::path& file, bool& utf16) {
+    std::ifstream in(file, std::ios::binary);
+    const std::string bytes{std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>()};
+    utf16 = bytes.size() >= 2 && static_cast<unsigned char>(bytes[0]) == 0xFF && static_cast<unsigned char>(bytes[1]) == 0xFE;
+    if (!utf16) return bytes;
+    std::string out;
+    for (std::size_t i = 2; i + 1 < bytes.size(); i += 2) {
+        std::uint32_t c = static_cast<unsigned char>(bytes[i]) | (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[i + 1])) << 8);
+        if (c >= 0xD800 && c < 0xDC00 && i + 3 < bytes.size()) {
+            const std::uint32_t low = static_cast<unsigned char>(bytes[i + 2]) | (static_cast<std::uint32_t>(static_cast<unsigned char>(bytes[i + 3])) << 8);
+            c = 0x10000 + ((c - 0xD800) << 10) + (low - 0xDC00);
+            i += 2;
+        }
+        if (c < 0x80) {
+            out += static_cast<char>(c);
+        } else if (c < 0x800) {
+            out += static_cast<char>(0xC0 | (c >> 6));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        } else if (c < 0x10000) {
+            out += static_cast<char>(0xE0 | (c >> 12));
+            out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        } else {
+            out += static_cast<char>(0xF0 | (c >> 18));
+            out += static_cast<char>(0x80 | ((c >> 12) & 0x3F));
+            out += static_cast<char>(0x80 | ((c >> 6) & 0x3F));
+            out += static_cast<char>(0x80 | (c & 0x3F));
+        }
+    }
+    return out;
+}
+
+// UTF-8 as UTF-16 LE with its mark.
+std::string to_utf16(const std::string& text) {
+    std::string out{"\xFF\xFE"};
+    const auto put = [&](const std::uint32_t u) {
+        out += static_cast<char>(u & 0xFF);
+        out += static_cast<char>(u >> 8);
+    };
+    for (std::size_t i = 0; i < text.size();) {
+        const auto b = static_cast<unsigned char>(text[i]);
+        std::uint32_t c = b;
+        int more = 0;
+        if (b >= 0xF0) c = b & 0x07, more = 3;
+        else if (b >= 0xE0) c = b & 0x0F, more = 2;
+        else if (b >= 0xC0) c = b & 0x1F, more = 1;
+        ++i;
+        for (int k = 0; k < more && i < text.size(); ++k, ++i) c = (c << 6) | (static_cast<unsigned char>(text[i]) & 0x3F);
+        if (c >= 0x10000) {
+            c -= 0x10000;
+            put(0xD800 + (c >> 10));
+            put(0xDC00 + (c & 0x3FF));
+        } else {
+            put(c);
+        }
+    }
+    return out;
+}
+
+// The text with its ESD_LightSources block (any case) put in place of the
+// one there, or before the Shape block's closing parenthesis.
+std::string with_light_sources(std::string text, const std::string& block) {
+    std::string lower = text;
+    for (auto& ch : lower) ch = static_cast<char>(std::tolower(static_cast<unsigned char>(ch)));
+    if (const auto at = lower.find("esd_lightsources"); at != std::string::npos) {
+        auto open = text.find('(', at);
+        if (open != std::string::npos) {
+            int depth = 0;
+            bool quoted = false;
+            for (auto i = open; i < text.size(); ++i) {
+                if (text[i] == '"') quoted = !quoted;
+                if (quoted) continue;
+                if (text[i] == '(') ++depth;
+                if (text[i] == ')' && --depth == 0) {
+                    auto end = i + 1;
+                    while (end < text.size() && (text[end] == '\r' || text[end] == '\n')) ++end;
+                    auto start = at;
+                    while (start > 0 && (text[start - 1] == ' ' || text[start - 1] == '\t')) --start;
+                    return text.substr(0, start) + block + text.substr(end);
+                }
+            }
+        }
+    }
+    const auto close = text.find_last_of(')');
+    if (close == std::string::npos) return text + block;
+    return text.substr(0, close) + block + text.substr(close);
+}
+
+} // namespace
+
+void Inspector::save_lamps_to_sd(const InspectorWorld& world, const core::VirtualPath& shape) {
+    auto* model = world.library ? world.library->find(shape) : nullptr;
+    const auto sd = core::VirtualPath::parse(shape.str() + "d");
+    const auto origin = world.vfs && sd ? world.vfs->origin(*sd) : std::nullopt;
+    if (!model || !origin || origin->archive) {
+        status_ = tr("The shape's .sd is not in a folder (an archive or not found): saved nowhere.");
+        return;
+    }
+    const auto file = origin->location;
+    bool utf16 = false;
+    const auto text = read_text(file, utf16);
+    const auto& lamps = model->lights();
+    std::string block = formats::write_shape_lights(lamps, "\t");
+    if (const auto at = block.find("LightSources"); at != std::string::npos) block.insert(at, "ESD_");
+    if (lamps.empty()) block.clear();
+    const auto changed = with_light_sources(text, block);
+    std::error_code error;
+    auto backup = file;
+    backup += ".bak";
+    if (!std::filesystem::exists(backup, error)) std::filesystem::copy_file(file, backup, error);
+    {
+        std::ofstream out(file, std::ios::binary | std::ios::trunc);
+        out << (utf16 ? to_utf16(changed) : changed);
+        if (!out) {
+            const auto name = file.generic_u8string();
+            status_ = trf("Could not write %s", std::string(name.begin(), name.end()).c_str());
+            return;
+        }
+    }
+    // The .sd has them now: the override's lamps go (saved so), the .sd read again.
+    auto& over = edited(world, shape);
+    over.lights.reset();
+    renderer::hold_shape_override(shape, over);
+    save_edit(world, shape);
+    world.library->notify_changes({*sd, renderer::shape_override_path(shape)});
+    lamp_dirty_ = false;
+    const auto shown = file.generic_u8string();
+    status_ = trf("The lamps are written into %s (the old one kept as .sd.bak)", std::string(shown.begin(), shown.end()).c_str());
+}
+
 void Inspector::apply_shape_lamps(const InspectorWorld& world, const core::VirtualPath& shape, std::vector<formats::ShapeLight> lamps) {
     auto* model = world.library ? world.library->find(shape) : nullptr;
     if (!model) return;
@@ -736,37 +945,23 @@ void Inspector::add_lamp_lines(const InspectorWorld& world, const core::VirtualP
     const auto geometry = lamp_geometry(world, shape, transform);
     for (const auto& [index, at] : lamps) {
         const bool chosen = geometry && static_cast<int>(index) == lamp_;
-        const Handle handle{.kind = chosen ? Handle::Kind::free : Handle::Kind::lamp, .at = at, .lamp = index};
+        // The chosen one is moved and turned by the ImGuizmo gizmo (draw_lamp_gizmo).
+        const Handle handle{.kind = Handle::Kind::lamp, .at = at, .lamp = index};
         diamond(at, scale(at) * (chosen ? 1.6f : 1.0f), colour_of(chosen ? 0xff20e0ffu : 0xffffd040u), lines);
         handles_.push_back(handle);
     }
     if (!geometry) return;
     const auto& g = *geometry;
-    // Its arrows along the frame's x, y, z: dragged, the lamp moves along them.
-    const float arrow = scale(g.at) * 14.0f;
-    static constexpr std::uint32_t axis_colours[3] = {0xff3040ffu, 0xff40ff40u, 0xffff8040u};
-    for (int k = 0; k < 3; ++k) {
-        const glm::vec3 tip = g.at + glm::normalize(glm::vec3{g.frame[k]}) * arrow;
-        const auto c = colour_of(axis_colours[k]);
-        lines.push_back({g.at, tip, c, 3.0f});
-        diamond(tip, scale(tip) * 0.9f, c, lines);
-        handles_.push_back({.kind = Handle::Kind::axis, .at = tip, .axis = k});
-    }
+    // Its moves and turns: the ImGuizmo gizmo's (the arrows and the aimed
+    // end drawn here before it are gone, testers 2026-11-27).
     // Its light: the cone (or the sphere), its end to aim it, its rim to open it.
     const float d = g.cone ? std::clamp(g.reach, 0.5f, gizmo_reach) : g.size;
     lamp_gizmo(g.place, g.cone, g.tangent_x, g.tangent_y, d, 0xff40e0ffu, lines, g.cone ? g.source : 0.0f);
     if (g.cone) {
-        const glm::vec3 end = g.at + g.beam * d;
-        diamond(end, scale(end) * 1.3f, colour_of(0xff40e0ffu), lines);
-        handles_.push_back({.kind = Handle::Kind::aim, .at = end});
         const glm::vec3 rim{g.place * glm::vec4{g.tangent_x * d + g.source, 0.0f, d, 1.0f}};
         diamond(rim, scale(rim), colour_of(0xffff40ffu), lines);
         handles_.push_back({.kind = Handle::Kind::rim, .at = rim});
-        // The source's disc: its edge, dragged, its radius (at least a hand's breadth out to grab).
-        const float shown_source = (std::max)(g.source, scale(g.at) * 3.0f);
-        const glm::vec3 edge = g.at + glm::normalize(glm::vec3{g.place[1]}) * shown_source;
-        diamond(edge, scale(edge) * 0.8f, colour_of(0xff80ff80u), lines);
-        handles_.push_back({.kind = Handle::Kind::source, .at = edge});
+        // The source's radius: its field (the handle was in the gizmo's way).
     } else {
         const glm::vec3 rim = g.at + glm::normalize(glm::vec3{g.place[0]}) * d;
         diamond(rim, scale(rim), colour_of(0xffff40ffu), lines);
@@ -848,6 +1043,14 @@ bool Inspector::begin_drag(const glm::vec3& eye, const glm::vec3& direction, con
         lamp_state_ = 0;
         return true;
     }
+    if (!start_drag(handle, eye, direction, world)) return false;
+    hovered_ = index;
+    return true;
+}
+
+// A drag of the chosen lamp by `handle` begun: the lamps as they are, one
+// step of the undo.
+bool Inspector::start_drag(const Handle& handle, const glm::vec3& eye, const glm::vec3& direction, const InspectorWorld& world) {
     const auto chosen = resolve(world);
     if (!chosen) return false;
     const auto geometry = lamp_geometry(world, chosen->shape, chosen->transform);
@@ -880,14 +1083,13 @@ bool Inspector::begin_drag(const glm::vec3& eye, const glm::vec3& direction, con
                                 .shape_lamps = d.shape, .lamp = lamp_, .state = lamp_state_},
                    false);
     drag_ = std::move(d);
-    hovered_ = index;
     return true;
 }
 
 void Inspector::drag(const glm::vec3& eye, const glm::vec3& direction, const InspectorWorld& world) {
     if (!drag_ || lamp_ < 0) return;
+    if (gizmo_using_) return; // the ImGuizmo gizmo drives it (draw_lamp_gizmo)
     const auto& d = *drag_;
-    const auto index = static_cast<std::size_t>(lamp_);
     const glm::mat4 to_numbers = glm::inverse(d.frame);
     const float frame_scale = (std::max)(glm::length(glm::vec3{d.frame[0]}), 1e-4f);
     // The move in the scene (axis, free), the new way (aim), the new cone or size (rim).
@@ -924,6 +1126,18 @@ void Inspector::drag(const glm::vec3& eye, const glm::vec3& direction, const Ins
         break;
     case Handle::Kind::lamp: break;
     }
+    apply_drag(world, moved, way, tangent, size, source);
+}
+
+// The drag's change on the lamps as they were at its start: a move and a new
+// way in the scene, the cone's tangent, a size, the source's radius.
+void Inspector::apply_drag(const InspectorWorld& world, const std::optional<glm::vec3> moved, const std::optional<glm::vec3> way,
+                           const std::optional<float> tangent, const std::optional<float> size, const std::optional<float> source) {
+    if (!drag_ || lamp_ < 0) return;
+    const auto& d = *drag_;
+    const auto index = static_cast<std::size_t>(lamp_);
+    const glm::mat4 to_numbers = glm::inverse(d.frame);
+    const float frame_scale = (std::max)(glm::length(glm::vec3{d.frame[0]}), 1e-4f);
     if (!moved && !way && !tangent && !size && !source) return;
     const glm::vec3 local_move = moved ? glm::vec3{to_numbers * glm::vec4{*moved, 0.0f}} : glm::vec3{0.0f};
     const glm::vec3 local_way = way ? glm::normalize(glm::vec3{to_numbers * glm::vec4{*way, 0.0f}}) : glm::vec3{0.0f, 0.0f, 1.0f};
@@ -977,6 +1191,170 @@ void Inspector::drag(const glm::vec3& eye, const glm::vec3& direction, const Ins
         l.radius = {rx * ratio, was.radius[1] > 0.0f ? rz * ratio : 0.0f};
     }
     apply_shape_lamps(world, chosen->shape, std::move(lamps));
+}
+
+glm::vec3& Inspector::lamp_euler_for(const glm::vec3& beam) {
+    const auto key = lamp_key() + "#" + std::to_string(lamp_);
+    const glm::vec3 b = glm::normalize(beam);
+    if (key != lamp_euler_key_) {
+        lamp_euler_key_ = key;
+        lamp_euler_ = glm::vec3{0.0f};
+    }
+    if (glm::dot(euler_rotation(lamp_euler_)[2], b) < 0.99999f) {
+        const float roll = lamp_euler_.z;
+        lamp_euler_ = glm::vec3{glm::degrees(std::asin(std::clamp(-b.y, -1.0f, 1.0f))), glm::degrees(std::atan2(b.x, b.z)), roll};
+    }
+    return lamp_euler_;
+}
+
+namespace {
+int gizmo_frame = -10;     // the ImGui frame the gizmo was last drawn in
+bool gizmo_mouse = false;  // over it or held then
+bool gizmo_square = false; // the mouse in its window's square then
+} // namespace
+
+bool lamp_gizmo_square_hovered() {
+#ifdef OPENRTS_HAS_IMGUI
+    return gizmo_square && ImGui::GetFrameCount() - gizmo_frame <= 1;
+#else
+    return false;
+#endif
+}
+
+bool lamp_gizmo_wants_mouse() {
+#ifdef OPENRTS_HAS_IMGUI
+    return gizmo_mouse && ImGui::GetFrameCount() - gizmo_frame <= 1;
+#else
+    return false;
+#endif
+}
+
+// The chosen lamp's ImGuizmo gizmo, over the scene: rings to turn it (its
+// beam), arrows to move it; a use one step of the undo (start_drag), each
+// frame of it applied as a drag (apply_drag).
+void Inspector::draw_lamp_gizmo(const InspectorWorld& world) {
+#ifdef OPENRTS_HAS_IMGUI
+    gizmo_over_ = false;
+    const auto chosen = resolve(world);
+    if (!chosen) {
+        gizmo_using_ = false;
+        return;
+    }
+    const auto geometry = lamp_geometry(world, chosen->shape, chosen->transform);
+    if (!geometry) {
+        gizmo_using_ = false;
+        return;
+    }
+    ImGuizmo::SetOrthographic(false);
+    const auto& io = ImGui::GetIO();
+    // ImGuizmo's projection: OpenGL's (-1..1 depth), the camera's angle.
+    const glm::mat4 projection = glm::perspective(camera_fov_, camera_aspect_, 0.05f, 10000.0f);
+    // Its own window, a square round the gizmo taking the mouse: ImGuizmo
+    // takes the mouse only while its draw list's window is the hovered one;
+    // over the background's (or a whole-screen one that takes none) another
+    // window under the mouse, the scene's overlay, kept it from the rings
+    // (testers 2026-11-27: taken only here and there). Outside the square
+    // the scene has the mouse as before.
+    const glm::vec4 clip = projection * camera_view_ * glm::vec4{geometry->at, 1.0f};
+    if (clip.w <= 0.01f) {
+        gizmo_using_ = false;
+        return;
+    }
+    const ImVec2 centre{(clip.x / clip.w * 0.5f + 0.5f) * io.DisplaySize.x, (0.5f - clip.y / clip.w * 0.5f) * io.DisplaySize.y};
+    const float half = 0.17f * io.DisplaySize.y;
+    ImGui::SetNextWindowPos(ImVec2{centre.x - half, centre.y - half});
+    ImGui::SetNextWindowSize(ImVec2{half * 2.0f, half * 2.0f});
+    ImGui::Begin("##lamp_gizmo", nullptr,
+                 ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoBackground | ImGuiWindowFlags_NoSavedSettings
+                     | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoMove
+                     | ImGuiWindowFlags_NoScrollWithMouse | ImGuiWindowFlags_NoBringToFrontOnFocus);
+    // Behind every panel: a panel over it hides it and has its clicks.
+    ImGui::BringWindowToDisplayBack(ImGui::GetCurrentWindow());
+    ImGuizmo::SetDrawlist();
+    ImGuizmo::SetRect(0.0f, 0.0f, io.DisplaySize.x, io.DisplaySize.y);
+    struct EndWindow {
+        ~EndWindow() { ImGui::End(); }
+    } end_window;
+    ImGui::GetWindowDrawList()->PushClipRectFullScreen(); // arrows past the square drawn whole
+    gizmo_square = ImGui::IsWindowHovered();
+    // A shape's lamp: in the shape's axes (scale out), turned by its angles.
+    const formats::ShapeLight* shape_lamp = nullptr;
+    if (selection_.kind == Selection::Kind::world) {
+        if (const auto* model = world.library ? world.library->find(chosen->shape) : nullptr;
+            model && static_cast<std::size_t>(lamp_) < model->lights().size())
+            shape_lamp = &model->lights()[static_cast<std::size_t>(lamp_)];
+    }
+    glm::mat4 axes{1.0f};
+    for (int k = 0; k < 3; ++k) axes[k] = glm::vec4{glm::normalize(glm::vec3{geometry->frame[k]}), 0.0f};
+    axes[3] = geometry->frame[3];
+    if (!gizmo_using_ && shape_lamp) {
+        const glm::vec3 from{shape_lamp->position[0], shape_lamp->position[1], shape_lamp->position[2]};
+        glm::vec3 to{shape_lamp->points_to[0], shape_lamp->points_to[1], shape_lamp->points_to[2]};
+        if (glm::distance(from, to) < 1e-3f) to = from - glm::vec3{0.0f, 1.0f, 0.0f};
+        const glm::mat3 r = euler_rotation(lamp_euler_for(to - from));
+        glm::mat4 local{r};
+        local[3] = glm::vec4{glm::vec3{glm::inverse(axes) * glm::vec4{geometry->at, 1.0f}}, 1.0f};
+        gizmo_place_ = axes * local;
+    } else if (!gizmo_using_) {
+        // The lamp's place in the scene: its axes, z its beam.
+        gizmo_place_ = glm::mat4{1.0f};
+        const glm::vec3 z = glm::normalize(geometry->beam);
+        glm::vec3 x = glm::normalize(glm::vec3{geometry->place[0]});
+        x = glm::normalize(x - z * glm::dot(x, z));
+        gizmo_place_[0] = glm::vec4{x, 0.0f};
+        gizmo_place_[1] = glm::vec4{glm::cross(z, x), 0.0f};
+        gizmo_place_[2] = glm::vec4{z, 0.0f};
+        gizmo_place_[3] = glm::vec4{geometry->at, 1.0f};
+    }
+    const auto operation = gizmo_operation_ == 0 ? ImGuizmo::OPERATION(ImGuizmo::ROTATE_X | ImGuizmo::ROTATE_Y | ImGuizmo::ROTATE_Z) : ImGuizmo::TRANSLATE; // no screen ring (the white one)
+    // Shift: in steps (1 degree, 1 cm). Ctrl: a turn a quarter as fast
+    // (ImGuizmo turns by each frame's angle, so a quarter of each frame's
+    // turn is a quarter of the whole).
+    const bool steps = io.KeyShift, slow = io.KeyCtrl;
+    const float snap[3] = {operation == ImGuizmo::TRANSLATE ? 0.01f : 1.0f, 0.01f, 0.01f};
+    const glm::mat4 before = gizmo_place_;
+    const bool changed = ImGuizmo::Manipulate(&camera_view_[0][0], &projection[0][0], operation,
+                                              gizmo_space_ == 1 ? ImGuizmo::WORLD : ImGuizmo::LOCAL, &gizmo_place_[0][0],
+                                              nullptr, steps ? snap : nullptr);
+    if (changed && slow && !steps && operation != ImGuizmo::TRANSLATE) {
+        const glm::quat from = glm::quat_cast(glm::mat3{before});
+        const glm::quat to = glm::quat_cast(glm::mat3{gizmo_place_});
+        const glm::mat3 r = glm::mat3_cast(glm::slerp(from, to, 0.25f));
+        for (int k = 0; k < 3; ++k) gizmo_place_[k] = glm::vec4{r[k] * glm::length(glm::vec3{gizmo_place_[k]}), 0.0f};
+    }
+    const bool using_now = ImGuizmo::IsUsing();
+    gizmo_over_ = ImGuizmo::IsOver();
+    gizmo_frame = ImGui::GetFrameCount();
+    gizmo_mouse = gizmo_over_ || using_now;
+    if (using_now && !gizmo_using_) {
+        drag_.reset();
+        if (!start_drag(Handle{.kind = Handle::Kind::free, .at = geometry->at}, eye_, geometry->beam, world)) return;
+    }
+    gizmo_using_ = using_now;
+    if (!using_now) {
+        if (drag_ && drag_->handle.kind == Handle::Kind::free && drag_->view == geometry->beam) drag_.reset();
+        return;
+    }
+    if (changed && drag_) {
+        const glm::vec3 at{gizmo_place_[3]};
+        const glm::vec3 beam = glm::normalize(glm::vec3{gizmo_place_[2]});
+        if (operation == ImGuizmo::TRANSLATE) {
+            apply_drag(world, at - drag_->lamp_at, std::nullopt, std::nullopt, std::nullopt, std::nullopt);
+        } else if (shape_lamp) {
+            // The angles from the turned axes, in the shape's; the beam their +z.
+            const glm::mat4 local = glm::inverse(axes) * gizmo_place_;
+            glm::mat3 r{local};
+            for (int k = 0; k < 3; ++k) r[k] = glm::normalize(r[k]);
+            lamp_euler_ = euler_of(r);
+            apply_drag(world, std::nullopt, glm::normalize(glm::vec3{axes * glm::vec4{r[2], 0.0f}}), std::nullopt, std::nullopt, std::nullopt);
+            // The beam just set: the angles are these (lamp_euler_for keeps them).
+        } else {
+            apply_drag(world, std::nullopt, beam, std::nullopt, std::nullopt, std::nullopt);
+        }
+    }
+#else
+    static_cast<void>(world);
+#endif
 }
 
 } // namespace openrts::viewer

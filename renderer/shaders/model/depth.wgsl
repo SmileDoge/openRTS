@@ -121,13 +121,15 @@ fn vs_depth(@location(0) position: vec3<f32>, @location(2) uv: vec2<f32>, @built
     out.uv = uv;
     out.world = world.xyz;
     out.portal = instance.portal;
-    out.cut = select(0.5, 0.9, draw.extent.w > 0.5);
+    // The drawing's cut-off (ModelRenderer: RTS's 0.3, a blended one's 0.9,
+    // a material's alpha_cutoff): a texel kept over it.
+    out.cut = draw.extent.w;
     return out;
 }
 
 @fragment
 fn fs_cutout(input: DepthOut) {
-    if (textureSample(source_texture, source_sampler, input.uv).a < input.cut) {
+    if (!(textureSample(source_texture, source_sampler, input.uv).a > input.cut)) {
         discard;
     }
 }
@@ -141,7 +143,7 @@ fn fs_portal(input: DepthOut) {
 
 @fragment
 fn fs_cutout_portal(input: DepthOut) {
-    if (!portal_keeps(input.portal, input.world) || textureSample(source_texture, source_sampler, input.uv).a < input.cut) {
+    if (!portal_keeps(input.portal, input.world) || !(textureSample(source_texture, source_sampler, input.uv).a > input.cut)) {
         discard;
     }
 }

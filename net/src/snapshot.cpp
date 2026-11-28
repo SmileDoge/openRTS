@@ -1559,6 +1559,114 @@ std::optional<ConsoleState> decode_console_state(const ByteView body) {
     return s;
 }
 
+namespace {
+
+void write_route_ask(WireWriter& w, const ConsoleRouteAsk& ask) {
+    w.u8(static_cast<std::uint8_t>(ask.kind));
+    w.u32(ask.train);
+    w.u8(static_cast<std::uint8_t>((ask.rear_first ? 1 : 0) | (ask.shunting ? 2 : 0) | (ask.end ? 4 : 0)));
+    if (ask.end) {
+        w.u32(ask.end->node);
+        w.f64(ask.end->offset);
+    }
+    w.u32(static_cast<std::uint32_t>(ask.via.size()));
+    for (const auto& v : ask.via) {
+        w.u32(v.node);
+        w.f64(v.offset);
+    }
+    w.u32(static_cast<std::uint32_t>(ask.branches.size()));
+    for (const auto& [node, branch] : ask.branches) {
+        w.u32(node);
+        w.u32(branch);
+    }
+}
+
+ConsoleRouteAsk read_route_ask(WireReader& r) {
+    ConsoleRouteAsk ask;
+    ask.kind = static_cast<ConsoleRouteAsk::Kind>(r.u8() % 3);
+    ask.train = r.u32();
+    const auto flags = r.u8();
+    ask.rear_first = (flags & 1) != 0;
+    ask.shunting = (flags & 2) != 0;
+    if (flags & 4) {
+        ConsoleRouteSpot end;
+        end.node = r.u32();
+        end.offset = r.f64();
+        ask.end = end;
+    }
+    const auto via = r.u32();
+    for (std::uint32_t i = 0; i < via && r.ok() && i < 256; ++i) {
+        ConsoleRouteSpot v;
+        v.node = r.u32();
+        v.offset = r.f64();
+        ask.via.push_back(v);
+    }
+    const auto branches = r.u32();
+    for (std::uint32_t i = 0; i < branches && r.ok() && i < 4096; ++i) {
+        const auto node = r.u32();
+        const auto branch = r.u32();
+        ask.branches.emplace_back(node, branch);
+    }
+    return ask;
+}
+
+} // namespace
+
+Bytes encode_console_route_ask(const ConsoleRouteAsk& ask) {
+    WireWriter w;
+    write_route_ask(w, ask);
+    return w.take();
+}
+
+std::optional<ConsoleRouteAsk> decode_console_route_ask(const ByteView body) {
+    ConsoleRouteAsk ask;
+    const bool ok = parse_body(body, [&](WireReader& r) { ask = read_route_ask(r); });
+    if (!ok) return std::nullopt;
+    return ask;
+}
+
+Bytes encode_console_route_answer(const ConsoleRouteAnswer& a) {
+    WireWriter w;
+    w.u8(static_cast<std::uint8_t>(a.kind));
+    w.u32(a.train);
+    w.u8(static_cast<std::uint8_t>((a.ok ? 1 : 0) | (a.request ? 2 : 0)));
+    w.text_u32(a.message);
+    w.u32(a.junctions);
+    w.u32(static_cast<std::uint32_t>(a.spans.size()));
+    for (const auto& s : a.spans) {
+        w.u32(s.node);
+        w.u8(s.forward ? 1 : 0);
+        w.f64(s.from);
+        w.f64(s.to);
+    }
+    if (a.request) write_route_ask(w, *a.request);
+    return w.take();
+}
+
+std::optional<ConsoleRouteAnswer> decode_console_route_answer(const ByteView body) {
+    ConsoleRouteAnswer a;
+    const bool ok = parse_body(body, [&](WireReader& r) {
+        a.kind = static_cast<ConsoleRouteAsk::Kind>(r.u8() % 3);
+        a.train = r.u32();
+        const auto flags = r.u8();
+        a.ok = (flags & 1) != 0;
+        a.message = r.text_u32();
+        a.junctions = r.u32();
+        const auto count = r.u32();
+        for (std::uint32_t i = 0; i < count && r.ok() && i < 65536; ++i) {
+            ConsoleRouteSpan s;
+            s.node = r.u32();
+            s.forward = r.u8() != 0;
+            s.from = r.f64();
+            s.to = r.f64();
+            a.spans.push_back(s);
+        }
+        if (flags & 2) a.request = read_route_ask(r);
+    });
+    if (!ok) return std::nullopt;
+    return a;
+}
+
 Bytes encode_console_next_ask(const ConsoleNextAsk& ask) {
     WireWriter w;
     w.u32(ask.train);

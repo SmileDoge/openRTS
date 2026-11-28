@@ -109,6 +109,21 @@ openRTS's values: its engines' lowest `MaxVelocity` (else the route's limit,
 else 33 m/s), 0.4 m/s² up and 0.5 down (RTS asks the dispatcher for none).
 It needs an engine. Taken over by the player it gets its physics back.
 
+Its own settings (Track control, the train chosen; since 2026-11-27, kept in
+placements and situations as `traffic=<top m/s> <up> <down> <stops> <stand s>
+<couples>`; a scenario's train keeps the scenario's):
+
+- **Top speed, speeding up, slowing down** (km/h, m/s²), in force at once;
+  "Defaults" goes back to the values above.
+- **Stops at every platform**, standing so many seconds
+  (`platform_stop_orders`): its head 5 m short of the far end of each
+  platform its path passes (the TDB's platform pairs, as the timetable finds
+  them), then on; platforms under 30 m are passed.
+- **Couples to cars standing on its way**: no stop 10 m short of a standing
+  train ahead, a creep at 1 m/s over the last 15 m, coupled when the couplers
+  meet; the traffic train goes on with the cars (its path and settings kept).
+  A moving train ahead is kept off as before.
+
 ## Train kinds in Track control (RTS's Cast to PLAYER / STATIC / TRAFFIC)
 
 Since 2026-11-22 a train is one of three kinds (Track control, "Kind", or
@@ -142,4 +157,5 @@ frozen yet.
   `ReleasedBlockPoint`), `ReleaseManual` (Tab), `WaitAtLocation` as an
   order for traffic, the signal types a train obeys (`OBEY_SHUNTING`...),
   `TrainState` 0 (a cold traffic train), `MUTE`, `NO_LIGHTS`.
-- Traffic does not couple; its contact with another train is the usual one.
+- A scenario's traffic does not couple (Track control's can, above); its
+  contact with another train is the usual one.

@@ -41,6 +41,12 @@ enum class OrmLayout : std::uint8_t { orm, mrao, hdrp_mask };
 // Unreal; flipped when loaded).
 enum class NormalY : std::uint8_t { up, down };
 enum class AlphaMode : std::uint8_t { opaque, mask, blend };
+// How a surface takes part in the shadows by rays (docs/pbr-materials.md):
+// auto as its alpha_mode, else as RTS's data has it (shadow_caster); opaque
+// always a caster; mask its texture's alpha over alpha_cutoff; transmission
+// lets light by, tinted by shadow_transmission where its texture is opaque
+// (glass); none never.
+enum class ShadowMode : std::uint8_t { automatic, opaque, mask, transmission, none };
 
 [[nodiscard]] const char* layout_name(OrmLayout layout) noexcept;
 [[nodiscard]] const char* normal_y_name(NormalY y) noexcept;
@@ -77,8 +83,10 @@ struct MaterialPatch {
     // Snow lying on the model (openRTS): the colour of the snow, its alpha
     // where it lies; shown as the winter or a snowfall has it, unseen in summer.
     std::optional<MaterialMap> snow;
-    std::optional<AlphaMode> alpha_mode;  // read, not applied yet
-    std::optional<float> alpha_cutoff;    // read, not applied yet
+    std::optional<AlphaMode> alpha_mode;  // the ray shadows' (shadow_caster); the drawing's not applied yet
+    std::optional<float> alpha_cutoff;    // a cut-out's alpha a texel passes over (the drawing, its depth, the rays)
+    std::optional<ShadowMode> shadow_mode;
+    std::optional<std::array<float, 3>> shadow_transmission; // transmission's light let by, 0..1 each
     std::optional<bool> double_sided;     // read, not applied yet
     std::optional<bool> wet;              // read, not applied yet (rain, PBR's wetness)
 
@@ -118,6 +126,10 @@ struct Material {
     float height_reference = 1.0f;
     std::optional<MaterialMap> snow;
     bool wet = false;
+    std::optional<AlphaMode> alpha_mode;
+    std::optional<float> alpha_cutoff;
+    ShadowMode shadow_mode = ShadowMode::automatic;
+    std::array<float, 3> shadow_transmission{0.8f, 0.8f, 0.8f};
 
     [[nodiscard]] bool packed_maps() const noexcept { return orm || ao_map || roughness_map || metallic_map; }
     bool operator==(const Material&) const = default;
@@ -129,6 +141,26 @@ struct Material {
 // 1 (and RTS's specular factor 1: the map says how the surface shines); an
 // emissive map with no factor set anywhere takes 1.
 [[nodiscard]] Material resolve_material(const Material& rts, std::span<const MaterialPatch> layers);
+
+// How a primitive casts the shadows by rays. RTS's surfaces (no alpha_mode,
+// shadow_mode auto): an alpha-tested one a mask over RTS's reference (its
+// GL_GREATER 0.3), a blended one (BlendATexDiff with depth) a mask over 0.9
+// (its nearly opaque part: a car's body round its glass), and either none
+// when its texture never reaches 0.9 (`max_alpha`, 0..255: glass, a lamp's
+// shade, a shadow drawn under a car, testers 2026-11-27); the rest solid.
+// alpha_cutoff the material's when given (the drawing's too).
+// shadow_mode transmission: a layer letting light by, times
+// mix(1, transmission, its texture's alpha) (formats-side, the rays have it).
+struct ShadowCaster {
+    enum class Kind : std::uint8_t { solid, mask, transmission, none } kind = Kind::solid;
+    float cutoff = 0.5f; // a texel casts with its alpha over it
+    std::array<float, 3> transmission{1.0f, 1.0f, 1.0f};
+};
+[[nodiscard]] ShadowCaster shadow_caster(const Material* own, bool alpha_test, bool blended, std::uint8_t max_alpha);
+// The cut-off as an 8-bit alpha: a texel passes with its alpha over it (as
+// GL_GREATER: 0.3 lets 77 / 255 by, not 76).
+[[nodiscard]] std::uint8_t cutoff_byte(float cutoff) noexcept;
+[[nodiscard]] constexpr bool alpha_passes(std::uint8_t alpha, std::uint8_t cutoff) noexcept { return alpha > cutoff; }
 
 // A material file (`body.material.json5`, "openrts-material/1").
 struct MaterialFile {

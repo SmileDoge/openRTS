@@ -681,6 +681,33 @@ void game() {
             answered = n && n->train == 1 && !n->found && n->routes.empty();
         }
         check(answered, "a console's console_next answered");
+        // A route set on the console's map (console_route): a preview with
+        // no end is answered, not set.
+        game.received(6, P(Package::console_route), net::encode_console_route_ask({.kind = net::ConsoleRouteAsk::Kind::preview, .train = 1}));
+        bool route_answered = false;
+        for (const auto& g : take(rec, 6)) {
+            if (g.id != P(Package::console_route_reply)) continue;
+            const auto a = net::decode_console_route_answer(g.body);
+            route_answered = a && a->train == 1 && a->kind == net::ConsoleRouteAsk::Kind::preview && !a->ok && a->spans.empty();
+        }
+        check(route_answered, "a console's console_route answered");
+        {
+            net::ConsoleRouteAsk ask{.kind = net::ConsoleRouteAsk::Kind::set, .train = 4, .rear_first = true, .shunting = true};
+            ask.end = net::ConsoleRouteSpot{12, 34.5};
+            ask.via.push_back({7, 1.25});
+            ask.branches.emplace_back(99, 1);
+            const auto m = net::decode_console_route_ask(net::encode_console_route_ask(ask));
+            check(m && m->kind == net::ConsoleRouteAsk::Kind::set && m->train == 4 && m->rear_first && m->shunting && m->end && m->end->node == 12 &&
+                      m->end->offset == 34.5 && m->via.size() == 1 && m->via[0].offset == 1.25 && m->branches.size() == 1 && m->branches[0].second == 1,
+                  "console_route's ask both ways");
+            net::ConsoleRouteAnswer answer{.kind = net::ConsoleRouteAsk::Kind::fetch, .train = 4, .ok = true, .message = u"маршрут", .junctions = 2};
+            answer.spans.push_back({.node = 5, .forward = false, .from = 30.0, .to = 2.0});
+            answer.request = ask;
+            const auto b = net::decode_console_route_answer(net::encode_console_route_answer(answer));
+            check(b && b->ok && b->kind == net::ConsoleRouteAsk::Kind::fetch && b->message == u"маршрут" && b->junctions == 2 && b->spans.size() == 1 &&
+                      !b->spans[0].forward && b->spans[0].from == 30.0 && b->request && b->request->end && b->request->end->node == 12,
+                  "console_route's answer both ways");
+        }
         {
             // The segments after the trains (2026-11-21); a state without them still reads.
             net::ConsoleState s;

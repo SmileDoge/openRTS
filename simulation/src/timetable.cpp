@@ -10,17 +10,8 @@
 #include <openrts/simulation/track_network.hpp>
 
 namespace openrts::simulation {
-namespace {
 
-// A platform the route passes: where its end met last is, and its length.
-struct PlatformPass {
-    std::size_t leg{};
-    double far{};    // leg distance of that end
-    double length{};
-    std::uint32_t far_item{};
-};
-
-[[nodiscard]] std::vector<PlatformPass> platform_passes(const TrackNetwork& network, const TrainRoute& route) {
+std::vector<PlatformPass> platform_passes(const TrackNetwork& network, const TrainRoute& route) {
     std::vector<PlatformPass> passes;
     const auto& items = network.database().items;
     const auto platform = [&](const std::uint32_t item) {
@@ -77,6 +68,7 @@ struct PlatformPass {
     return passes;
 }
 
+namespace {
 } // namespace
 
 void locate_stops(const TrackNetwork& network, const TrainRoute& route, std::vector<TimetableStop>& stops) {

@@ -26,6 +26,8 @@ add_library(openrts_renderer STATIC
     src/forest_clearance.cpp
     src/grass_blockers.cpp
     src/scene_effects.cpp
+    src/ray_scene.cpp
+    src/opacity_micromap.cpp
     src/video_memory.cpp
     src/task_pool.cpp
     src/model_library.cpp
@@ -94,6 +96,14 @@ if(OPENRTS_ENABLE_WGPU)
         if(OPENRTS_HAS_XR)
             target_compile_definitions(openrts_renderer PUBLIC OPENRTS_HAS_XR=1)
         endif()
+    endif()
+    # Ray queries (ray-traced shadows): openRTS's wgpu-native from openrts.5 on.
+    if(EXISTS "${OPENRTS_WGPU_INCLUDE_DIR}/webgpu/wgpu.h")
+        file(STRINGS "${OPENRTS_WGPU_INCLUDE_DIR}/webgpu/wgpu.h" rq_api REGEX "wgpuDeviceCreateTlas")
+        if(rq_api)
+            target_compile_definitions(openrts_renderer PUBLIC OPENRTS_HAS_RAY_QUERY=1)
+        endif()
+        message(STATUS "openRTS ray queries: ${rq_api}")
     endif()
 endif()
 

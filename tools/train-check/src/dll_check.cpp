@@ -796,6 +796,10 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
             ri.traction = out->engine.throttle != 0;
             ri.aspect = bits(72);
             ri.powered = (bits(32) & 4u) != 0;
+            // САУТ powered: every SAUT_PIT on (LegacyConsist::recorder_after's).
+            ri.saut_powered = true;
+            for (const auto id : klub.saut_power)
+                ri.saut_powered = ri.saut_powered && (id < 0 || static_cast<std::size_t>(id) >= klub_switches.size() || on(id));
             ri.tskbm_on = (recorder_last_var4 & 8u) != 0;
             ri.bypass = (recorder_last_var4 & 0x200u) != 0;
             ri.ep_pressure = recorder_last_ep;

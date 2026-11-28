@@ -1,8 +1,8 @@
 // The HDR calibration's patterns (hdr_output.hpp, HdrCalibration), scRGB
 // out (1 = 80 nits), over the whole frame.
-// mode 1, the peak: a field at 10 000 nits (the display clips it at its
-// own peak) and a square in the middle at the peak set: once that is the
-// display's, the square is gone.
+// mode 1, the peak: on black a field at 10 000 nits (the display clips it
+// at its own peak), a square in its middle at the peak set: once that is
+// the display's, the square is gone.
 // mode 2, the paper white: black, a row of 11 greys of the SDR picture
 // (0 .. 1, sRGB) at the paper white, a white bar at the paper white over
 // it and one at the peak under it (the headroom the highlights get).
@@ -30,8 +30,13 @@ fn fs_main(@builtin(position) position: vec4<f32>) -> @location(0) vec4<f32> {
     let size = max(settings.size.xy, vec2<f32>(1.0));
     let p = position.xy / size;
     if (settings.mode < 1.5) {
-        let square = abs(p.x - 0.5) * size.x / size.y < 0.12 && abs(p.y - 0.5) < 0.12;
-        let nits = select(10000.0, settings.peak, square);
+        // Black round a field at 10 000 nits (the display clips it at its
+        // own peak), in the field's middle a square at the peak set.
+        let x = abs(p.x - 0.5) * size.x / size.y;
+        let y = abs(p.y - 0.42);
+        var nits = 0.0;
+        if (x < 0.22 && y < 0.22) { nits = 10000.0; }
+        if (x < 0.07 && y < 0.07) { nits = settings.peak; }
         return vec4<f32>(vec3<f32>(nits / 80.0), 1.0);
     }
     var nits = 0.0;

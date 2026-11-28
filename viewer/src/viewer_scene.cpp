@@ -643,6 +643,14 @@ public:
                             .cancel_route = [net = net_.get()](const std::uint64_t train) {
                                 if (const auto id = net->server_train(train)) net->send_route(id, -1.0f, false);
                             },
+                            .console_route = [net = net_.get()](const std::uint64_t train, net::ConsoleRouteAsk ask) {
+                                const auto id = net->server_train(train);
+                                if (!id) return false;
+                                ask.train = id;
+                                net->send_console_route(ask);
+                                return true;
+                            },
+                            .console_route_answer = [net = net_.get()] { return net->take_route_answer(); },
                             .route_length = [net = net_.get()](const std::uint64_t train, const float length, const bool rear_first) {
                                 if (const auto id = net->server_train(train)) net->send_route(id, length, rear_first);
                             },
@@ -838,7 +846,9 @@ public:
             click = false;
         }
         if (click && direction && inspector_.picking()) {
-            if (!inspector_.begin_drag(last_eye_, *direction, inspector_world())) inspector_.pick(last_eye_, *direction, inspector_world());
+            // The lamp's ImGuizmo gizmo has the click while the mouse is on it.
+            if (!inspector_.gizmo_wants_mouse() && !inspector_.begin_drag(last_eye_, *direction, inspector_world()))
+                inspector_.pick(last_eye_, *direction, inspector_world());
             click = false;
         }
         // Ctrl+F (openRTS): from the engineer to the free camera where his
@@ -1306,6 +1316,11 @@ public:
         experimental_ = renderer.shading_path() == renderer::ShadingPath::experimental;
         last_view_projection_ = frame.steady_projection.value_or(frame.projection) * frame.view;
         last_eye_ = frame.eye;
+        {
+            // The angle and aspect the scene is drawn with, from its projection.
+            const auto& p = frame.steady_projection.value_or(frame.projection);
+            inspector_.set_camera(frame.view, 2.0f * std::atan(1.0f / p[1][1]), p[1][1] / p[0][0]);
+        }
         last_viewport_height_ = frame.viewport_height;
         last_vertical_fov_ = frame.vertical_fov;
         const auto frustum = renderer::Frustum::from_view_projection(frame.projection * frame.view);
@@ -2634,6 +2649,7 @@ private:
         renderer::ModelExtraLight light;
         const bool cone = lamp.flags.find("light_cone") != std::string::npos;
         light.kind = cone ? 4.0f : lamp.flags.find("light_sphere") != std::string::npos ? 2.0f : 3.0f;
+        if (lamp.no_shadow) light.kind += 64.0f; // no shadow (SceneEffects::choose_lamp_shadows)
         const float rx = (std::max)(lamp.radius[0], 0.01f);
         const float rz = (std::max)(lamp.radius[1] > 0.0f ? lamp.radius[1] : lamp.radius[0], 0.01f);
         light.size = cone ? glm::vec4{rx / reach, rz / reach, reach, lamp.source_radius} : glm::vec4{rx, rz, reach, lamp.source_radius};

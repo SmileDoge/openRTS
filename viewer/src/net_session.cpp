@@ -184,6 +184,11 @@ void NetSession::ask_next_routes(const std::uint32_t train, const bool back) {
     connection_->send(net::id(net::Package::console_next), net::encode_console_next_ask({.train = train, .back = back}));
 }
 
+void NetSession::send_console_route(const net::ConsoleRouteAsk& ask) {
+    if (!connection_) return;
+    connection_->send(net::id(net::Package::console_route), net::encode_console_route_ask(ask));
+}
+
 void NetSession::send_route(const std::uint32_t server_train, const float length, const bool rear_first) {
     if (!connection_ || server_train == 0) return;
     net::WireWriter w;
@@ -906,6 +911,9 @@ void NetSession::apply(const net::ReceivedPackage& package, simulation::TrackNet
     case P(net::Package::console_state):
         if (auto state = net::decode_console_state(body)) console_state_ = std::move(*state);
         return;
+    case P(net::Package::console_route_reply):
+        if (auto answer = net::decode_console_route_answer(body)) route_answer_ = std::move(*answer);
+        break;
     case P(net::Package::console_next_reply):
         if (auto next = net::decode_console_next(body)) next_routes_ = std::move(*next);
         return;

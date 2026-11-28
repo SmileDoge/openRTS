@@ -43,6 +43,13 @@ struct InspectorWorld {
     std::filesystem::path root; // the installation (MODS_OPENRTS, openrts.ini)
 };
 
+// The lamp's ImGuizmo gizmo has the mouse (over it or held), drawn this
+// frame or the last: the camera leaves the mouse to it.
+[[nodiscard]] bool lamp_gizmo_wants_mouse();
+// The mouse in the gizmo's square (its window): the left button is the
+// gizmo's there, the others still the camera's.
+[[nodiscard]] bool lamp_gizmo_square_hovered();
+
 class Inspector {
 public:
     Inspector();
@@ -80,6 +87,15 @@ public:
     void end_drag() noexcept { drag_.reset(); }
     [[nodiscard]] bool dragging() const noexcept { return drag_.has_value(); }
     void hover(const std::optional<glm::vec3>& eye, const std::optional<glm::vec3>& direction);
+    // The camera as last drawn, for the lamp's ImGuizmo gizmo (rings to turn
+    // it, arrows to move it), drawn by draw(); while the mouse is over it or
+    // it is held, the scene's clicks are its (gizmo_wants_mouse).
+    void set_camera(const glm::mat4& view, float vertical_fov, float aspect) noexcept {
+        camera_view_ = view;
+        camera_fov_ = vertical_fov;
+        camera_aspect_ = aspect;
+    }
+    [[nodiscard]] bool gizmo_wants_mouse() const noexcept { return gizmo_over_ || gizmo_using_; }
     // "Go to": where the camera goes and what it looks at, taken once.
     [[nodiscard]] std::optional<std::pair<glm::vec3, glm::vec3>> take_fly_to() { return std::exchange(fly_to_, std::nullopt); }
 
@@ -120,6 +136,9 @@ private:
     // The same beside the shape in its route's folder (a route's own shape):
     // it goes with the route to everyone who has it.
     void save_edit_to_route(const InspectorWorld& world, const core::VirtualPath& shape);
+    // The lamps into the shape's own .sd (its ESD_LightSources), a folder's,
+    // the first time kept as .sd.bak; the override's lamps then dropped.
+    void save_lamps_to_sd(const InspectorWorld& world, const core::VirtualPath& shape);
     // The lamps (inspector_lamps.cpp): a car's lights, a shape's lamps.
     [[nodiscard]] std::string lamp_key() const;
     void draw_lamps(const InspectorWorld& world, const core::VirtualPath& shape);
@@ -196,6 +215,27 @@ private:
         std::vector<formats::ShapeLight> shape;     // as it was (a shape)
     };
     std::optional<Drag> drag_;
+    // The ImGuizmo gizmo (inspector_lamps.cpp, draw_lamp_gizmo): the camera,
+    // what it does (0 turn, 1 move), the lamp's place it holds while used.
+    glm::mat4 camera_view_{1.0f};
+    float camera_fov_ = 1.0f, camera_aspect_ = 1.0f;
+    int gizmo_operation_ = 0;
+    int gizmo_space_ = 0; // 0 the lamp's own axes (Local), 1 the world's (World)
+    bool gizmo_over_ = false, gizmo_using_ = false;
+    glm::mat4 gizmo_place_{1.0f};
+    // The chosen shape lamp's rotation as Unity shows it (X, Y, Z degrees;
+    // Ry Rx Rz, its beam the rotated +z), kept by the editor: the format has
+    // only the point it shines to, so Z (the roll) is the editor's alone,
+    // and the angles stay as set where the beam alone cannot tell them (a
+    // yaw with the beam straight down). Taken again from the beam when it
+    // changed some other way.
+    glm::vec3 lamp_euler_{0.0f};
+    std::string lamp_euler_key_;
+    glm::vec3& lamp_euler_for(const glm::vec3& beam);
+    void draw_lamp_gizmo(const InspectorWorld& world);
+    bool start_drag(const Handle& handle, const glm::vec3& eye, const glm::vec3& direction, const InspectorWorld& world);
+    void apply_drag(const InspectorWorld& world, std::optional<glm::vec3> moved, std::optional<glm::vec3> way, std::optional<float> tangent,
+                    std::optional<float> size, std::optional<float> source);
     void apply_shape_lamps(const InspectorWorld& world, const core::VirtualPath& shape, std::vector<formats::ShapeLight> lamps);
     // The lamps' undo and redo: the lamps as they were before each change
     // (a field dragged, a lamp added or taken out, a handle dragged, back to

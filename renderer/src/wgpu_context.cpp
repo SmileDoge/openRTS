@@ -1,6 +1,7 @@
 #include <openrts/renderer/webgpu_context.hpp>
 
 #include <webgpu/wgpu.h>
+#include <openrts/renderer/ray_scene.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -244,6 +245,12 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
             wgpuAdapterHasFeature(context.adapter_, shared))
             features.push_back(shared);
 #endif
+#ifdef OPENRTS_HAS_RAY_QUERY
+        // openRTS's wgpu-native: ray queries (ray-traced shadows) where the GPU has them.
+        if (const auto rays = static_cast<WGPUFeatureName>(WGPUNativeFeature_RayQuery);
+            wgpuAdapterHasFeature(context.adapter_, rays))
+            features.push_back(rays);
+#endif
         const WGPUDeviceDescriptor device_descriptor{
             .requiredFeatureCount = features.size(),
             .requiredFeatures = features.empty() ? nullptr : features.data(),
@@ -254,6 +261,9 @@ WgpuDeviceContextResult create_wgpu_device(const GraphicsBackend backend) {
             || device_request.status != WGPURequestDeviceStatus_Success || !device_request.device)
             return {.error = "WebGPU device request failed or timed out."};
         context.device_ = device_request.device;
+#ifdef OPENRTS_HAS_RAY_QUERY
+        ray_queries() = wgpuDeviceHasFeature(context.device_, static_cast<WGPUFeatureName>(WGPUNativeFeature_RayQuery));
+#endif
         return {.context = std::move(context)};
     };
 

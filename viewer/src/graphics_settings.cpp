@@ -88,6 +88,7 @@ using Lookup = std::function<std::optional<std::string>(std::string_view)>;
         {"shadow_softness", text(e.shadow_softness)},
         {"shadow_cache", text(e.cache_far_cascades)},
         {"shadow_cab", text(e.cab_shadows)},
+        {"shadow_rays", text(e.ray_shadows)},
         {"lamp_shadows", text(e.lamp_shadows)},
         {"lamps_daylight", text(e.lamps_in_daylight)},
         {"ground_bounce", text(e.ground_bounce)},
@@ -169,6 +170,7 @@ void read_settings(GraphicsSettings& s, const Lookup& value_of) {
     e.shadow_softness = number(value_of, "shadow_softness", e.shadow_softness, 0.5f, 4.0f);
     e.cache_far_cascades = flag_one(value_of, "shadow_cache", e.cache_far_cascades);
     e.cab_shadows = flag_one(value_of, "shadow_cab", e.cab_shadows);
+    e.ray_shadows = flag_one(value_of, "shadow_rays", e.ray_shadows);
     e.lamp_shadows = static_cast<std::uint32_t>(
         whole(value_of, "lamp_shadows", static_cast<int>(e.lamp_shadows), 0, static_cast<int>(renderer::SceneEffects::max_lamp_shadows)));
     e.lamps_in_daylight = number(value_of, "lamps_daylight", e.lamps_in_daylight, 0.0f, 1.0f);

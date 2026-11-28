@@ -147,6 +147,17 @@ BrakePreset brake_preset_of(const BrakeSettings& s) {
 }
 
 BrakeSettings load_brake_settings() {
+    // v0.50.0: once, back to the openRTS preset (the RTS one remembered from
+    // before kept Brakes.dll and its 40 km/h without the launcher); the
+    // КЛУБ's sub-settings stay.
+    if (remembered_int("brake_defaults", 0) < 1) {
+        BrakeSettings fresh = openrts_brakes;
+        fresh.klub_objects = remembered_int("klub_objects", 0) != 0;
+        fresh.klub_map = remembered_int("klub_map", 1) != 0;
+        fresh.saut_brakes = remembered_int("saut_brakes", 1) != 0;
+        remember_brake_settings(fresh);
+        remember("brake_defaults", "1");
+    }
     BrakeSettings s;
     s.realistic = remembered_int("realistic_air", 1) != 0;
     s.dll_air = std::clamp(remembered_int("dll_air", 2), 0, 2);

@@ -119,8 +119,17 @@ fn parallax_uv(uv: vec2<f32>, view: vec3<f32>, n: vec3<f32>, depth: f32, referen
     }
     let px = dot(along, world_dx);
     let py = dot(along, world_dy);
-    let shift = uv_step_x * ((px * yy - py * xy) / det) + uv_step_y * ((py * xx - px * xy) / det);
-    let count = i32(clamp(mix(steps_most, 8.0, facing), 8.0, 64.0));
+    let a = (px * yy - py * xy) / det;
+    let b = (py * xx - px * xy) / det;
+    let shift = uv_step_x * a + uv_step_y * b;
+    // The steps: by the angle (8 square on, `steps_most` edgewise), but no
+    // more than the shift is long on the screen (a, b: in pixels), a step
+    // a pixel and a third: far away, where the whole relief moves a few
+    // pixels, a few steps (as many as near cost the same there; testers
+    // 2026-11-27: 94 fps looking along a track).
+    let by_angle = mix(steps_most, 8.0, facing);
+    let by_screen = length(vec2<f32>(a, b)) * 0.75;
+    let count = i32(clamp(min(by_angle, by_screen), 4.0, 64.0));
     let layer_step = 1.0 / f32(count);
     let uv_step = shift * layer_step;
     // From the relief's top: above the surface by (1 - reference) of the
@@ -189,18 +198,21 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     let texels_dy = dpdy(texels);
     let alpha_mip = 0.5 * log2(max(max(dot(texels_dx, texels_dx), dot(texels_dy, texels_dy)), 1e-8));
     var coverage = texel.w;
+    // RTS's alpha test (GL_GREATER 0.3) or a material's alpha_cutoff
+    // (draw.extent.w), as the RTS path and the ray shadows have it.
     if (alpha_test) {
+        let cutoff = draw.extent.w;
         if (alpha_to_coverage) {
-            coverage = coverage_alpha(texel.w, 0.5, alpha_width, alpha_mip);
+            coverage = coverage_alpha(texel.w, cutoff, alpha_width, alpha_mip);
             if (coverage <= 0.0) {
                 discard;
             }
         } else if (frame.temporal.x > 0.5) {
-            if (!stochastic_keep(coverage_alpha(texel.w, 0.5, alpha_width, alpha_mip), input.clip.xy)) {
+            if (!stochastic_keep(coverage_alpha(texel.w, cutoff, alpha_width, alpha_mip), input.clip.xy)) {
                 discard;
             }
             coverage = 1.0;
-        } else if (texel.w < 0.5) {
+        } else if (!(texel.w > cutoff)) {
             discard;
         }
     }
@@ -291,7 +303,7 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
             ambient = max(effects_sky_light(n), night_light * hemisphere) * openness;
         }
         // The sun's shadow and the ambient occlusion (SceneEffects).
-        let shadow = effects_shadow(input.world.xyz, n, input.clip);
+        let shadow = effects_shadow(input.world.xyz, n, input.clip) * effects_ray_sun_tint(input.clip);
         // Glass (blended) takes none: the occlusion at its pixel is of the
         // surface behind it (a sticker on a door's glass showed the seats'
         // shading through it).

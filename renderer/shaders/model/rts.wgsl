@@ -140,19 +140,20 @@ fn fs_main(input: VertexOut) -> @location(0) vec4<f32> {
     // openRTS: raindrops on the cab's glass.
     color = rain_on_glass(input.world.xyz, input.normal, color, blended, select(draw.extent.x, 0.0, draw.extent.z > 0.5));
 
-    // Fixed-function alpha test of RTS: GL_GREATER 0.3; with MSAA its edge
-    // as coverage.
+    // Fixed-function alpha test of RTS: GL_GREATER 0.3 (draw.extent.w: a
+    // material's alpha_cutoff instead); with MSAA its edge as coverage.
     if (alpha_test) {
+        let cutoff = draw.extent.w;
         if (alpha_to_coverage) {
-            color.w = coverage_alpha(color.w, 0.3, alpha_width, alpha_mip);
+            color.w = coverage_alpha(color.w, cutoff, alpha_width, alpha_mip);
             if (color.w <= 0.0) {
                 discard;
             }
         } else if (frame.temporal.x > 0.5) {
-            if (!stochastic_keep(coverage_alpha(color.w, 0.3, alpha_width, alpha_mip), input.clip.xy)) {
+            if (!stochastic_keep(coverage_alpha(color.w, cutoff, alpha_width, alpha_mip), input.clip.xy)) {
                 discard;
             }
-        } else if (!(color.w > 0.3)) {
+        } else if (!(color.w > cutoff)) {
             discard;
         }
     }

@@ -237,6 +237,18 @@ openRTS itself is the console (the user's choice, 2026-11-09):
   it), each back to STOP as the head passes it, and sets the train's signal
   mode SHUNT (an activity's SetSignalMode) till the route ends. The map's
   "Route for train N to here" goes round other trains too.
+- **The same on the console's map (2026-11-27):** a train's menu, "Set a
+  route" (or "Edit the route" for a route it holds), the same route mode
+  on the console's map: the request goes to the server, which answers with
+  the way it would take (`console_route` `0x45ED` and
+  `console_route_reply` `0x45EC`, openRTS's own: `net::ConsoleRouteAsk`,
+  kind preview, set or fetch, the end, points to pass, junctions' branches,
+  rear first, the order; the answer the way's spans of vector nodes, its
+  junctions, the error or the result, a fetch's request to edit). The
+  server previews (`GameServer::preview_route`), sets
+  (`set_requested_route`) and gives back the request its map kept
+  (`route_request`), as its own window does; asked again each second and
+  when the request changes. Only for a console.
 - **A train's route from the map, as RTS's console sets it (Legacy):**
   pick the train, right-click the track, "Route for the selected train to
   here". The console finds the way from the train's head (or its rear,

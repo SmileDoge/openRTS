@@ -345,7 +345,7 @@ fn shade_experimental(input: VertexOut, texel: vec4<f32>, bent: vec3<f32>, orm: 
     let facing = max(dot(n, to_sun), 0.0);
     let sun_strength = clamp(dot(sun_colour, vec3<f32>(0.2126, 0.7152, 0.0722)), 0.0, 1.0);
     // The sun's shadow and the ambient occlusion (SceneEffects).
-    let shadow = effects_shadow(input.world.xyz, n, input.clip);
+    let shadow = effects_shadow(input.world.xyz, n, input.clip) * effects_ray_sun_tint(input.clip);
     let ambient = sky_colour * (1.0 - 0.65 * sun_strength) * mix(0.55, 1.0, n.y * 0.5 + 0.5)
         * mix(1.0, frame.shading.x, 1.0 - sun_strength) * effects_ao(input.clip) * occluded;
     // Physically based light (frame.shading.w, frame_pbr(); PBR stage 1):

@@ -912,6 +912,50 @@ void GameServer::received(const ConnectionId connection, const std::uint16_t id,
         send_to(*user, framed(P(Package::console_next_reply), net::encode_console_next(next_routes(ask->train, ask->back))));
         return;
     }
+    // openRTS's console sets a route on its map as the server's own map does
+    // (preview, set, fetch the request to edit): console_route_reply.
+    if (user->console && id == P(Package::console_route)) {
+        const auto ask = net::decode_console_route_ask(body);
+        if (!ask) return;
+        const auto spot = [](const net::ConsoleRouteSpot& s) { return simulation::TrackLocation{.node = s.node, .offset = s.offset}; };
+        RouteRequest request;
+        request.rear_first = ask->rear_first;
+        request.shunting = ask->shunting;
+        if (ask->end) request.end = spot(*ask->end);
+        for (const auto& v : ask->via) request.via.push_back(spot(v));
+        for (const auto& [node, branch] : ask->branches) request.branches[node] = branch;
+        net::ConsoleRouteAnswer answer{.kind = ask->kind, .train = ask->train};
+        if (ask->kind == net::ConsoleRouteAsk::Kind::fetch) {
+            if (const auto kept = route_request(ask->train)) {
+                request = *kept;
+                net::ConsoleRouteAsk echo{.kind = net::ConsoleRouteAsk::Kind::fetch, .train = ask->train,
+                                          .rear_first = kept->rear_first, .shunting = kept->shunting};
+                if (kept->end) echo.end = net::ConsoleRouteSpot{kept->end->node, kept->end->offset};
+                for (const auto& v : kept->via) echo.via.push_back({v.node, v.offset});
+                for (const auto& [node, branch] : kept->branches) echo.branches.emplace_back(node, branch);
+                answer.request = std::move(echo);
+            }
+        }
+        if (ask->kind == net::ConsoleRouteAsk::Kind::set) {
+            std::string result;
+            answer.ok = set_requested_route(ask->train, request, result);
+            answer.message = net::from_utf8(result);
+            impl.note(utf8(user->nick) + ": " + result);
+        }
+        if (ask->kind != net::ConsoleRouteAsk::Kind::set || answer.ok) {
+            const auto preview = preview_route(ask->train, request);
+            if (ask->kind != net::ConsoleRouteAsk::Kind::set) {
+                answer.ok = preview.ok;
+                answer.message = net::from_utf8(preview.error);
+            }
+            if (preview.ok) {
+                for (const auto& s : preview.leg.spans) answer.spans.push_back({.node = s.node, .forward = s.forward, .from = s.from, .to = s.to});
+                answer.junctions = static_cast<std::uint32_t>(preview.leg.junctions.size());
+            }
+        }
+        send_to(*user, framed(P(Package::console_route_reply), net::encode_console_route_answer(answer)));
+        return;
+    }
     // Its cancel (0x450D, 0x469C68): the answer is 0x450C.
     if (user->console && id == P(Package::route_segment_cancel)) {
         net::WireReader r(body);

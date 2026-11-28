@@ -931,9 +931,10 @@ void step_recorder(RecorderState& s, const RecorderSettings& k, const RecorderIn
             } else if (static_cast<std::uint32_t>(static_cast<std::int64_t>(s.aspect_seen)) >= aspect || aspect == 8 || aspect <= 1) {
                 // A worse aspect: a request.
                 if (speed < 0.1) s.flags |= f::stood;
-                // In the first 8 s (no code, then the first code past the ALSN's
-                // delay: К, КЖ each a "worse" one): the switch-on's.
-                if (s.alsn_on_for <= 8.0f) s.request_at_switch_on = true;
+                // openRTS: the РБ answers a worse aspect's request, standing
+                // too (Brakes.dll's only while moving); the РБС stays for a
+                // missed one.
+                s.request_at_switch_on = true;
                 if (s.whistle < 2.0f) {
                     s.whistle = 2.0f;
                     s.periodic = static_cast<float>(35.0 - dt * 0.5);

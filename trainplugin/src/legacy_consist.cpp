@@ -141,6 +141,9 @@ struct LegacyConsist::RecorderCar {
     simulation::RecorderState state;
     simulation::RecorderOutput out;
     std::vector<SwitchState> switches;  // the cab's after the last step
+    // САУТ's power switches (SAUT_PIT1 .. SAUT_PIT<SAUT_PCOUNT>; -1 a missing
+    // one, on): with PB_SETUP 16 its vigilance waits for them.
+    std::vector<std::int32_t> saut_power;
     std::uint32_t last_var4 = 0;        // as the step before left them (read first)
     float last_ep = 0.0f;
     std::uint32_t random = 1;           // the needle's error: an LCG as the C library's rand
@@ -1931,10 +1934,14 @@ void LegacyConsist::klub_before(StepRequest& request) {
             std::memcpy(&bits, &v, sizeof bits);
             put(offset, ~0u, bits, after_run);
         };
-        // Bit 4 every step (updateKLUB clears and sets it); bit 1 only when
-        // the КЛУБ wrote it (its trip, an answer, the ЭПК key off): set by
-        // Brakes.dll's other parts, it stays theirs.
-        put(32, 4u, car->out.safety_powered ? 4u : 0u);
+        // Bit 4 every step where there is a КЛУБ (updateKLUB clears and sets
+        // it, PB_SETUP 2); without one (a ВЛ85 with САУТ alone, PB_SETUP 1) it
+        // is the train's DLL's: cleared here, the recorder took the ALSN as
+        // unpowered and whistled from the start, its РБ and РБС refused
+        // (testers 2026-11-27). Bit 1 only when the КЛУБ wrote it (its trip,
+        // an answer, the ЭПК key off): set by Brakes.dll's other parts, it
+        // stays theirs.
+        if (car->parameters.settings.setup & 2) put(32, 4u, car->out.safety_powered ? 4u : 0u);
         if (car->out.epk_bit_written) put(32, 1u, s.epk_bit ? 1u : 0u);
         put(8, ~0u, s.flags); // ТСКБМ's request (0x10) too: openRTS's
         put(4, 0x600u | 0x8u | 0x2000u | 0x400000u, s.device); // КОН, its vent; ТСКБМ on, its whistle, its warning
@@ -2437,7 +2444,9 @@ LegacyConsist::RecorderCar* LegacyConsist::recorder_car(const std::size_t i) {
                                (parameters.settings.mu && parameters.setup_index >= 0))) {
             made = std::make_unique<RecorderCar>();
             made->parameters = std::move(parameters);
-            made->alsn_delay = klub_parameters(*definition->engine).settings.alsn_delay;
+            const auto klub = klub_parameters(*definition->engine);
+            made->alsn_delay = klub.settings.alsn_delay;
+            made->saut_power = klub.saut_power;
             made->delay_timer = made->alsn_delay; // _Init: the first change taken a step on
         }
         found = recorder_.emplace(key, std::move(made)).first;
@@ -2534,6 +2543,15 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             car.held_values.clear();
             car.held_states.clear();
             car.state.distance = static_cast<float>(var_at(224, 0.0f) - std::abs(static_cast<double>(speed)) * request.dt);
+            // Brakes.dll not loaded: the cab's aspect taken at once, as its
+            // Init on a train started on (var + 72 the aspect from the first
+            // step); "no code" first made a ВЛ80с with the КПД ask for
+            // vigilance standing and whistle on (testers 2026-11-27).
+            if (i < stubbed_.size() && stubbed_[i]) {
+                car.accepted_aspect = car.previous_aspect = out.cab_aspect;
+                car.delay_timer = 0.0f;
+                car.state.aspect_seen = static_cast<float>(out.cab_aspect);
+            }
             // Started on or on the move (a pantograph up, a diesel running):
             // the КПД-3 and the УКБМ powered as Brakes.dll left them (testers
             // 2026-11-25: the ВЛ60ПК's КПД-3 dark, no vigilance, until its
@@ -2614,6 +2632,11 @@ void LegacyConsist::recorder_after(const StepRequest& request, const LegacyWorld
             ri.aspect = aspect;
         }
         ri.powered = (var_bits(32) & 4u) != 0;
+        // САУТ powered: every SAUT_PIT on (a ВЛ85 with САУТ, PB_SETUP 17,
+        // whistled on without end: never set, its РБ and РБС refused, testers
+        // 2026-11-27).
+        ri.saut_powered = true;
+        for (const auto id : car.saut_power) ri.saut_powered = ri.saut_powered && (id < 0 || static_cast<std::size_t>(id) >= car.switches.size() || on(id));
         ri.tskbm_on = (car.last_var4 & 8u) != 0;
         ri.bypass = (car.last_var4 & 0x200u) != 0;
         ri.ep_pressure = car.last_ep;

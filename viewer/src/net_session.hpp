@@ -60,6 +60,10 @@ public:
     // The station routes server train `train` can take next (console_next),
     // `back` the other way; the server's answer comes in next_routes().
     void ask_next_routes(std::uint32_t train, bool back);
+    // A route set on the console's map as the server's map sets it
+    // (console_route): its answer comes in take_route_answer().
+    void send_console_route(const net::ConsoleRouteAsk& ask);
+    [[nodiscard]] std::optional<net::ConsoleRouteAnswer> take_route_answer() { return std::exchange(route_answer_, std::nullopt); }
     [[nodiscard]] const std::optional<net::ConsoleNext>& next_routes() const noexcept { return next_routes_; }
     // The game's weather as the server last told it (openrts_weather), and
     // how many times it has: nothing from an older server.
@@ -353,6 +357,7 @@ private:
     std::optional<std::string> placement_text_;
     std::optional<net::ConsoleState> console_state_;
     std::optional<net::ConsoleNext> next_routes_;
+    std::optional<net::ConsoleRouteAnswer> route_answer_;
     std::vector<std::string> console_log_;
 };
 

@@ -33,7 +33,8 @@ namespace openrts::renderer {
 // (the sun) plus its fog block. Colours are RGBA in 0..1.
 // A further RTS light source for the shape shaders (GLLightObj of RTS's
 // lights.glsl): a car's headlight or searchlight. Light space: the light at
-// the origin shining along +z. Kind 1 spotlight, 2 sphere, 3 orthogonal, 4 cone.
+// the origin shining along +z. Kind 1 spotlight, 2 sphere, 3 orthogonal, 4 cone;
+// plus 32: positional, plus 64: it throws no shadow (ORTSNoShadow).
 struct ModelExtraLight {
     glm::vec4 diffuse{1.0f};
     glm::mat4 to_light{1.0f};
@@ -220,7 +221,10 @@ class TaskPool;
 
 // What a depth-only pass is for (SceneEffects): a shadow cascade, or the
 // camera's pre-pass.
-enum class DepthPassKind { shadow, camera };
+// sun_shadow: a shadow pass of the sun's cascades (with shadows by rays the
+// models the rays see stay out of it, ray_scene.hpp); shadow: any other (the
+// lamps', the cab's map).
+enum class DepthPassKind { shadow, camera, sun_shadow };
 // Which casters a depth pass draws: all, those that stay where they are (the
 // world's objects, the terrain), or those that move (ModelRenderer::set_moving:
 // trains, road traffic, crossing gates, switch blades). The sun's shadow cache
@@ -490,6 +494,8 @@ public:
     // Builds the frame's draws and uploads its data once a frame (render()
     // and render_depth() call it when it was not called).
     void prepare();
+    // prepare()'s last step: the ray scene's TLAS (ray_scene.hpp).
+    void build_ray_scene();
     // Depth only, for SceneEffects (the experimental path): every surface
     // that writes depth and is not blended, from `view_projection`, in depth
     // slot `slot` (< depth_slots); a shadow pass takes the casters out of

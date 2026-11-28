@@ -491,6 +491,46 @@ struct ConsoleNext {
 [[nodiscard]] Bytes encode_console_next(const ConsoleNext& next);
 [[nodiscard]] std::optional<ConsoleNext> decode_console_next(ByteView body);
 
+// console_route: a route set on the console's map as the server's own map
+// sets it (docs/server.md, "Setting a route on the map"): its end, the
+// points to pass, the junctions' branches, from the rear, the order.
+// `kind`: preview (the way only), set, or fetch (the request the train's
+// route was set by, to edit it). The answer: console_route_reply.
+struct ConsoleRouteSpot {
+    std::uint32_t node{};
+    double offset{};
+};
+struct ConsoleRouteAsk {
+    enum class Kind : std::uint8_t { preview = 0, set = 1, fetch = 2 };
+    Kind kind = Kind::preview;
+    std::uint32_t train{};
+    bool rear_first = false;
+    bool shunting = false;
+    std::optional<ConsoleRouteSpot> end;
+    std::vector<ConsoleRouteSpot> via;
+    std::vector<std::pair<std::uint32_t, std::uint32_t>> branches; // junction node, branch
+};
+[[nodiscard]] Bytes encode_console_route_ask(const ConsoleRouteAsk& ask);
+[[nodiscard]] std::optional<ConsoleRouteAsk> decode_console_route_ask(ByteView body);
+// The way as spans of vector nodes in its travel order (a preview's, or
+// the route set), and for a fetch the request echoed in `request`.
+struct ConsoleRouteSpan {
+    std::uint32_t node{};
+    bool forward = true;
+    double from{}, to{};
+};
+struct ConsoleRouteAnswer {
+    ConsoleRouteAsk::Kind kind = ConsoleRouteAsk::Kind::preview;
+    std::uint32_t train{};
+    bool ok = false;
+    std::u16string message; // the error, or the result of setting it
+    std::vector<ConsoleRouteSpan> spans;
+    std::uint32_t junctions{};
+    std::optional<ConsoleRouteAsk> request; // a fetch's: none when the map did not set its route
+};
+[[nodiscard]] Bytes encode_console_route_answer(const ConsoleRouteAnswer& answer);
+[[nodiscard]] std::optional<ConsoleRouteAnswer> decode_console_route_answer(ByteView body);
+
 // 0x462D player_pos as the server relays it in play: the sender's id in
 // front, the 40 bytes after its first field, its name after (rts_server.exe
 // and openRTS's server alike). Who is where, for the players' list and
