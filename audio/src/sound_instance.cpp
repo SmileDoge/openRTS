@@ -54,6 +54,12 @@ struct SoundInstance::Stream {
         std::uint64_t start_frame = 0; // where a loop began in its clip
         std::string file;              // for the trace
         bool region = false;           // looping its clip's loop region (StartLoopRelease with cue points)
+        // A PlayOneShot of several files selected in order (RTS 0x4A8C00,
+        // 0x4A7C64): its files one after another, the stream busy till the
+        // last has played; the action and the next file, the voice's space.
+        const formats::SoundAction* chain = nullptr;
+        std::size_t next_file = 0;
+        VoiceSpace space = VoiceSpace::flat;
 
         // Fade factor at the current age; 0 once a fade-out has ended.
         [[nodiscard]] float fade() const {
@@ -382,7 +388,11 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
     const auto start = [&](const formats::SoundAction& action, const VoicePlayback playback) -> Stream::Voice {
         if (action.files.empty()) return {};
         std::size_t choice = 0;
-        if (action.selection == formats::SoundSelection::sequential) {
+        if (action.selection == formats::SoundSelection::sequential && playback == VoicePlayback::once) {
+            // RTS (0x4A8C00 case 2): a one-shot in order starts at its first
+            // file; the others follow it (update_streams).
+            choice = 0;
+        } else if (action.selection == formats::SoundSelection::sequential) {
             choice = stream.sequence[index]++ % action.files.size();
         } else {
             choice = std::uniform_int_distribution<std::size_t>(0, action.files.size() - 1)(random_);
@@ -474,6 +484,14 @@ void SoundInstance::fire(Stream& stream, const std::size_t index, const float vo
             stop_all();
             if (auto voice = start(action, VoicePlayback::once); voice.id) {
                 if (!trace_.empty()) note(here, "one-shot " + voice.file);
+                // Several files in order: one after another (the САВПЭ's
+                // "next stop", the station, "the doors are closing"; until
+                // 2026-11-28 one a trigger: the names were lost, testers).
+                if (action.selection == formats::SoundSelection::sequential && action.files.size() > 1) {
+                    voice.chain = &action;
+                    voice.next_file = 1;
+                    voice.space = space;
+                }
                 stream.one_shots.push_back(std::move(voice));
             }
             break;
@@ -852,6 +870,26 @@ void SoundInstance::update_streams(const float dt, const SoundInputs& raw_inputs
             } else {
                 if (!trace_.empty()) note(static_cast<std::size_t>(&stream - streams_.data()), "loop " + stream.loop.file + " ended");
                 stream.loop = {};
+            }
+        }
+        // A one-shot's next file in order once it has played (RTS
+        // 0x4A7C64): the stream stays busy; a file that is missing ends it.
+        for (auto& voice : stream.one_shots) {
+            if (!voice.chain || voice.released >= 0.0f || sink.playing(voice.id)) continue;
+            while (voice.next_file < voice.chain->files.size()) {
+                const auto& file = voice.chain->files[voice.next_file++];
+                auto clip = clips_(file.name);
+                if (!clip) continue;
+                const auto id = sink.play(clip, VoicePlayback::once, voice.space);
+                if (!id) break;
+                sink.set(id, 0.0f, 1.0f, inputs.position);
+                voice.id = id;
+                voice.clip = std::move(clip);
+                voice.file = file.name;
+                voice.age = 0.0f;
+                voice.fade_in = 0.0f;
+                if (!trace_.empty()) note(static_cast<std::size_t>(&stream - streams_.data()), "one-shot then " + voice.file);
+                break;
             }
         }
         std::erase_if(stream.one_shots, [&](const Stream::Voice& voice) {

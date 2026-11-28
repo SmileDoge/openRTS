@@ -984,26 +984,30 @@ void test_ambient_runner() {
 
     inputs[SoundVariable::variable1] = 12;
     for (int i = 0; i < 25; ++i) tick();
-    check(sink.voices.size() == 2, "enabled random trigger fires every second");
-    check(sink.voices[1].clip == clips["a.wav"] && sink.voices[2].clip == clips["b.wav"], "sequential selection");
+    // Fires every second; a one-shot of files in order plays them one after
+    // another (RTS 0x4A7C64), each fire from the first: a, b, a, b.
+    check(sink.voices.size() == 4, "enabled random trigger fires every second");
+    check(sink.voices[1].clip == clips["a.wav"] && sink.voices[2].clip == clips["b.wav"] && sink.voices[3].clip == clips["a.wav"]
+              && sink.voices[4].clip == clips["b.wav"],
+          "sequential selection: the files one after another");
     check(sink.voices[1].space == audio::VoiceSpace::flat && sink.voices[1].playback == audio::VoicePlayback::once,
           "environment one-shot is not positioned");
     check(near(sink.voices[2].volume, 0.5), "Volume_Min_Max");
 
     inputs[SoundVariable::variable1] = 4;
     for (int i = 0; i < 30; ++i) tick();
-    check(sink.voices.size() == 2, "TriggerActions disabled the random trigger");
+    check(sink.voices.size() == 4, "TriggerActions disabled the random trigger");
 
     const std::uint32_t on[] = {45, 45};
     inputs.discrete = on;
     tick();
-    check(sink.voices.size() == 3, "trigger pair passes only the first 'on'");
+    check(sink.voices.size() == 5, "trigger pair passes only the first 'on'");
     tick();
-    check(sink.voices.size() == 3, "repeated 'on' without 'off' is dropped");
+    check(sink.voices.size() == 5, "repeated 'on' without 'off' is dropped");
     const std::uint32_t off_on[] = {46, 45};
     inputs.discrete = off_on;
     tick();
-    check(sink.voices.size() == 4, "'off' re-arms the pair");
+    check(sink.voices.size() == 6, "'off' re-arms the pair");
 }
 
 // Minimal PCM16 WAV with an optional smpl loop or cue points.

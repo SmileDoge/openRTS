@@ -184,6 +184,14 @@ The action of a trigger is the first keyword found in this order:
 - **A stream plays one sound at a time.** It has one sound buffer and is
   busy while that plays.
   - `PlayOneShot` on a busy stream is ignored.
+  - **CONFIRMED 2026-11-28** (`0x4A8C00` case 2, `0x4A7C64`): a
+    `PlayOneShot` of several files selected in order plays them one after
+    another, from the first each time, the stream busy till the last has
+    played (a missing file ends it); selected at random, one file. The
+    САВПЭ's announcements are made so (`Usavp.sms`: "следующая", the
+    station, "двери закрываются"); openRTS played one file a trigger, the
+    next one the next time, until 2026-11-28 (testers: the station names
+    lost, later in a jumble).
   - `StartLoop` / `StartLoopRelease`: ignored while the stream's loop is
     looping. If the stream is busy otherwise (a one-shot, or a released
     loop playing out), that sound is stopped and the loop starts anew.

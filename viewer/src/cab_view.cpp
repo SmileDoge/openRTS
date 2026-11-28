@@ -1084,12 +1084,16 @@ void CabView::adjustments(const dllhost::CarOutput* state, std::vector<renderer:
         }
         case formats::CabDisplayType::lamp:
             if (blinked_off) lit = 0;
-            if (b.last_frame > 0.0f) {
-                out.push_back({.matrix = b.node, .frame = lit ? b.last_frame : 0.0f});
-            } else if (!lit) {
-                // A lamp without keys shows only when lit (RTS 0x4B355C with
-                // AnimTime 0: the node's flag 1, its own primitives).
+            // A lamp shows its node only while lit (RTS 0x4B355C with
+            // AnimTime 0, which a display has not: the node's flag 1, its
+            // own primitives), keys or none; lit, a keyed node at its last
+            // frame. The ВЛ80с-1274's gauges' light (pr_nig, one key at
+            // frame 1) showed at frame 0 when out: the gauges glowed
+            // whatever the switch (testers 2026-11-28).
+            if (!lit) {
                 out.push_back({.matrix = b.node, .hidden = true});
+            } else if (b.last_frame > 0.0f) {
+                out.push_back({.matrix = b.node, .frame = b.last_frame});
             }
             break;
         default:
