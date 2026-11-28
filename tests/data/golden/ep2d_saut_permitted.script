@@ -1,0 +1,23 @@
+# The ЭП2Д (PB_SETUP 15: САУТ and the УКБМ) on openRTS's КЛУБ, held at 72 km/h,
+# САУТ in its mode, a red ahead, then a limit of 60: the КЛУБ's permitted speed
+# (var + 140, the МПСУ dial's) stays as Brakes.dll's; САУТ's speed goes to the
+# screen alone. It fell to 59 at each redraw (every 0.33 s) and the dial
+# jerked (testers 2026-11-28).
+0    voltage 25000 50
+0    line_limit 90
+0    line_signal S1 2500 1
+2    switch 58 1
+3    speed 20
+5    switch 147 1
+12   line_limit 60
+12.50 expect var140 == 60
+12.55 expect var140 == 60
+12.85 expect var140 == 60
+12.90 expect var140 == 60
+12.95 expect var140 == 60
+13.25 expect var140 == 60
+13.30 expect var140 == 60
+13.35 expect var140 == 60
+13.65 expect var140 == 60
+13.70 expect var140 == 60
+13.75 expect var140 == 60

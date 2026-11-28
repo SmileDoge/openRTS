@@ -353,6 +353,13 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
     // The redraw (the working cab).
     s.flags &= ~f::warning;
     s.saut_rules = false;
+    // What the screen shows: under САУТ its speed (+5 km/h without the
+    // УКБМ). With the УКБМ (PB_SETUP 8) Brakes.dll does it in its drawing
+    // alone: var + 140 keeps the КЛУБ's (the ЭП2Д's МПСУ dial reads it; set
+    // here it fell for a step at each redraw, every 0.33 s, and the dial
+    // jerked, testers 2026-11-28).
+    if (s.permitted < 0.0f) s.permitted = 0.0f;
+    s.drawn_permitted = s.permitted;
     if ((s.device & d::saut_on) && (k.setup & 1) && !(s.flags & f::white_799) && (!(s.flags & f::white_809) || aspect != 2) &&
         (s.flags & f::train_mode)) {
         // updateKLUB's drawing does it ("САУТ" / "С" on the screen; the sum
@@ -362,28 +369,30 @@ void update(KlubState& s, const KlubSettings& k, const KlubInputs& in, const Sou
         // САУТ's speed shown: openRTS's own, else Brakes.dll's.
         const float saut_permitted = in.saut_in.own ? s.saut_shown : in.saut_permitted;
         if (k.setup & 8) {
-            if (s.permitted > saut_permitted) {
-                s.permitted = saut_permitted;
+            if (s.drawn_permitted > saut_permitted) {
+                s.drawn_permitted = saut_permitted;
                 s.saut_rules = true;
             }
-        } else if (static_cast<double>(saut_permitted) + 5.0 < static_cast<double>(s.permitted)) {
-            s.permitted = static_cast<float>(static_cast<double>(saut_permitted) + 5.0);
+        } else if (static_cast<double>(saut_permitted) + 5.0 < static_cast<double>(s.drawn_permitted)) {
+            // Without the УКБМ Brakes.dll keeps it (the ЭП1's run:
+            // klub_ep1): the permitted speed itself.
+            s.permitted = s.drawn_permitted = static_cast<float>(static_cast<double>(saut_permitted) + 5.0);
             s.saut_rules = true;
         }
     }
-    if (s.permitted < 0.0f) s.permitted = 0.0f;
+    if (s.drawn_permitted < 0.0f) s.drawn_permitted = 0.0f;
     if (!in.epk_key) return;
-    if (s.target_speed >= s.permitted || s.target_distance >= 2000.0f || !k.has_screen) {
+    if (s.target_speed >= s.drawn_permitted || s.target_distance >= 2000.0f || !k.has_screen) {
         s.marks &= ~1u;
     } else if (!(s.marks & 1)) {
         s.marks |= 1;
         sound.notice();
     }
     s.drawn_flags = s.flags;
-    if (s.permitted - static_cast<float>(shown) <= 3.0f && shown) {
-        if (s.permitted - static_cast<float>(shown) <= 2.0f && shown > 1) {
+    if (s.drawn_permitted - static_cast<float>(shown) <= 3.0f && shown) {
+        if (s.drawn_permitted - static_cast<float>(shown) <= 2.0f && shown > 1) {
             s.flags |= f::warning;
-            if (s.permitted - static_cast<float>(shown) < 0.0f && (s.slip_time == 0.0f || s.slip_time > 10.0f) &&
+            if (s.drawn_permitted - static_cast<float>(shown) < 0.0f && (s.slip_time == 0.0f || s.slip_time > 10.0f) &&
                 !(s.flags & f::double_traction)) {
                 ask(s);
                 s.flags |= f::overspeed;

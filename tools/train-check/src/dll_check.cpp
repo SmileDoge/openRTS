@@ -1126,6 +1126,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
     std::vector<std::array<float, 9>> body_most; // --body: this second's most, by car (7, 8: the acceleration's least and most)
     std::printf("%6s %7s %9s %5s %4s %5s %3s %6s %6s %6s %6s %8s %5s\n", "t,s", "km/h", "F,kN", "notch", "rev",
                 "panto", "BV", "TM", "UR", "GR", "TC", "brake,kN", "snd");
+    std::optional<float> held_speed; // script `speed <m/s>`: the train held at it (a DLL engine driven past the line)
     while (time <= seconds + 1e-9) {
         for (auto& c : script) {
             if (c.done || c.time > time + 1e-9) continue;
@@ -1294,6 +1295,11 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
                 // klub openrts | brakes: switch the КЛУБ on the way, as the
                 // Train window's setting does (needs the realistic air)
                 consist->set_own_klub(c.args[0] == "openrts");
+            } else if (c.verb == "speed" && !c.args.empty()) {
+                // speed <m/s> | off: the train held at that speed whatever
+                // its force (a DLL's screens and devices on the move).
+                if (c.args[0] == "off") held_speed.reset();
+                else held_speed = static_cast<float>(std::atof(c.args[0].c_str()));
             } else if (c.verb == "handbrake" && c.args.size() >= 2) {
                 // handbrake <car> <percent>: that car's handbrake (the car menu's)
                 const auto car = static_cast<std::size_t>(std::atoi(c.args[0].c_str()));
@@ -1454,6 +1460,7 @@ int dll_check(const core::Vfs& vfs, const std::filesystem::path& root, const std
         }
         if (const auto text = consist->take_messages(); !text.empty()) std::printf("%s", text.c_str());
         train.step();
+        if (held_speed && !train.cars().empty()) train.add_velocity(*held_speed - train.cars().front().velocity);
         last_front = front;
         front += train.speed() * simulation::train_step;
         if (cut_train) cut_train->step();

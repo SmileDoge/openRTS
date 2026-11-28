@@ -239,6 +239,7 @@ struct KlubState {
     float kon_timer{};                    // + 16, s
     bool kon_vented = false;              // + 20
     bool epk_bit = false;                 // var + 32 bit 1
+    float drawn_permitted{};              // the permitted speed as the screen shows it (САУТ's under it), set at each redraw
     bool saut_rules = false;              // САУТ's speed in place of the КЛУБ's (the screen's "С", "САУТ" on the БЛОК)
     // Command 799 waits for its speed: on white only once it is entered (the
     // real КЛУБ-У's way; Brakes.dll's is on white at once, at the speed

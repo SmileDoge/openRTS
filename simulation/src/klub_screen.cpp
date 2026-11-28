@@ -391,19 +391,19 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
         blink(b[23], 0.0f);
         if (bil2) {
             // Its line 24: how far under the permitted speed, within 9 km/h.
-            const double margin = static_cast<double>(s.permitted - s.shown_speed);
+            const double margin = static_cast<double>(s.drawn_permitted - s.shown_speed);
             text(b[24], margin <= 9.0 && margin > 0.0 ? ascii("%1.0f", margin) : std::u16string());
         } else {
-            text(b[24], ascii("%03.0f", static_cast<double>(s.permitted)));
+            text(b[24], ascii("%03.0f", static_cast<double>(s.drawn_permitted)));
         }
         if (static_cast<double>(shown) > 0.1) {
             if (static_cast<float>(in.direction) * in.speed > 0.0f) show(b[30]);
             else if (static_cast<float>(in.direction) * in.speed < 0.0f) show(b[31]);
         }
-        if (s.target_speed >= s.permitted || s.target_distance >= 2000.0f) {
+        if (s.target_speed >= s.drawn_permitted || s.target_distance >= 2000.0f) {
             if (block) {
                 show(b[33]);
-                value(b[33], s.permitted);
+                value(b[33], s.drawn_permitted);
             }
         } else if (block) {
             show(b[38]);
@@ -412,17 +412,17 @@ void draw_klub(const KlubState& s, const KlubSettings& k, const KlubScreenInputs
             show(b[33], static_cast<std::int32_t>(static_cast<std::int64_t>(0.2 * static_cast<double>(s.target_speed))));
         }
         if (block) {
-            value(b[39], block_scale - s.permitted);
+            value(b[39], block_scale - s.drawn_permitted);
             show(b[39]);
         } else {
-            show(b[32], static_cast<std::int32_t>(static_cast<std::int64_t>(0.2 * static_cast<double>(s.permitted))));
+            show(b[32], static_cast<std::int32_t>(static_cast<std::int64_t>(0.2 * static_cast<double>(s.drawn_permitted))));
         }
         if ((s.drawn_flags & f::vigilance) || in.tskbm_timer < 7.0f) show(b[29]);
         if (block) {
             show(b[23]);
             show(b[7]);
         }
-        if (static_cast<double>(s.permitted) - shown <= 3.0 && shown) {
+        if (static_cast<double>(s.drawn_permitted) - shown <= 3.0 && shown) {
             if (block) {
                 show(b[9]);
                 if (s.blink > 1.5f || (s.blink < 1.0f && s.blink > 0.5f)) {

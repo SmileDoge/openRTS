@@ -437,6 +437,9 @@ if(OPENRTS_TEST_ROOT AND TARGET openrts_dllhost32 AND TARGET openrts_train_check
     add_test(NAME openrts.content.klub_ep2k COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_EP2K-025 mdd_EP2k-025 --start on --seconds 66
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep2k.script" --klub shadow)
+    add_test(NAME openrts.content.ep2d_saut_permitted COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
+        --dll mdd_EP2D-0002 mdd_EP2D_LP_01 --start on --seconds 14
+        --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/ep2d_saut_permitted.script" --klub openrts)
     add_test(NAME openrts.content.klub_ep1 COMMAND openrts_train_check "${OPENRTS_TEST_ROOT}"
         --dll mdd_EP1-002 mdd_EP1-002_RTS --start on --seconds 66
         --script "${CMAKE_CURRENT_SOURCE_DIR}/data/golden/klub_ep1.script" --klub shadow)
